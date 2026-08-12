@@ -8,6 +8,10 @@ This is deliberately a **prototype of the firmware**, not a throwaway: the BLE
 connection, the ELM327 handshake, the PID decode formulas and the metrics all
 port more or less line-for-line to C++ on the board.
 
+> **New here, or picking this up after a break?** Read **[SPEC.md](SPEC.md)**
+> first — it covers the goal, the hardware choice, what the car does and doesn't
+> expose, the design decisions and the roadmap. This README is the usage guide.
+
 ```
    BLE / replay  ->  ELM327  ->  PID decode  ->  VehicleState
                                                      |

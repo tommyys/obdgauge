@@ -112,6 +112,16 @@ Recording the reasoning so it isn't relitigated:
 - **Replay uses the file's own timeline.** Using wall-clock made a 10× replay
   report phantom harsh-braking (84 false events). Metrics must see real-world
   seconds.
+- **The rpm backdrop puts red at the rim, not the centre** (`glow=rim`).
+  Compared all three side by side on the real gauge at 2500 / 4500 / 6800 rpm
+  (`web/compare.html`). `centre` was the most aggressive but washed out the
+  *small* labels under the big number — `RPM`, and the `KM/H · THR · PEAK` row —
+  as it approached the redline; the big number itself survived, the supporting
+  text didn't. `band` (red ring, dark core) was the punchiest while staying
+  legible, but busier. **Chosen: `rim`** — the centre stays pure black, so every
+  readout holds full contrast on a gauge you glance at for a fraction of a
+  second. The other two modes remain in the code only so the comparison page
+  keeps working for future visual decisions. See §11.
 
 ---
 
@@ -198,11 +208,11 @@ first so nothing gets lost, then graduates into section 5/6/7 once built.
 
 | # | Item | Status |
 |---|---|---|
-| B1 | Startup + shutdown animation on ignition on/off | **not started** |
+| B1 | Startup + shutdown animation on ignition on/off | designed, not built (`docs/superpowers/specs/2026-08-12-ignition-animations-design.md`) |
 | B2 | In-UI view to browse and pick a past drive to replay | **not started** |
 | B3 | Define the driving score: what is "spirited", what is "harsh"? | **open question — see below** |
 | B4 | Does OBD expose convertible-roof up/down? | **answered: NO — see below** |
-| B5 | Make it a *universal* gauge; show car make/model at the top | **not started** |
+| B5 | Make it a *universal* gauge; show car make/model at the top | **shipped in the simulator — §10** |
 
 ### B1 — Ignition on/off animations
 
@@ -296,3 +306,98 @@ Illustrated companions (design mockups, diagrams, findings):
 
 Recorded drives and three of the four captures stay local by design — they're
 personal telemetry. One sample capture ships so replay works out of the box.
+
+---
+
+## 10. The universal layer (B5, shipped in the simulator)
+
+The gauge no longer assumes an MX-5. Three things adapt to whatever car is
+plugged in, and the car is named on the display itself.
+
+### Identity — `mx5gauge/vehicle.py`
+
+Pure, host-tested (`tests/test_vehicle.py`, 39 checks), ports to firmware
+beside `pids` and `metrics`.
+
+| From the VIN | Reliable? | How |
+|---|---|---|
+| **Make** | yes | WMI (first 3 chars) against a built-in table (~120 entries incl. Proton/Perodua) |
+| **Model year** | yes | position 10, with the 30-year cycle resolved by rejecting implausibly-future years (`W` → 1998, not 2028) |
+| **Model name** | **no** | genuinely impossible from a VIN alone — needs a commercial VIN database |
+
+The VIN is read live once per connection via **mode 09 PID 02**, reassembled
+from its multi-frame reply. Because the model name can't be derived, it comes
+from `--model` (or `MODEL_HINTS` for a known VIN prefix). Everything degrades
+honestly: unknown WMI shows `WMI XXX`, no VIN at all shows `OBD-II`.
+
+Captures carry no VIN, so replay identifies the car from the Car Scanner
+profile string instead (`Mazda OBD-II / EOBD` → Mazda) and leaves the year
+blank rather than inventing one.
+
+### Dial scaling — `vehicle.PROFILES`
+
+An 8000/7000 tach is right for an MX-5 and wrong for almost everything else,
+so redline, rpm ceiling and the power-dial top come from a per-car profile
+(`'Make Model'` beats `'Make'` beats a wide default). The tacho and power dials
+**rebuild themselves** when the profile changes — ticks are placed by value, so
+a 6500 ceiling still lands its numbering correctly.
+
+### Honest view gating
+
+Each view declares the channels it needs (`data-needs`). The car's real channel
+set comes from the supported-PID bitmasks when live, and from what the file
+actually contains when replaying. A view with none of its channels dims and
+states why — *"NO TORQUE DATA · power needs actual + reference torque, which
+this car does not report"* — instead of drawing a convincing zero. Verified on
+the sample capture: exactly one view (Power) gates, because that capture holds
+no torque channels.
+
+Battery voltage is treated as always available: it comes from the adapter's
+`ATRV` command, not a PID, so no bitmask advertises it.
+
+### Desk preview
+
+`Gauge — REPLAY (desk).command` — double-click, no arguments, no car. It picks
+the capture with the most actual driving, frees a stale port, and opens the
+browser. `run.py` alone does the same from a terminal.
+
+---
+
+## 11. The rpm-reactive backdrop
+
+The display warms up as the engine does: near-black at idle, a dim ember
+through the mid-range, an intense red approaching the redline.
+
+Two decisions worth keeping:
+
+- **Red at the rim, black in the middle** — chosen over a centre bloom and a
+  mid-band ring after comparing all three on the real gauge (§4). Every view
+  puts its main readout dead centre, so tinting there costs legibility. The
+  backdrop is a vignette: transparent to ~24% radius, then ramping to
+  near-opaque red at the edge. Verified readable at redline — `6800` stays
+  crisp on a full-red screen.
+
+  `web/compare.html` renders all three shapes at three rev levels as live
+  gauges, using the preview switches `?glow=<mode>`, `?rpm=<n>` (pin the revs,
+  since a desk capture rarely passes 2000) and `?bare=1` (hide the browser
+  chrome). Reach for it the next time a visual choice needs settling.
+- **Keyed to the car's own redline, not a fixed 8000.** `f` is derived from
+  `rpm / rpm_red` (from the §10 profile), so the colour means the same thing in
+  any car. Tint starts at 22% of redline — town driving shows barely anything,
+  which is the point — and `f` is raised to the power 1.35 so the mid-range
+  stays restrained and the last part of the tacho bites.
+
+Measured ramp on an MX-5 profile (redline 7000): 800 rpm → nothing ·
+2000 → 0.03 ember · 4000 → 0.31 · 6000 → 0.70 · 7000 → 0.92 full red.
+
+It lives on `.screen`, outside the sliding `.track`, so the colour **persists
+across all views** rather than restarting per view. Note the z-index: `0` and
+first in the DOM, *not* a negative z-index — `.screen` isn't a stacking
+context, so a negative child would escape it and hide behind the bezel.
+
+Cost control: opacity is rewritten every frame (cheap), but the gradient string
+only when the colour moves a visible step. It reuses the tacho's existing eased
+rpm, so there's no extra timer and the colour can't strobe on a jittery reading.
+
+On the board this becomes a background gradient redrawn on the same rpm easing —
+no per-frame allocation needed.

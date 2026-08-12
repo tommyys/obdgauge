@@ -20,18 +20,21 @@ port more or less line-for-line to C++ on the board.
                                            HTTP :8420 -> round gauge UI
 ```
 
-## One-click launcher
+## One-click launchers
 
-**`Gauge — LIVE (in car).command`** — in the project root, with an alias on the
-Desktop. Double-click it: it shows the pre-flight checklist, frees the port from
-any previous run, connects to the vLinker over BLE and opens the browser.
-`Ctrl-C` stops. It resolves symlinks, so the Desktop alias works fine.
+Two files in the project root, both double-clickable, both symlink-aware so a
+Desktop alias works:
+
+- **`Gauge — REPLAY (desk).command`** — the one to use at your desk. No car, no
+  hardware, no arguments: it picks the capture with the most actual driving,
+  frees the port from any previous run, and opens the browser.
+- **`Gauge — LIVE (in car).command`** — shows the pre-flight checklist, then
+  connects to the vLinker over BLE.
+
+`Ctrl-C` stops either one.
 
 *(First double-click may show "unidentified developer" — right-click → Open once,
 then it runs normally after that.)*
-
-Replay is still available from Terminal when you need it for development —
-see below — it just doesn't have a launcher.
 
 ## Quick start (Terminal)
 
@@ -51,6 +54,43 @@ Options:
 .venv/bin/python run.py --replay "captures/2026-08-11 21-43-36.brc" --speed 10
 .venv/bin/python run.py --replay --speed 1        # real time
 ```
+
+## Any car, not just the MX-5
+
+OBD-II is universal; what each car *reports* is not. The gauge adapts:
+
+- **The car names itself.** Live, it reads the VIN (mode 09 PID 02) and shows
+  the make and model year on the display. A VIN cannot give a *model name* —
+  that needs a commercial database — so pass it if you want it shown:
+
+  ```bash
+  .venv/bin/python run.py --live  --model "MX-5"
+  .venv/bin/python run.py --live  --make Honda --model "Civic"   # force both
+  ```
+
+  Unknown manufacturer code shows `WMI XXX`; no VIN at all shows `OBD-II`.
+
+- **The dials rescale.** Redline, rpm ceiling and the power-dial top come from
+  a per-car profile in `mx5gauge/vehicle.py` (`PROFILES`) — an MX-5 gets
+  8000/7000, a Lexus 6500/6000. Add a car by adding a row.
+
+- **Views degrade honestly.** Each view knows which channels it needs. If the
+  car doesn't report them, the view dims and says so rather than showing a
+  convincing zero. On the sample capture the Power view gates itself, because
+  that drive has no torque channels.
+
+- **The backdrop tracks rpm** — near-black at idle, ember mid-range, intense red
+  at the redline, and it persists across every view. Scaled to the car's own
+  redline, so it reads the same in any car. Tuning lives at the top of the
+  `rpm-reactive backdrop` block in `mx5gauge/web/index.html`: `GLOW_START`
+  (how early the tint appears), `GLOW_EMBER` / `GLOW_RED`.
+
+  The sample capture only reaches 1919 rpm, so replay barely shows it. To see
+  the full ramp at your desk, drive it manually in the browser console:
+
+  ```js
+  tachTarget = 6800; tachShown = 6800;   // then watch the screen
+  ```
 
 ## Live in the car
 
@@ -168,11 +208,16 @@ captures/      your .brc recordings
 
 ```bash
 .venv/bin/python tests/test_pids.py
+.venv/bin/python tests/test_vehicle.py
 ```
 
-Covers the decode formulas against known byte inputs (e.g. RPM `1A F8` → 1726),
-response parsing including multi-ECU replies, the supported-PID bitmask, and
-the poll-cycle builder.
+`test_pids` covers the decode formulas against known byte inputs (e.g. RPM
+`1A F8` → 1726), response parsing including multi-ECU replies, the
+supported-PID bitmask, and the poll-cycle builder.
+
+`test_vehicle` covers VIN handling: multi-frame mode-09 reassembly, WMI →
+make, and the model-year cycle (including that `W` must read as 1998, not the
+still-future 2028).
 
 ## Troubleshooting: the adapter keeps disconnecting
 

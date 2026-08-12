@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+
+# recorded drives stay local — they're personal telemetry
+logs/
+
+# keep one sample capture so replay works out of the box; ignore the rest
+captures/*
+!captures/2026-08-11 21-43-36.brc

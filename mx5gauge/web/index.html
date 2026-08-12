@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MX-5 Gauge — Simulator</title>
+<style>
+  :root{
+    --bg:#0b0a0c;--panel:#151318;--panel-2:#1b181e;
+    --line:rgba(255,255,255,0.08);--line-2:rgba(255,255,255,0.14);
+    --txt:#e9e7ec;--muted:#948f99;--faint:#6a656f;
+    --accent:#e1000a;--phos:#dbe8ff;
+    --green:#35e06b;--amber:#ffc53d;--red:#ff3b30;--blue:#4d96ff;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0;background:
+    radial-gradient(1000px 500px at 80% -10%,rgba(225,0,10,0.10),transparent 60%),
+    radial-gradient(800px 400px at 5% 110%,rgba(120,150,190,0.06),transparent 60%),
+    var(--bg);
+    color:var(--txt);font-family:var(--sans);
+    display:flex;flex-direction:column;align-items:center;gap:14px;
+    padding:26px 16px 40px;-webkit-font-smoothing:antialiased;}
+
+  .top{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-size:0.74rem;color:var(--muted);}
+  .pill{border:1px solid var(--line-2);border-radius:999px;padding:4px 11px;display:flex;align-items:center;gap:7px;}
+  .led{width:8px;height:8px;border-radius:50%;background:var(--faint);}
+  .led.ok{background:var(--green);box-shadow:0 0 7px var(--green);}
+  .led.warn{background:var(--amber);box-shadow:0 0 7px var(--amber);}
+  .led.err{background:var(--red);box-shadow:0 0 7px var(--red);}
+
+  /* round device */
+  .bezel{background:linear-gradient(160deg,#26232a,#131116);border:1px solid var(--line-2);
+    border-radius:50%;padding:14px;width:min(380px,86vw);aspect-ratio:1/1;position:relative;
+    box-shadow:0 22px 55px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,255,255,0.05);}
+  .bezel::before{content:"";position:absolute;inset:7px;border-radius:50%;
+    border:1px solid rgba(255,255,255,0.06);box-shadow:inset 0 2px 8px rgba(0,0,0,0.6);
+    pointer-events:none;z-index:6;}
+  .screen{position:relative;width:100%;height:100%;border-radius:50%;overflow:hidden;
+    background:radial-gradient(circle at 50% 42%,#14171d,#0a0b0e 72%);
+    container-type:inline-size;touch-action:pan-y;cursor:grab;}
+  .screen:active{cursor:grabbing;}
+  .track{display:flex;height:100%;transition:transform .3s cubic-bezier(.4,0,.2,1);}
+  .view{flex:0 0 100%;height:100%;position:relative;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;font-family:var(--mono);padding:11cqw;}
+  /* sits inside the gauge ring so it never collides with the arc */
+  .vtitle{position:absolute;top:18cqw;left:0;right:0;text-align:center;
+    font-size:3.5cqw;letter-spacing:0.26em;color:var(--muted);z-index:2;}
+  .big{font-size:22cqw;font-weight:700;line-height:0.9;color:var(--phos);
+    font-variant-numeric:tabular-nums;letter-spacing:-0.02em;text-shadow:0 0 8px rgba(150,190,255,0.3);}
+  .big.sm{font-size:16cqw;}
+  .unit{font-size:3.8cqw;letter-spacing:0.2em;color:var(--muted);margin-top:0.6cqw;text-align:center;}
+  .sub{position:absolute;bottom:12cqw;left:0;right:0;text-align:center;font-size:3.6cqw;color:var(--muted);}
+  .sub b{color:var(--phos);font-weight:600;}
+  .row2{display:flex;gap:5cqw;margin-top:2.4cqw;font-size:3.9cqw;color:var(--phos);}
+  .row2 .k{color:var(--faint);font-size:3cqw;}
+  .center-abs{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;pointer-events:none;}
+  svg{display:block;}
+  .status{margin-top:2.4cqw;font-size:3.5cqw;letter-spacing:0.13em;padding:0.9cqw 3.6cqw;
+    border-radius:3cqw;display:inline-flex;align-items:center;gap:1.6cqw;
+    border:1px solid var(--faint);color:var(--muted);}
+  .status.ok{border-color:var(--green);color:var(--green);background:rgba(53,224,107,0.12);}
+  .status.warn{border-color:var(--amber);color:var(--amber);background:rgba(255,197,61,0.12);}
+  .status.cold{border-color:var(--blue);color:var(--blue);background:rgba(77,150,255,0.12);}
+  .status.err{border-color:var(--red);color:var(--red);background:rgba(255,59,48,0.12);}
+  .dotled{width:3.2cqw;height:3.2cqw;border-radius:50%;background:currentColor;}
+  .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:3.6cqw 8cqw;margin-top:5cqw;}
+  .tcell{text-align:center;}
+  .tcell .tv{font-size:7.4cqw;font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;}
+  .tcell .tl{font-size:2.9cqw;letter-spacing:0.09em;color:var(--faint);}
+  .stale{opacity:0.35;}
+
+  /* controls */
+  .dots{display:flex;gap:8px;justify-content:center;}
+  .dot{width:9px;height:9px;border-radius:50%;background:#2c2930;border:none;cursor:pointer;padding:0;}
+  .dot.on{background:var(--accent);}
+  .navrow{display:flex;align-items:center;gap:14px;}
+  .arrow{width:38px;height:38px;border-radius:50%;border:1px solid var(--line-2);
+    background:var(--panel-2);color:var(--txt);font-size:1rem;cursor:pointer;}
+  .arrow:hover{border-color:var(--accent);color:#fff;}
+  .arrow:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .vname{font-family:var(--mono);font-size:0.8rem;color:var(--phos);
+    letter-spacing:0.05em;min-width:150px;text-align:center;}
+  .hint{font-family:var(--mono);font-size:0.7rem;color:var(--faint);}
+  .raw{font-family:var(--mono);font-size:0.68rem;color:var(--faint);max-width:520px;
+    text-align:center;line-height:1.7;}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <span class="pill"><span class="led" id="led"></span><span id="srcTxt">connecting…</span></span>
+  <span id="supTxt"></span>
+</div>
+
+<div class="bezel">
+  <div class="screen" id="screen">
+    <div class="track" id="track">
+
+      <!-- 1 TACHO -->
+      <div class="view">
+        <!-- no title: the dial numbers would collide with it, and a tach
+             labelled "TACHO" is redundant — the nav bar names the view -->
+        <svg id="tachSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
+        <div class="center-abs">
+          <div class="big" style="font-size:21cqw" id="t_rpm">----</div>
+          <div class="unit">RPM</div>
+        </div>
+        <div class="sub"><span style="color:var(--faint)">KM/H</span> <b id="t_spd">--</b>
+          · <span style="color:var(--faint)">THR</span> <b id="t_thr">--</b>
+          · <span style="color:var(--faint)">PEAK</span> <b id="t_peak">--</b></div>
+      </div>
+
+      <!-- 2 ENGINE -->
+      <div class="view">
+        <div class="vtitle">ENGINE</div>
+        <svg id="engSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
+        <div class="center-abs">
+          <div class="big" style="font-size:20cqw" id="e_temp">--°</div>
+          <div class="unit">COOLANT · °C</div>
+          <div class="status" id="e_status"><span class="dotled"></span><span id="e_status_t">—</span></div>
+        </div>
+        <div class="sub"><span style="color:var(--faint)">BATT</span> <b id="e_volt">--</b>
+          · <span style="color:var(--faint)">IAT</span> <b id="e_iat">--</b></div>
+      </div>
+
+      <!-- 2 FUEL -->
+      <div class="view">
+        <div class="vtitle">FUEL ECONOMY</div>
+        <div class="big" id="f_now">--</div>
+        <div class="unit">L/100KM · NOW</div>
+        <div class="row2"><span><span class="k">avg</span> <span id="f_avg">--</span></span>
+          <span><span class="k">L/h</span> <span id="f_rate">--</span></span></div>
+        <div class="sub"><span style="color:var(--faint)">USED</span> <b id="f_used">--</b>
+          · <b id="f_cost">--</b></div>
+      </div>
+
+      <!-- 3 SCORE -->
+      <div class="view">
+        <div class="vtitle">DRIVING</div>
+        <svg id="scoreSvg" viewBox="0 0 200 200"
+             style="position:absolute;inset:0;margin:auto;width:68cqw;height:68cqw"></svg>
+        <div class="center-abs" style="top:-3cqw">
+          <div class="big" style="font-size:21cqw" id="s_total">--</div>
+          <div class="unit" id="s_coach">—</div>
+        </div>
+        <div class="sub"><span style="color:var(--faint)">sm</span> <b id="s_sm">-</b>
+          · <span style="color:var(--faint)">eco</span> <b id="s_ec">-</b>
+          · <span style="color:var(--faint)">calm</span> <b id="s_ca">-</b></div>
+      </div>
+
+      <!-- 4 TRIP -->
+      <div class="view">
+        <div class="vtitle">TRIP</div>
+        <div class="big sm" id="t_dist">--<span style="font-size:5.5cqw"> km</span></div>
+        <div class="tgrid" style="margin-top:3.4cqw">
+          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_time">--</div><div class="tl">TIME</div></div>
+          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_avg">--</div><div class="tl">AVG KM/H</div></div>
+          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_fuel">--</div><div class="tl">FUEL</div></div>
+          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_cost">--</div><div class="tl">COST</div></div>
+        </div>
+      </div>
+
+      <!-- 5 POWER -->
+      <div class="view">
+        <div class="vtitle">POWER</div>
+        <svg id="pwrSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
+        <div class="center-abs">
+          <div class="big" style="font-size:19cqw" id="p_kw">--</div>
+          <div class="unit"><span id="p_peak">kW</span></div>
+        </div>
+        <div class="sub"><span style="color:var(--faint)">RPM</span> <b id="p_rpm">--</b>
+          · <span style="color:var(--faint)">LOAD</span> <b id="p_load">--</b></div>
+      </div>
+
+      <!-- 6 THERMALS -->
+      <div class="view">
+        <div class="vtitle">THERMALS</div>
+        <div class="tgrid">
+          <div class="tcell"><div class="tv" id="th_cool">--</div><div class="tl">COOLANT</div></div>
+          <div class="tcell"><div class="tv" id="th_iat">--</div><div class="tl">INTAKE AIR</div></div>
+          <div class="tcell"><div class="tv" id="th_cat">--</div><div class="tl">CATALYST</div></div>
+          <div class="tcell"><div class="tv" id="th_rail">--</div><div class="tl">FUEL RAIL</div></div>
+        </div>
+        <div class="sub" id="th_oil" style="color:var(--faint)">oil temp — not on OBD</div>
+      </div>
+
+      <!-- 7 ELECTRICAL -->
+      <div class="view">
+        <div class="vtitle">ELECTRICAL</div>
+        <div class="big" id="el_v">--<span style="font-size:5.5cqw"> v</span></div>
+        <div style="width:62cqw;height:4.6cqw;border-radius:3cqw;margin-top:3cqw;position:relative;
+             background:linear-gradient(90deg,#ff3b30,#ffc53d 34%,#35e06b 52%,#35e06b 86%,#ffc53d)">
+          <div id="el_mk" style="position:absolute;top:-1.9cqw;left:0;width:1.5cqw;height:8.4cqw;
+               background:#fff;border-radius:1cqw;box-shadow:0 0 4px #000"></div>
+        </div>
+        <div class="status" id="el_status"><span class="dotled"></span><span id="el_status_t">—</span></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="navrow">
+  <button class="arrow" id="prev" aria-label="Previous view">‹</button>
+  <div class="vname" id="vname">Engine</div>
+  <button class="arrow" id="next" aria-label="Next view">›</button>
+</div>
+<div class="dots" id="dots"></div>
+<p class="hint">swipe · drag · ← → keys · tap a dot</p>
+<p class="raw" id="raw"></p>
+
+<script>
+const SVGNS='http://www.w3.org/2000/svg';
+function mk(t,a){const e=document.createElementNS(SVGNS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}
+function polar(cx,cy,r,deg){const a=deg*Math.PI/180;return [cx+r*Math.cos(a),cy+r*Math.sin(a)];}
+function arc(cx,cy,r,a0,a1){const p0=polar(cx,cy,r,a0),p1=polar(cx,cy,r,a1),lg=(a1-a0)>180?1:0;
+  return `M${p0[0].toFixed(2)},${p0[1].toFixed(2)} A${r},${r} 0 ${lg} 1 ${p1[0].toFixed(2)},${p1[1].toFixed(2)}`;}
+const fmt=(v,d=0,dash='--')=>(v===null||v===undefined||isNaN(v))?dash:Number(v).toFixed(d);
+
+/* ---- shared gauge geometry (declared before any gauge uses it) ---- */
+const CX=130,CY=130,R=104,START=135,SWEEP=270,TLO=40,THI=120;
+
+/* ---- tacho: 0-8000 rpm, ND3 redline zone from 7000 ---- */
+const RPM_MAX=8000, RPM_RED=7000;
+const tachSvg=document.getElementById('tachSvg');
+function rang(v){return START+SWEEP*Math.max(0,Math.min(1,v/RPM_MAX));}
+tachSvg.appendChild(mk('path',{d:arc(130,130,104,START,START+SWEEP),fill:'none',
+  stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
+tachSvg.appendChild(mk('path',{d:arc(130,130,104,rang(RPM_RED),START+SWEEP),fill:'none',
+  stroke:'rgba(255,59,48,0.35)','stroke-width':13,'stroke-linecap':'round'}));
+for(let i=0;i<=8;i++){
+  const a=START+SWEEP*i/8, o=polar(130,130,93,a), q=polar(130,130,84,a), lp=polar(130,130,71,a);
+  tachSvg.appendChild(mk('line',{x1:o[0],y1:o[1],x2:q[0],y2:q[1],
+    stroke:i>=7?'#ff5b52':'#7d818b','stroke-width':2.2}));
+  const tx=mk('text',{x:lp[0],y:lp[1],fill:i>=7?'#ff5b52':'#c9ccd4',
+    'font-family':'ui-monospace,monospace','font-size':13,'font-weight':700,
+    'text-anchor':'middle','dominant-baseline':'central'});
+  tx.textContent=i;tachSvg.appendChild(tx);
+}
+const tachFill=mk('path',{fill:'none','stroke-width':13,'stroke-linecap':'round',stroke:'#cfe0ff'});
+tachSvg.appendChild(tachFill);
+const tachNeedle=mk('line',{x1:130,y1:130,x2:130,y2:130,stroke:'#e1000a',
+  'stroke-width':3.4,'stroke-linecap':'round'});
+tachSvg.appendChild(tachNeedle);
+tachSvg.appendChild(mk('circle',{cx:130,cy:130,r:7.5,fill:'#1a1c22',stroke:'#e1000a','stroke-width':2.5}));
+
+/* ---- engine temp ring ---- */
+const engSvg=document.getElementById('engSvg');
+function tang(t){return START+SWEEP*Math.max(0,Math.min(1,(t-TLO)/(THI-TLO)));}
+engSvg.appendChild(mk('path',{d:arc(CX,CY,R,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
+[[40,60,'rgba(77,150,255,0.5)'],[60,80,'rgba(255,197,61,0.4)'],[80,105,'rgba(53,224,107,0.55)'],[105,120,'rgba(255,59,48,0.5)']]
+  .forEach(([a,b,c])=>engSvg.appendChild(mk('path',{d:arc(CX,CY,R,tang(a),tang(b)),fill:'none',stroke:c,'stroke-width':13})));
+const engMark=mk('line',{stroke:'#fff','stroke-width':3,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
+engSvg.appendChild(engMark);
+
+/* ---- power gauge ---- */
+const pwrSvg=document.getElementById('pwrSvg'),PMAX=140;
+function pang(v){return START+SWEEP*Math.max(0,Math.min(1,v/PMAX));}
+pwrSvg.appendChild(mk('path',{d:arc(CX,CY,R,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
+for(let i=0;i<=7;i++){const a=START+SWEEP*i/7,o=polar(CX,CY,R-11,a),q=polar(CX,CY,R-20,a),lp=polar(CX,CY,R-33,a);
+  pwrSvg.appendChild(mk('line',{x1:o[0],y1:o[1],x2:q[0],y2:q[1],stroke:'#7d818b','stroke-width':2}));
+  const tx=mk('text',{x:lp[0],y:lp[1],fill:'#c9ccd4','font-family':'ui-monospace,monospace','font-size':12,'font-weight':700,'text-anchor':'middle','dominant-baseline':'central'});
+  tx.textContent=i*20;pwrSvg.appendChild(tx);}
+const pwrFill=mk('path',{fill:'none',stroke:'#cfe0ff','stroke-width':13,'stroke-linecap':'round'});
+pwrSvg.appendChild(pwrFill);
+const pwrPeak=mk('line',{stroke:'var(--amber)','stroke-width':2.5,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
+pwrSvg.appendChild(pwrPeak);
+const pwrNeedle=mk('line',{stroke:'#e1000a','stroke-width':3.2,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
+pwrSvg.appendChild(pwrNeedle);
+const pwrHub=mk('circle',{cx:CX,cy:CY,r:7,fill:'#1a1c22',stroke:'#e1000a','stroke-width':2.4});
+pwrSvg.appendChild(pwrHub);
+
+/* ---- score ring ---- */
+const scoreSvg=document.getElementById('scoreSvg');
+scoreSvg.appendChild(mk('path',{d:arc(100,100,82,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':12,'stroke-linecap':'round'}));
+const scoreArc=mk('path',{fill:'none',stroke:'#35e06b','stroke-width':12,'stroke-linecap':'round',d:''});
+scoreSvg.appendChild(scoreArc);
+
+/* ---- carousel ---- */
+const track=document.getElementById('track'),screenEl=document.getElementById('screen');
+const N=track.children.length;let idx=0;
+const names=['Tacho','Engine','Fuel economy','Driving score','Trip','Power','Thermals','Electrical'];
+const dotsEl=document.getElementById('dots');
+for(let i=0;i<N;i++){const b=document.createElement('button');b.className='dot';b.dataset.i=i;
+  b.setAttribute('aria-label','View '+(i+1));dotsEl.appendChild(b);}
+function go(i){idx=(i+N)%N;track.style.transform=`translateX(${-idx*100}%)`;
+  [...dotsEl.children].forEach((d,k)=>d.classList.toggle('on',k===idx));
+  document.getElementById('vname').textContent=names[idx];}
+document.getElementById('next').onclick=()=>go(idx+1);
+document.getElementById('prev').onclick=()=>go(idx-1);
+dotsEl.onclick=e=>{const b=e.target.closest('.dot');if(b)go(+b.dataset.i);};
+addEventListener('keydown',e=>{if(e.key==='ArrowRight')go(idx+1);if(e.key==='ArrowLeft')go(idx-1);});
+let down=false,x0=0,moved=0;
+screenEl.addEventListener('pointerdown',e=>{down=true;x0=e.clientX;moved=0;screenEl.setPointerCapture(e.pointerId);});
+screenEl.addEventListener('pointermove',e=>{if(down)moved=e.clientX-x0;});
+const endDrag=()=>{if(!down)return;down=false;if(moved<-32)go(idx+1);else if(moved>32)go(idx-1);moved=0;};
+screenEl.addEventListener('pointerup',endDrag);screenEl.addEventListener('pointercancel',endDrag);
+go(0);
+
+/* ---- render from /data ---- */
+const $=id=>document.getElementById(id);
+function setStatus(el,txt,cls){el.className='status '+(cls||'');$(el.id+'_t').textContent=txt;}
+const mmss=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
+
+async function tick(){
+  let d;
+  try{ d=await (await fetch('/data',{cache:'no-store'})).json(); }
+  catch(e){ $('led').className='led err'; $('srcTxt').textContent='server gone'; return; }
+  const L=d.live,D=d.derived,S=d.score;
+
+  // header
+  const bad=/error|no OBD|disconnected/i.test(d.status);
+  $('led').className='led '+(bad?'err':(/live|replay/i.test(d.status)?'ok':'warn'));
+  $('srcTxt').textContent=d.status;
+  $('supTxt').textContent=d.supported?(d.supported+' PIDs'):'';
+
+  // 1 tacho
+  const rv=L.rpm, hasRpm=(rv!=null);
+  $('t_rpm').textContent=hasRpm?fmt(rv):'----';
+  const ra=rang(hasRpm?rv:0);
+  tachFill.setAttribute('d',hasRpm?arc(130,130,104,START,Math.max(START+0.5,ra)):'');
+  tachFill.setAttribute('stroke',(hasRpm&&rv>=RPM_RED)?'#ff3b30':'#cfe0ff');
+  const rn=polar(130,130,86,ra);
+  tachNeedle.setAttribute('opacity',hasRpm?1:0.25);
+  tachNeedle.setAttribute('x2',rn[0]);tachNeedle.setAttribute('y2',rn[1]);
+  $('t_spd').textContent=L.speed==null?'--':fmt(L.speed);
+  $('t_thr').textContent=L.throttle==null?'--':fmt(L.throttle)+'%';
+  $('t_peak').textContent=fmt(D.peak_rpm);
+
+  // 2 engine
+  $('e_temp').textContent=L.coolant==null?'--°':fmt(L.coolant)+'°';
+  if(L.coolant!=null){const a=tang(L.coolant),o=polar(CX,CY,R+9,a),q=polar(CX,CY,R-9,a);
+    engMark.setAttribute('x1',o[0]);engMark.setAttribute('y1',o[1]);
+    engMark.setAttribute('x2',q[0]);engMark.setAttribute('y2',q[1]);}
+  const wc={COLD:'cold',WARMING:'warn',READY:'ok',HOT:'err',UNKNOWN:''}[D.warm]||'';
+  setStatus($('e_status'),D.warm,wc);
+  $('e_volt').textContent=L.volts==null?'--':fmt(L.volts,1)+'v';
+  $('e_iat').textContent=L.intake==null?'--':fmt(L.intake)+'°';
+
+  // 2 fuel
+  $('f_now').textContent=D.econ_now==null?'--':fmt(D.econ_now,1);
+  $('f_avg').textContent=D.econ_avg==null?'--':fmt(D.econ_avg,1);
+  $('f_rate').textContent=L.fuel_rate==null?'--':fmt(L.fuel_rate,1);
+  $('f_used').textContent=fmt(D.fuel_l,2)+' L';
+  $('f_cost').textContent='RM '+fmt(D.cost_rm,2);
+
+  // 3 score
+  const tot=S.total;
+  $('s_total').textContent=tot==null?'--':fmt(tot);
+  $('s_coach').textContent=S.coach||'—';
+  const col=tot==null?'#23262e':(tot>=85?'#35e06b':tot>=70?'#ffc53d':'#ff3b30');
+  scoreArc.setAttribute('stroke',col);
+  scoreArc.setAttribute('d',arc(100,100,82,START,START+SWEEP*Math.max(0,Math.min(100,tot||0))/100));
+  $('s_sm').textContent=S.smooth==null?'-':fmt(S.smooth);
+  $('s_ec').textContent=S.econ==null?'-':fmt(S.econ);
+  $('s_ca').textContent=S.calm==null?'-':fmt(S.calm);
+
+  // 4 trip
+  $('t_dist').innerHTML=fmt(D.dist_km,2)+'<span style="font-size:5.5cqw"> km</span>';
+  $('t_time').textContent=mmss(D.elapsed_s);
+  $('t_avg').textContent=fmt(D.avg_speed);
+  $('t_fuel').textContent=fmt(D.fuel_l,2)+'L';
+  $('t_cost').textContent='RM'+fmt(D.cost_rm,2);
+
+  // 5 power — needs torque PIDs; degrade honestly when the car isn't sending them
+  const kw=L.power_kw, hasPwr=(kw!=null);
+  $('p_kw').textContent=hasPwr?fmt(kw):'n/a';
+  $('p_kw').style.fontSize=hasPwr?'19cqw':'11cqw';
+  $('p_peak').textContent=hasPwr?('kW · peak '+fmt(D.peak_kw)):'no torque data';
+  const pa=pang(hasPwr?kw:0);
+  pwrFill.setAttribute('d',hasPwr?arc(CX,CY,R,START,Math.max(START+0.5,pa)):'');
+  const np=polar(CX,CY,R-16,pa);
+  pwrNeedle.setAttribute('opacity',hasPwr?1:0);
+  pwrHub.setAttribute('opacity',hasPwr?1:0);
+  pwrNeedle.setAttribute('x2',np[0]);pwrNeedle.setAttribute('y2',np[1]);
+  const ppa=pang(D.peak_kw||0),pp1=polar(CX,CY,R-6,ppa),pp2=polar(CX,CY,R-16,ppa);
+  pwrPeak.setAttribute('opacity',(hasPwr&&D.peak_kw>0)?1:0);
+  pwrPeak.setAttribute('x1',pp1[0]);pwrPeak.setAttribute('y1',pp1[1]);
+  pwrPeak.setAttribute('x2',pp2[0]);pwrPeak.setAttribute('y2',pp2[1]);
+  $('p_rpm').textContent=L.rpm==null?'--':fmt(L.rpm);
+  $('p_load').textContent=L.load==null?'--':fmt(L.load)+'%';
+
+  // 6 thermals
+  $('th_cool').textContent=L.coolant==null?'--':fmt(L.coolant)+'°';
+  $('th_iat').textContent=L.intake==null?'--':fmt(L.intake)+'°';
+  $('th_cat').textContent=L.catalyst==null?'--':fmt(L.catalyst)+'°';
+  $('th_rail').textContent=L.fuel_rail_temp==null?'--':fmt(L.fuel_rail_temp)+'°';
+  $('th_oil').textContent=L.oil==null?'oil temp — not on OBD':'oil '+fmt(L.oil)+'°';
+
+  // 7 electrical
+  $('el_v').innerHTML=(L.volts==null?'--':fmt(L.volts,1))+'<span style="font-size:5.5cqw"> v</span>';
+  const frac=Math.max(0,Math.min(1,((L.volts||11)-11)/(15.5-11)));
+  $('el_mk').style.left='calc(62cqw * '+frac.toFixed(3)+' - 0.75cqw)';
+  const cc={CHARGING:'ok','NOT CHARGING':'warn',LOW:'err',HIGH:'err',UNKNOWN:''}[D.charge]||'';
+  setStatus($('el_status'),D.charge,cc);
+
+  $('raw').textContent=`rpm ${fmt(L.rpm)} · spd ${fmt(L.speed)} · thr ${fmt(L.throttle)}% · `+
+    `harsh ${S.harsh} · moving ${mmss(D.moving_s)} · peak ${fmt(D.peak_rpm)} rpm`;
+}
+tick();setInterval(tick,250);
+</script>
+</body>
+</html>

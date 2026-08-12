@@ -309,6 +309,50 @@ def parse_mode01(text, pid):
     return None
 
 
+def parse_mode09(text, pid):
+    """Parse a mode-09 (vehicle info) reply, returning its payload bytes.
+
+    Mode 09 answers are multi-frame: the VIN arrives as several `49 02 <n>`
+    lines, each carrying a slice of the string. We concatenate every slice in
+    arrival order, so the caller sees one continuous payload.
+
+    Frame counters and ISO-TP padding are dropped here rather than by the
+    caller: any byte below 0x20 cannot be part of a printable field, so this
+    stays correct without needing to know the field's layout.
+    """
+    b = _hex_bytes(text)
+    out = []
+    i = 0
+    n = len(b)
+    seen_header = False
+    while i < n - 1:
+        if b[i] == 0x49 and b[i + 1] == pid:
+            seen_header = True
+            i += 2
+            continue
+        if seen_header and b[i] >= 0x20:
+            out.append(b[i])
+        i += 1
+    if seen_header and i < n and b[i] >= 0x20:
+        out.append(b[i])
+    return out if seen_header else None
+
+
+def keys_for(supported):
+    """Channel keys the car can supply, from its supported-PID set.
+
+    Turns the raw PID numbers the adapter reports into our own key namespace,
+    which is what the views ask about. PIDs we cannot decode are ignored —
+    the car offering one does us no good if we can't read it.
+    """
+    out = set()
+    for pid in supported or ():
+        entry = PIDS.get(pid)
+        if entry:
+            out.add(entry[0])
+    return out
+
+
 def decode(pid, data):
     """Decode data bytes for a pid. Returns (key, value) or None."""
     entry = PIDS.get(pid)

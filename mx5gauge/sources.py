@@ -6,7 +6,7 @@ is called as readings arrive, plus a `.status` string for the UI.
 import asyncio
 import time
 
-from . import brc, pids
+from . import brc, pids, vehicle
 
 # ---------------------------------------------------------------------------
 # Replay: play a Car Scanner capture back as if it were live
@@ -26,7 +26,8 @@ class ReplaySource(object):
 
     kind = 'replay'
 
-    def __init__(self, path, speed=4.0, max_gap=2.0, loop=True):
+    def __init__(self, path, speed=4.0, max_gap=2.0, loop=True,
+                 make=None, model=None):
         self.path = path
         self.speed = speed
         self.max_gap = max_gap
@@ -42,10 +43,20 @@ class ReplaySource(object):
             self.header = header
             self.rows = [(t, REPLAY_MAP[sid], v) for (t, sid, v) in rows
                          if sid in REPLAY_MAP]
+        # what this car actually reported is exactly what the file contains —
+        # no need to guess, and it lets views degrade the same way they will
+        # on a live car that lacks a channel
+        self.supported_keys = sorted(set(k for (_t, k, _v) in self.rows))
+        base = vehicle.from_capture_header(self.header)
+        self.car = vehicle.identify(make=make or base.get('make'),
+                                    model=model or base.get('model'),
+                                    year=base.get('year'), source='capture')
         self.status = 'replay: %s' % path.split('/')[-1]
 
     async def run(self, on_sample):
         lap = 0.0
+        on_sample('_car', self.car)
+        on_sample('_supported_keys', self.supported_keys)
         while True:
             prev = None
             for ts, key, val in self.rows:
@@ -139,13 +150,30 @@ class BleElm327(object):
                 break
         return supported
 
+    async def read_vin(self):
+        """Read the VIN via mode 09 PID 02. Returns '' if the car won't say.
+
+        Wrapped in a broad try: mode 09 is optional, and a car that ignores it
+        must not take the whole connection down with it — we simply carry on
+        without an identity.
+        """
+        try:
+            reply = await self.cmd('0902', timeout=4.0)
+            data = pids.parse_mode09(reply, 0x02)
+            if not data:
+                return ''
+            return ''.join(chr(c) for c in data)
+        except Exception:
+            return ''
+
 
 class LiveSource(object):
     """Connects to the adapter over BLE and polls PIDs continuously."""
 
     kind = 'live'
 
-    def __init__(self, name_hint='vlinker', address=None, verbose=False):
+    def __init__(self, name_hint='vlinker', address=None, verbose=False,
+                 make=None, model=None):
         self.name_hint = (name_hint or '').lower()
         self.address = address
         self.verbose = verbose
@@ -153,6 +181,10 @@ class LiveSource(object):
         self.supported = set()
         self.reconnects = 0
         self._known = None          # cached device, so we can skip the scan
+        # user-supplied identity; overrides whatever the VIN suggests
+        self.make_hint = make
+        self.model_hint = model
+        self.car = vehicle.identify(make=make, model=model, source='config')
 
     def _log(self, msg):
         if self.verbose:
@@ -247,6 +279,23 @@ class LiveSource(object):
                     cycle = pids.build_poll_cycle(self.supported)
                     if not cycle:
                         cycle = [0x0C, 0x0D, 0x05, 0x11]     # fall back to basics
+
+                    # identify the car once per connection: the VIN gives the
+                    # make and model year, the PID set gives the channels
+                    self.status = 'identifying car'
+                    vin = await elm.read_vin()
+                    self.car = vehicle.identify(
+                        vin=vin, make=self.make_hint, model=self.model_hint,
+                        source='vin' if vehicle.valid_vin(
+                            vehicle.clean_vin(vin)) else 'config')
+                    self._log('car: %s (vin %s)'
+                              % (self.car['label'], self.car['vin'] or 'n/a'))
+                    on_sample('_car', self.car)
+                    # ATRV is an adapter command rather than a PID, so battery
+                    # voltage is always available even though no PID advertises it
+                    on_sample('_supported_keys',
+                              sorted(pids.keys_for(self.supported) | {'volts'}))
+
                     suffix = '' if not self.reconnects else ' · %d reconnects' % self.reconnects
                     self.status = 'live (%d PIDs)%s' % (len(self.supported), suffix)
                     on_sample('_supported', len(self.supported))

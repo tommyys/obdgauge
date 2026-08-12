@@ -3,7 +3,7 @@ import math
 import threading
 import time
 
-from . import metrics
+from . import metrics, vehicle
 
 # Physically plausible range per channel. Anything outside is dropped rather
 # than stored: a resync glitch in a capture (or a mangled BLE reply) can yield
@@ -97,14 +97,17 @@ class Gauge(object):
         now = time.time()
         if t is None:
             t = now
-        if not key.startswith('_') and not plausible(key, value):
+        meta = key.startswith('_')
+        if not meta and not plausible(key, value):
             self.rejected += 1
             return
-        # persist first, so nothing is lost even if the maths below throws
-        if self.recorder is not None:
+        # persist first, so nothing is lost even if the maths below throws.
+        # `_`-prefixed keys are metadata (car identity, PID lists), not
+        # readings — they belong in the session summary, not the sample log.
+        if self.recorder is not None and not meta:
             self.recorder.write(key, value, t)
         with self.lock:
-            if key.startswith('_'):
+            if meta:
                 self.values[key] = value
                 return
             self.values[key] = value
@@ -201,4 +204,9 @@ class Gauge(object):
                 },
                 'fresh': fresh,
                 'supported': v.get('_supported'),
+                # what car this is, and which channels it can actually feed —
+                # the views use these to scale their dials and to say "n/a"
+                # instead of drawing a convincing zero
+                'car': v.get('_car') or vehicle.identify(),
+                'channels': v.get('_supported_keys'),
             }

@@ -116,6 +116,12 @@ async def main():
                     help='list nearby BLE devices and exit (diagnostics)')
     ap.add_argument('--no-record', action='store_true',
                     help='do NOT write a CSV log of this session')
+    ap.add_argument('--make', default=None,
+                    help='override the car make shown on the display '
+                         '(otherwise read from the VIN)')
+    ap.add_argument('--model', default=None,
+                    help='car model for the display, e.g. "MX-5". A VIN cannot '
+                         'give a model name, so set it here to see it on screen.')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
 
@@ -142,7 +148,8 @@ async def main():
 
     if args.live:
         src = sources.LiveSource(name_hint=args.name, address=args.address,
-                                 verbose=args.verbose)
+                                 verbose=args.verbose,
+                                 make=args.make, model=args.model)
     else:
         path = resolve_replay(args.replay)
         if not path:
@@ -152,7 +159,8 @@ async def main():
         if not os.path.exists(path):
             print('No such capture: %s' % path)
             return 2
-        src = sources.ReplaySource(path, speed=args.speed)
+        src = sources.ReplaySource(path, speed=args.speed,
+                                   make=args.make, model=args.model)
 
     g.source_kind = src.kind
     g.status = src.status
@@ -170,10 +178,17 @@ async def main():
         print('\n  !! %s\n' % exc)
         return 2
     url = 'http://127.0.0.1:%d' % args.port
-    print('\n  MX-5 gauge simulator')
+    print('\n  OBD gauge simulator')
     print('  mode   : %s' % src.kind)
+    car = getattr(src, 'car', None)
+    if car:
+        bits = car['label']
+        if car.get('year'):
+            bits += ' · %s' % car['year']
+        print('  car    : %s  (redline %d rpm)' % (bits, car['rpm_red']))
     if src.kind == 'replay':
         print('  file   : %s  (%gx speed)' % (os.path.basename(src.path), args.speed))
+        print('  channels: %d reported in this capture' % len(src.supported_keys))
     else:
         print('  adapter: scanning for "%s" — engine on, laptop in the car' % args.name)
     if rec.enabled:

@@ -318,15 +318,9 @@ async function tick(){
   $('srcTxt').textContent=d.status;
   $('supTxt').textContent=d.supported?(d.supported+' PIDs'):'';
 
-  // 1 tacho
-  const rv=L.rpm, hasRpm=(rv!=null);
-  $('t_rpm').textContent=hasRpm?fmt(rv):'----';
-  const ra=rang(hasRpm?rv:0);
-  tachFill.setAttribute('d',hasRpm?arc(130,130,104,START,Math.max(START+0.5,ra)):'');
-  tachFill.setAttribute('stroke',(hasRpm&&rv>=RPM_RED)?'#ff3b30':'#cfe0ff');
-  const rn=polar(130,130,86,ra);
-  tachNeedle.setAttribute('opacity',hasRpm?1:0.25);
-  tachNeedle.setAttribute('x2',rn[0]);tachNeedle.setAttribute('y2',rn[1]);
+  // 1 tacho — needle is animated separately at 60fps (see drawTacho below);
+  // here we only publish the new target and the slow-moving text
+  tachTarget = (L.rpm==null) ? null : L.rpm;
   $('t_spd').textContent=L.speed==null?'--':fmt(L.speed);
   $('t_thr').textContent=L.throttle==null?'--':fmt(L.throttle)+'%';
   $('t_peak').textContent=fmt(D.peak_rpm);
@@ -401,7 +395,37 @@ async function tick(){
   $('raw').textContent=`rpm ${fmt(L.rpm)} · spd ${fmt(L.speed)} · thr ${fmt(L.throttle)}% · `+
     `harsh ${S.harsh} · moving ${mmss(D.moving_s)} · peak ${fmt(D.peak_rpm)} rpm`;
 }
-tick();setInterval(tick,250);
+/* ---- tacho animation --------------------------------------------------
+   OBD can only answer so fast: each PID is a separate round trip to the ECU
+   (~40-90ms), so rpm arrives roughly 4x a second no matter how quick the
+   Bluetooth link is. Snapping the needle to those samples looks stuttery, so
+   the needle is animated at display rate and eased toward the latest reading.
+   This is presentation only — the recorded log keeps the raw samples.        */
+let tachTarget = null;      // latest rpm from the car (null = no data)
+let tachShown  = 0;         // what the needle is currently showing
+
+function drawTacho(){
+  const has = tachTarget !== null;
+  if (has) {
+    // exponential ease: fast enough to feel live, smooth enough to not jitter
+    tachShown += (tachTarget - tachShown) * 0.22;
+    if (Math.abs(tachTarget - tachShown) < 1) tachShown = tachTarget;
+  }
+  const v  = has ? tachShown : 0;
+  const ra = rang(v);
+  const rn = polar(130,130,86,ra);
+  tachFill.setAttribute('d', has ? arc(130,130,104,START,Math.max(START+0.5,ra)) : '');
+  tachFill.setAttribute('stroke', (has && v>=RPM_RED) ? '#ff3b30' : '#cfe0ff');
+  tachNeedle.setAttribute('opacity', has ? 1 : 0.25);
+  tachNeedle.setAttribute('x2', rn[0]); tachNeedle.setAttribute('y2', rn[1]);
+  const el = $('t_rpm');
+  if (el) el.textContent = has ? String(Math.round(v/10)*10) : '----';
+  requestAnimationFrame(drawTacho);
+}
+requestAnimationFrame(drawTacho);
+
+/* Poll faster than the car answers, so the UI never adds latency of its own. */
+tick();setInterval(tick,100);
 </script>
 </body>
 </html>

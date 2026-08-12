@@ -30,10 +30,16 @@ def make_handler(gauge):
             if path == '/data':
                 self._send(200, json.dumps(gauge.snapshot()), 'application/json')
                 return
-            if path in ('/', '/index.html'):
-                fn = os.path.join(WEB_DIR, 'index.html')
+            if path == '/':
+                path = '/index.html'
+            # serve any file in web/ — basename only, so '..' cannot escape
+            name = os.path.basename(path)
+            fn = os.path.join(WEB_DIR, name)
+            if name and os.path.isfile(fn):
+                ctype = 'text/html; charset=utf-8' if name.endswith('.html') \
+                    else 'text/plain; charset=utf-8'
                 with open(fn, 'rb') as fh:
-                    self._send(200, fh.read(), 'text/html; charset=utf-8')
+                    self._send(200, fh.read(), ctype)
                 return
             self._send(404, 'not found', 'text/plain')
 

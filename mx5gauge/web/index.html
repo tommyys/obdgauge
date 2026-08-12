@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MX-5 Gauge — Simulator</title>
+<title>OBD Gauge — Simulator</title>
 <style>
   :root{
     --bg:#0b0a0c;--panel:#151318;--panel-2:#1b181e;
@@ -42,7 +42,14 @@
     background:radial-gradient(circle at 50% 42%,#14171d,#0a0b0e 72%);
     container-type:inline-size;touch-action:pan-y;cursor:grab;}
   .screen:active{cursor:grabbing;}
-  .track{display:flex;height:100%;transition:transform .3s cubic-bezier(.4,0,.2,1);}
+  /* rpm-reactive backdrop. Sits on the screen itself rather than inside a
+     view, so the colour persists while the carousel slides. z-index 0 + first
+     in the DOM puts it under the views (which are positioned) but over the
+     screen's own gradient — a negative z-index would escape .screen, which is
+     not a stacking context, and vanish behind the bezel. */
+  .glow{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;
+    border-radius:50%;}
+  .track{display:flex;height:100%;position:relative;transition:transform .3s cubic-bezier(.4,0,.2,1);}
   .view{flex:0 0 100%;height:100%;position:relative;display:flex;flex-direction:column;
     align-items:center;justify-content:center;font-family:var(--mono);padding:11cqw;}
   /* sits inside the gauge ring so it never collides with the arc */
@@ -67,6 +74,35 @@
   .status.cold{border-color:var(--blue);color:var(--blue);background:rgba(77,150,255,0.12);}
   .status.err{border-color:var(--red);color:var(--red);background:rgba(255,59,48,0.12);}
   .dotled{width:3.2cqw;height:3.2cqw;border-radius:50%;background:currentColor;}
+  /* car banner — lives on the display itself, as it will on the real device.
+     It sits over whatever the view draws (tacho digits, gauge arcs), so it
+     carries its own gradient scrim: strongest behind the text, fading out
+     before the view titles at 18cqw. z-index clears the "n/a" overlay so the
+     car is always named, even on a view this car can't feed. */
+  .carbar{position:absolute;top:0;left:0;right:0;padding:5.4cqw 0 4.5cqw;
+    text-align:center;z-index:6;pointer-events:none;
+    font-family:var(--mono);line-height:1.15;
+    /* an ellipse, not a full-width band: it darkens directly behind the text
+       but fades horizontally too, so the gauge ring's shoulders either side
+       stay at full brightness */
+    background:radial-gradient(ellipse 48% 100% at 50% 0%,
+      rgba(8,9,12,0.96) 0%,rgba(8,9,12,0.90) 42%,
+      rgba(8,9,12,0.52) 72%,rgba(8,9,12,0) 100%);}
+  .carbar .cmake{font-size:3.6cqw;letter-spacing:0.2em;color:var(--phos);opacity:0.92;}
+  .carbar .cmeta{font-size:2.7cqw;letter-spacing:0.16em;color:var(--muted);margin-top:0.3cqw;}
+
+  /* a view whose channels this car doesn't provide: dimmed, with an honest
+     label instead of a plausible-looking zero */
+  .view.unavail > *:not(.na){opacity:0.10;filter:grayscale(1);}
+  .na{position:absolute;inset:0;z-index:5;display:none;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:16cqw;
+    /* scrim, so the dimmed dial behind doesn't fight the message */
+    background:radial-gradient(circle at 50% 50%,
+      rgba(10,11,14,0.94) 42%,rgba(10,11,14,0.55) 100%);}
+  .view.unavail .na{display:flex;}
+  .na .nat{font-size:5.2cqw;letter-spacing:0.18em;color:var(--muted);}
+  .na .nas{font-size:3.1cqw;letter-spacing:0.06em;color:var(--faint);margin-top:1.8cqw;line-height:1.5;}
+
   .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:3.6cqw 8cqw;margin-top:5cqw;}
   .tcell{text-align:center;}
   .tcell .tv{font-size:7.4cqw;font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;}
@@ -98,10 +134,16 @@
 
 <div class="bezel">
   <div class="screen" id="screen">
+    <div class="glow" id="glow"></div>
+    <div class="carbar">
+      <div class="cmake" id="c_make">OBD-II</div>
+      <div class="cmeta" id="c_meta"></div>
+    </div>
     <div class="track" id="track">
 
       <!-- 1 TACHO -->
-      <div class="view">
+      <div class="view" data-needs="rpm">
+        <div class="na"><div class="nat">NO RPM</div><div class="nas">this car is not reporting engine speed</div></div>
         <!-- no title: the dial numbers would collide with it, and a tach
              labelled "TACHO" is redundant — the nav bar names the view -->
         <svg id="tachSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
@@ -115,7 +157,8 @@
       </div>
 
       <!-- 2 ENGINE -->
-      <div class="view">
+      <div class="view" data-needs="coolant,volts,ctrl_volt,intake">
+        <div class="na"><div class="nat">NO ENGINE DATA</div><div class="nas">this car reports neither coolant nor voltage</div></div>
         <div class="vtitle">ENGINE</div>
         <svg id="engSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
         <div class="center-abs">
@@ -128,7 +171,8 @@
       </div>
 
       <!-- 2 FUEL -->
-      <div class="view">
+      <div class="view" data-needs="fuel_rate">
+        <div class="na"><div class="nat">NO FUEL RATE</div><div class="nas">this car does not report engine fuel rate over OBD</div></div>
         <div class="vtitle">FUEL ECONOMY</div>
         <div class="big" id="f_now">--</div>
         <div class="unit">L/100KM · NOW</div>
@@ -139,7 +183,8 @@
       </div>
 
       <!-- 3 SCORE -->
-      <div class="view">
+      <div class="view" data-needs="rpm,speed,throttle">
+        <div class="na"><div class="nat">NO DRIVE DATA</div><div class="nas">scoring needs rpm, speed or throttle</div></div>
         <div class="vtitle">DRIVING</div>
         <svg id="scoreSvg" viewBox="0 0 200 200"
              style="position:absolute;inset:0;margin:auto;width:68cqw;height:68cqw"></svg>
@@ -153,7 +198,8 @@
       </div>
 
       <!-- 4 TRIP -->
-      <div class="view">
+      <div class="view" data-needs="speed">
+        <div class="na"><div class="nat">NO SPEED</div><div class="nas">this car does not report vehicle speed</div></div>
         <div class="vtitle">TRIP</div>
         <div class="big sm" id="t_dist">--<span style="font-size:5.5cqw"> km</span></div>
         <div class="tgrid" style="margin-top:3.4cqw">
@@ -165,7 +211,8 @@
       </div>
 
       <!-- 5 POWER -->
-      <div class="view">
+      <div class="view" data-needs="act_torque,ref_torque">
+        <div class="na"><div class="nat">NO TORQUE DATA</div><div class="nas">power needs actual + reference torque, which this car does not report</div></div>
         <div class="vtitle">POWER</div>
         <svg id="pwrSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
         <div class="center-abs">
@@ -177,7 +224,8 @@
       </div>
 
       <!-- 6 THERMALS -->
-      <div class="view">
+      <div class="view" data-needs="coolant,intake,cat_b1s1,catalyst,fuel_rail_temp">
+        <div class="na"><div class="nat">NO TEMP SENSORS</div><div class="nas">this car reports none of the temperature channels</div></div>
         <div class="vtitle">THERMALS</div>
         <div class="tgrid">
           <div class="tcell"><div class="tv" id="th_cool">--</div><div class="tl">COOLANT</div></div>
@@ -189,7 +237,8 @@
       </div>
 
       <!-- 7 ELECTRICAL -->
-      <div class="view">
+      <div class="view" data-needs="ctrl_volt,volts">
+        <div class="na"><div class="nat">NO VOLTAGE</div><div class="nas">no control-module voltage from this car or adapter</div></div>
         <div class="vtitle">ELECTRICAL</div>
         <div class="big" id="el_v">--<span style="font-size:5.5cqw"> v</span></div>
         <div style="width:62cqw;height:4.6cqw;border-radius:3cqw;margin-top:3cqw;position:relative;
@@ -224,23 +273,34 @@ const fmt=(v,d=0,dash='--')=>(v===null||v===undefined||isNaN(v))?dash:Number(v).
 /* ---- shared gauge geometry (declared before any gauge uses it) ---- */
 const CX=130,CY=130,R=104,START=135,SWEEP=270,TLO=40,THI=120;
 
-/* ---- tacho: 0-8000 rpm, ND3 redline zone from 7000 ---- */
-const RPM_MAX=8000, RPM_RED=7000;
+/* ---- tacho ------------------------------------------------------------
+   Scale comes from the car profile, not a constant: an MX-5's 8000/7000 dial
+   would misread badly on a diesel. The static ring/ticks live in their own
+   group so they can be redrawn when we learn what car this is.          */
+let RPM_MAX=8000, RPM_RED=7000;
 const tachSvg=document.getElementById('tachSvg');
 function rang(v){return START+SWEEP*Math.max(0,Math.min(1,v/RPM_MAX));}
-tachSvg.appendChild(mk('path',{d:arc(130,130,104,START,START+SWEEP),fill:'none',
-  stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
-tachSvg.appendChild(mk('path',{d:arc(130,130,104,rang(RPM_RED),START+SWEEP),fill:'none',
-  stroke:'rgba(255,59,48,0.35)','stroke-width':13,'stroke-linecap':'round'}));
-for(let i=0;i<=8;i++){
-  const a=START+SWEEP*i/8, o=polar(130,130,93,a), q=polar(130,130,84,a), lp=polar(130,130,71,a);
-  tachSvg.appendChild(mk('line',{x1:o[0],y1:o[1],x2:q[0],y2:q[1],
-    stroke:i>=7?'#ff5b52':'#7d818b','stroke-width':2.2}));
-  const tx=mk('text',{x:lp[0],y:lp[1],fill:i>=7?'#ff5b52':'#c9ccd4',
-    'font-family':'ui-monospace,monospace','font-size':13,'font-weight':700,
-    'text-anchor':'middle','dominant-baseline':'central'});
-  tx.textContent=i;tachSvg.appendChild(tx);
+const tachStatic=mk('g',{});tachSvg.appendChild(tachStatic);
+function clearNode(n){while(n.firstChild)n.removeChild(n.firstChild);}
+function buildTacho(){
+  clearNode(tachStatic);
+  tachStatic.appendChild(mk('path',{d:arc(130,130,104,START,START+SWEEP),fill:'none',
+    stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
+  tachStatic.appendChild(mk('path',{d:arc(130,130,104,rang(RPM_RED),START+SWEEP),fill:'none',
+    stroke:'rgba(255,59,48,0.35)','stroke-width':13,'stroke-linecap':'round'}));
+  // a tick per 1000 rpm, placed by value so a 6500 redline still lands right
+  for(let i=0;i*1000<=RPM_MAX;i++){
+    const rpm=i*1000, a=rang(rpm), red=rpm>=RPM_RED;
+    const o=polar(130,130,93,a), q=polar(130,130,84,a), lp=polar(130,130,71,a);
+    tachStatic.appendChild(mk('line',{x1:o[0],y1:o[1],x2:q[0],y2:q[1],
+      stroke:red?'#ff5b52':'#7d818b','stroke-width':2.2}));
+    const tx=mk('text',{x:lp[0],y:lp[1],fill:red?'#ff5b52':'#c9ccd4',
+      'font-family':'ui-monospace,monospace','font-size':13,'font-weight':700,
+      'text-anchor':'middle','dominant-baseline':'central'});
+    tx.textContent=i;tachStatic.appendChild(tx);
+  }
 }
+buildTacho();
 const tachFill=mk('path',{fill:'none','stroke-width':13,'stroke-linecap':'round',stroke:'#cfe0ff'});
 tachSvg.appendChild(tachFill);
 const tachNeedle=mk('line',{x1:130,y1:130,x2:130,y2:130,stroke:'#e1000a',
@@ -258,13 +318,22 @@ const engMark=mk('line',{stroke:'#fff','stroke-width':3,'stroke-linecap':'round'
 engSvg.appendChild(engMark);
 
 /* ---- power gauge ---- */
-const pwrSvg=document.getElementById('pwrSvg'),PMAX=140;
+const pwrSvg=document.getElementById('pwrSvg');
+let PMAX=140;
 function pang(v){return START+SWEEP*Math.max(0,Math.min(1,v/PMAX));}
-pwrSvg.appendChild(mk('path',{d:arc(CX,CY,R,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
-for(let i=0;i<=7;i++){const a=START+SWEEP*i/7,o=polar(CX,CY,R-11,a),q=polar(CX,CY,R-20,a),lp=polar(CX,CY,R-33,a);
-  pwrSvg.appendChild(mk('line',{x1:o[0],y1:o[1],x2:q[0],y2:q[1],stroke:'#7d818b','stroke-width':2}));
-  const tx=mk('text',{x:lp[0],y:lp[1],fill:'#c9ccd4','font-family':'ui-monospace,monospace','font-size':12,'font-weight':700,'text-anchor':'middle','dominant-baseline':'central'});
-  tx.textContent=i*20;pwrSvg.appendChild(tx);}
+const pwrStatic=mk('g',{});pwrSvg.appendChild(pwrStatic);
+function buildPower(){
+  clearNode(pwrStatic);
+  pwrStatic.appendChild(mk('path',{d:arc(CX,CY,R,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
+  // round the label step to a multiple of 20 kW so the numbers stay readable
+  // whatever the car's ceiling is (140 -> 20s, 250 -> 40s)
+  const step=Math.max(20,Math.ceil(PMAX/7/20)*20);
+  for(let v=0;v<=PMAX;v+=step){const a=pang(v),o=polar(CX,CY,R-11,a),q=polar(CX,CY,R-20,a),lp=polar(CX,CY,R-33,a);
+    pwrStatic.appendChild(mk('line',{x1:o[0],y1:o[1],x2:q[0],y2:q[1],stroke:'#7d818b','stroke-width':2}));
+    const tx=mk('text',{x:lp[0],y:lp[1],fill:'#c9ccd4','font-family':'ui-monospace,monospace','font-size':12,'font-weight':700,'text-anchor':'middle','dominant-baseline':'central'});
+    tx.textContent=v;pwrStatic.appendChild(tx);}
+}
+buildPower();
 const pwrFill=mk('path',{fill:'none',stroke:'#cfe0ff','stroke-width':13,'stroke-linecap':'round'});
 pwrSvg.appendChild(pwrFill);
 const pwrPeak=mk('line',{stroke:'var(--amber)','stroke-width':2.5,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
@@ -306,6 +375,44 @@ const $=id=>document.getElementById(id);
 function setStatus(el,txt,cls){el.className='status '+(cls||'');$(el.id+'_t').textContent=txt;}
 const mmss=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
 
+/* ---- universal: adapt to whatever car is plugged in --------------------
+   Two things change per car: the dial scales (from its profile) and which
+   views can show anything at all (from the channels it reports).        */
+let shownCar='';
+function applyCar(car){
+  if(!car) return;
+  const key=[car.label,car.year,car.rpm_max,car.rpm_red,car.power_max].join('|');
+  if(key===shownCar) return;
+  shownCar=key;
+  $('c_make').textContent=car.label||'OBD-II';
+  // the small line under the make: model year when the VIN gave us one,
+  // otherwise say where the identity came from rather than leave it blank
+  const meta=[];
+  if(car.year) meta.push(car.year);
+  if(!car.known) meta.push(car.vin?'UNRECOGNISED VIN':'GENERIC PROFILE');
+  else if(!car.year&&car.source==='capture') meta.push('FROM CAPTURE');
+  $('c_meta').textContent=meta.join(' · ');
+  if(car.rpm_max&&(car.rpm_max!==RPM_MAX||car.rpm_red!==RPM_RED)){
+    RPM_MAX=car.rpm_max;RPM_RED=car.rpm_red;buildTacho();
+  }
+  if(car.power_max&&car.power_max!==PMAX){PMAX=car.power_max;buildPower();}
+}
+
+let shownChans='';
+function applyChannels(chans){
+  const key=(chans||[]).join(',');
+  if(key===shownChans) return;
+  shownChans=key;
+  // null = we haven't identified the car yet; assume everything works rather
+  // than flashing "n/a" across every view during connect
+  const have=chans?new Set(chans):null;
+  [...track.children].forEach(v=>{
+    const needs=(v.dataset.needs||'').split(',').filter(Boolean);
+    if(!needs.length||!have){v.classList.remove('unavail');return;}
+    v.classList.toggle('unavail',!needs.some(k=>have.has(k)));
+  });
+}
+
 async function tick(){
   let d;
   try{ d=await (await fetch('/data',{cache:'no-store'})).json(); }
@@ -315,12 +422,20 @@ async function tick(){
   // header
   const bad=/error|no OBD|disconnected/i.test(d.status);
   $('led').className='led '+(bad?'err':(/live|replay/i.test(d.status)?'ok':'warn'));
-  $('srcTxt').textContent=d.status;
-  $('supTxt').textContent=d.supported?(d.supported+' PIDs'):'';
+  // say so when rpm is synthetic — a preview must never read as real data
+  $('srcTxt').textContent=d.status
+    + (RPM_SWEEP ? ' · RPM SWEEP (preview)'
+                 : (RPM_FORCE!=null ? ' · RPM PINNED (preview)' : ''));
+  $('supTxt').textContent=d.supported?(d.supported+' PIDs'):
+    (d.channels?(d.channels.length+' channels'):'');
+  applyCar(d.car);
+  applyChannels(d.channels);
 
   // 1 tacho — needle is animated separately at 60fps (see drawTacho below);
   // here we only publish the new target and the slow-moving text
-  tachTarget = (L.rpm==null) ? null : L.rpm;
+  // a sweep drives rpm from the animation loop instead, at display rate
+  if (!RPM_SWEEP)
+    tachTarget = (RPM_FORCE!=null) ? RPM_FORCE : ((L.rpm==null) ? null : L.rpm);
   $('t_spd').textContent=L.speed==null?'--':fmt(L.speed);
   $('t_thr').textContent=L.throttle==null?'--':fmt(L.throttle)+'%';
   $('t_peak').textContent=fmt(D.peak_rpm);
@@ -404,7 +519,103 @@ async function tick(){
 let tachTarget = null;      // latest rpm from the car (null = no data)
 let tachShown  = 0;         // what the needle is currently showing
 
+/* ---- rpm-reactive backdrop --------------------------------------------
+   The display warms up as the engine does: near-black at idle, a dim ember
+   through the mid-range, an intense red vignette approaching the redline.
+   Keyed to the car's OWN redline (from its profile), so it means the same
+   thing in any car rather than assuming an 8000 rpm dial.
+
+   Red goes at the RIM and black stays in the middle: the centre of every view
+   carries the big readout, and tinting behind it would cost legibility. */
+const GLOW_EMBER = [104, 26, 12];   // low intensity, deep ember
+const GLOW_RED   = [255, 34, 22];   // full intensity, hot red
+const GLOW_START = 0.22;            // fraction of redline before any tint
+const glowEl = document.getElementById('glow');
+let glowPaintedAt = -1;             // last colour step actually written
+
+/* Three shapes for the same ramp. `rim` is the CHOSEN one (see SPEC §4);
+   the other two lost the side-by-side and are kept only so compare.html
+   still works if another visual decision comes up later.
+     rim    - CHOSEN. Red at the edge, black centre. Readout stays crisp.
+     centre - rejected: red blooms from the middle, so the small labels under
+              the big number dissolve into it near the redline.
+     band   - rejected: red ring with a dark core. Punchiest, but busier.
+   Switch with ?glow=<mode>, or setGlowMode('band') from the console. */
+let GLOW_MODE = 'rim';
+function glowMix(f){
+  return GLOW_EMBER.map((v,i)=>Math.round(v+(GLOW_RED[i]-v)*f)).join(',');
+}
+function glowGradient(c){
+  if (GLOW_MODE === 'centre'){
+    return 'radial-gradient(circle at 50% 46%,rgba('+c+',0.92) 0%,'
+      + 'rgba('+c+',0.62) 38%,rgba('+c+',0.20) 62%,rgba(0,0,0,0) 82%)';
+  }
+  if (GLOW_MODE === 'band'){
+    return 'radial-gradient(circle at 50% 46%,rgba(0,0,0,0) 20%,'
+      + 'rgba('+c+',0.32) 40%,rgba('+c+',0.94) 70%,rgba('+c+',0.58) 100%)';
+  }
+  return 'radial-gradient(circle at 50% 46%,rgba(0,0,0,0) 24%,'
+    + 'rgba('+c+',0.50) 72%,rgba('+c+',0.96) 100%)';
+}
+function drawGlow(rpm, has){
+  let f = 0;
+  if (has && RPM_RED > 0){
+    f = (rpm/RPM_RED - GLOW_START) / (1 - GLOW_START);
+    f = Math.max(0, Math.min(1, f));
+    f = Math.pow(f, 1.35);          // hold back the mid-range, bite near red
+  }
+  // opacity is cheap to change every frame; the gradient string is not, so it
+  // is only rewritten when the colour moves a visible step (1/40th)
+  const step = Math.round(f*40);
+  if (step !== glowPaintedAt){
+    glowPaintedAt = step;
+    glowEl.style.background = glowGradient(glowMix(step/40));
+  }
+  glowEl.style.opacity = (f*0.92).toFixed(3);
+}
+function setGlowMode(m){
+  GLOW_MODE = (m === 'centre' || m === 'band') ? m : 'rim';
+  glowPaintedAt = -1;               // force the gradient to be rewritten
+}
+
+/* Design-preview switches, used by compare.html and handy at the desk:
+     ?glow=centre  pick the glow shape
+     ?rpm=6800     pin rpm, since a desk capture rarely revs past 2000
+     ?bare=1       hide the browser chrome, leaving just the round display   */
+const QS = new URLSearchParams(location.search);
+
+/* ?rpm=6800        pin one value
+   ?rpm=1000-7000   sweep between the two, continuously
+   &sweepms=9000    period of one full up-and-down cycle              */
+let RPM_FORCE = null, RPM_SWEEP = null;
+(function(){
+  const raw = (QS.get('rpm') || '').trim();
+  if (!raw) return;
+  const range = raw.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (range){
+    const a = +range[1], b = +range[2];
+    RPM_SWEEP = {lo: Math.min(a,b), hi: Math.max(a,b),
+                 ms: Math.max(800, parseFloat(QS.get('sweepms')) || 9000)};
+  } else if (isFinite(parseFloat(raw))){
+    RPM_FORCE = parseFloat(raw);
+  }
+})();
+function sweptRpm(){
+  // cosine ease: revs up and back down smoothly and dwells briefly at each
+  // end, so the colour at idle and at the redline is easy to actually look at
+  const s = RPM_SWEEP;
+  const p = (performance.now() % s.ms) / s.ms;
+  return s.lo + (s.hi - s.lo) * (0.5 - 0.5*Math.cos(p * 2*Math.PI));
+}
+setGlowMode(QS.get('glow'));
+if (QS.get('bare') === '1'){
+  document.querySelectorAll('.top,.navrow,.dots,.hint,.raw')
+    .forEach(el => el.style.display = 'none');
+  document.body.style.padding = '8px';
+}
+
 function drawTacho(){
+  if (RPM_SWEEP) tachTarget = sweptRpm();
   const has = tachTarget !== null;
   if (has) {
     // exponential ease: fast enough to feel live, smooth enough to not jitter
@@ -412,6 +623,7 @@ function drawTacho(){
     if (Math.abs(tachTarget - tachShown) < 1) tachShown = tachTarget;
   }
   const v  = has ? tachShown : 0;
+  drawGlow(v, has);
   const ra = rang(v);
   const rn = polar(130,130,86,ra);
   tachFill.setAttribute('d', has ? arc(130,130,104,START,Math.max(START+0.5,ra)) : '');
@@ -419,7 +631,12 @@ function drawTacho(){
   tachNeedle.setAttribute('opacity', has ? 1 : 0.25);
   tachNeedle.setAttribute('x2', rn[0]); tachNeedle.setAttribute('y2', rn[1]);
   const el = $('t_rpm');
-  if (el) el.textContent = has ? String(Math.round(v/10)*10) : '----';
+  if (el) {
+    const txt = has ? String(Math.round(v/10)*10) : '----';
+    el.textContent = txt;
+    // four digits at full size run into the dial numbering, so shrink them
+    el.style.fontSize = txt.length >= 4 ? '17cqw' : '21cqw';
+  }
   requestAnimationFrame(drawTacho);
 }
 requestAnimationFrame(drawTacho);

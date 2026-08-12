@@ -191,6 +191,91 @@ maths is proven before it ever runs on the board.
 
 ---
 
+## 7.5 Backlog — new feature requests (opened 2026-08-12)
+
+Five items raised this session. We work them **one at a time**; each lands here
+first so nothing gets lost, then graduates into section 5/6/7 once built.
+
+| # | Item | Status |
+|---|---|---|
+| B1 | Startup + shutdown animation on ignition on/off | **not started** |
+| B2 | In-UI view to browse and pick a past drive to replay | **not started** |
+| B3 | Define the driving score: what is "spirited", what is "harsh"? | **open question — see below** |
+| B4 | Does OBD expose convertible-roof up/down? | **answered: NO — see below** |
+| B5 | Make it a *universal* gauge; show car make/model at the top | **not started** |
+
+### B1 — Ignition on/off animations
+
+Play a startup animation when the car wakes and a shutdown animation when it
+sleeps. Ignition state is inferred, not a dedicated signal:
+
+- **On:** BLE link establishes *and* first live RPM > 0 (engine cranking/running).
+- **Off:** RPM falls to 0 and the link goes idle → the shutdown animation runs,
+  then the board deep-sleeps (existing backstop in the roadmap).
+
+Note the earlier decision that *the user supplies the startup animation asset* —
+so this item is the **trigger + playback machinery**, plus a placeholder
+animation in the simulator. To design once we pick it up.
+
+### B2 — Replay picker view
+
+Today past drives are listed only via the CLI (`run.py --sessions`). This adds
+an **on-screen** way to scroll a list of recorded drives (date, duration,
+distance, score) and pick one to replay — the touch-carousel equivalent of the
+sessions list. Simulator-first; on hardware it reads the SD-card log index.
+
+### B3 — Driving-score definition (open — needs a decision)
+
+**Current logic** (`metrics.py`, all host-tested) blends three 0–100 sub-scores:
+
+- **smooth (0.40):** average throttle jerk (%/s); 0 → 100, 12 %/s → 0.
+- **econ (0.30):** time in the 1200–2600 rpm band + average instant L/100km.
+- **calm (0.30):** harsh events per minute; each event drops it 25 pts/min.
+
+**"Harsh" today** = longitudinal acceleration from the *speed delta*
+(`Δspeed / dt`), thresholds **> +2.5 m/s² (accel)** and **< −3.0 m/s² (brake)**.
+This is coarse and laggy — speed differentiated at ~1 Hz — and it is the *only*
+input to "calm".
+
+**What's missing:**
+- **"Spirited" is not defined at all.** The score only rewards calm/economical
+  driving and silently punishes fun. On a scenic drive that's backwards. Need to
+  decide whether spirited is (a) a *separate* positive metric, (b) a driving
+  *mode* that reweights the score, or (c) left out.
+- **The on-board IMU is unused.** The board has a QMI8658 6-axis IMU; real
+  lateral/longitudinal g would replace the speed-delta proxy and finally make
+  "harsh" (and any "spirited") meaningful. Decide the thresholds against a real
+  IMU + drive log, not guesses.
+
+→ This is a design decision to make deliberately, then re-tune the constants.
+
+### B4 — Roof up/down over OBD? **No.**
+
+Enumerated **all 82 channels** across every capture (standard `Mazda OBD-II /
+EOBD` profile *and* the extended `WWH-OBD + CAN and extra PIDs (2026->)`
+profile). **Zero** relate to the convertible top — no roof, latch, hood or
+top-position channel exists. `grep -i` for roof/top/convertible/latch across the
+raw captures: no matches. The ND's soft top is a **manual mechanical latch** with
+no electronic position sensor on the standard OBD bus. Same conclusion as oil
+temp: if we want roof state it needs a **physical sensor** (a reed/hall switch on
+the latch wired to a spare GPIO), not OBD. Out of scope for the OBD path.
+
+### B5 — Universal gauge + make/model banner
+
+Generalise beyond the MX-5 so the same firmware works on any OBD-II car (the
+premise from last session: OBD is universal, the *data availability* isn't), and
+show the car's **make/model as a small banner at the top of the display**.
+
+- The `.brc` header already carries a car name + `carprofile` string; live, the
+  make/model can come from a **config value** or be read from the **VIN**
+  (Mode 09 PID 02) and mapped to make/model.
+- "Universal" means: probe supported PIDs at connect (Mode 01 PID 00 bitmasks),
+  light up only the views a given car actually feeds, and degrade the rest to
+  `n/a` — exactly the honest-degradation rule already in section 4.
+- Keep the MX-5 as the reference profile; add a small per-car override table.
+
+---
+
 ## 8. Reference
 
 Illustrated companions (design mockups, diagrams, findings):

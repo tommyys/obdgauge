@@ -43,7 +43,10 @@ fi
 
 # --model names the car on the display: a VIN cannot supply a model name, and
 # captures carry no VIN at all, so it is passed in here.
-./.venv/bin/python run.py --replay --speed 8 --model "MX-5"
+# --sweep loops rpm 1000-7000 so the rev-reactive visuals are actually visible;
+# desk captures rarely pass 2000 rpm. The display labels it as a preview, and
+# it is refused outright in live mode.
+./.venv/bin/python run.py --replay --speed 8 --model "MX-5" --sweep 1000-7000
 
 echo
 echo "  ── stopped ─────────────────────────────────"

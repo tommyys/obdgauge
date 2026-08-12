@@ -98,6 +98,10 @@ class Gauge(object):
         self._t0 = None
         self.recorder = None      # set by run.py; every sample is written to it
         self.rejected = 0         # implausible readings dropped
+        # desk preview: 'LO-HI' asks the UI to sweep rpm instead of using the
+        # recorded revs, so the visuals can be judged on a capture that idles.
+        # Never set in live mode — real rpm is the point when you're driving.
+        self.preview_sweep = None
 
     # -- ingest --------------------------------------------------------------
     def sample(self, key, value, t=None):
@@ -224,4 +228,5 @@ class Gauge(object):
                 # instead of drawing a convincing zero
                 'car': v.get('_car') or vehicle.identify(),
                 'channels': v.get('_supported_keys'),
+                'preview_sweep': self.preview_sweep,
             }

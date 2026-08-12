@@ -116,6 +116,12 @@ async def main():
                     help='list nearby BLE devices and exit (diagnostics)')
     ap.add_argument('--no-record', action='store_true',
                     help='do NOT write a CSV log of this session')
+    ap.add_argument('--sweep', nargs='?', const='1000-7000', default=None,
+                    metavar='LO-HI',
+                    help='desk preview: sweep rpm continuously (default '
+                         '1000-7000) instead of using the recorded revs, so '
+                         'the visuals can be judged on a capture that idles. '
+                         'Replay only — ignored in live mode.')
     ap.add_argument('--make', default=None,
                     help='override the car make shown on the display '
                          '(otherwise read from the VIN)')
@@ -164,6 +170,14 @@ async def main():
 
     g.source_kind = src.kind
     g.status = src.status
+
+    # a synthetic rpm sweep is a desk aid; in the car the real revs are the
+    # whole point, so refuse rather than quietly showing made-up data
+    if args.sweep and src.kind == 'live':
+        print('\n  !! --sweep is a desk preview aid and would replace the real '
+              'rpm.\n     Ignoring it for this live session.')
+    elif args.sweep:
+        g.preview_sweep = args.sweep
 
     # Record every reading. Live drives are always worth keeping; replays are
     # not (we'd just be copying a file we already have).

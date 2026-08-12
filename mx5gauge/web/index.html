@@ -40,7 +40,12 @@
     pointer-events:none;z-index:6;}
   .screen{position:relative;width:100%;height:100%;border-radius:50%;overflow:hidden;
     background:radial-gradient(circle at 50% 42%,#14171d,#0a0b0e 72%);
-    container-type:inline-size;touch-action:pan-y;cursor:grab;}
+    container-type:inline-size;touch-action:pan-y;cursor:grab;
+    /* the screen is a device face, not a document: dragging it should swipe
+       views, never start selecting text or raise a long-press callout. Only
+       the screen — the stats line outside the bezel stays copyable. */
+    user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent;}
   .screen:active{cursor:grabbing;}
   /* rpm-reactive backdrop. Sits on the screen itself rather than inside a
      view, so the colour persists while the carousel slides. z-index 0 + first
@@ -49,9 +54,17 @@
      not a stacking context, and vanish behind the bezel. */
   .glow{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;
     border-radius:50%;}
-  .track{display:flex;height:100%;position:relative;transition:transform .3s cubic-bezier(.4,0,.2,1);}
-  .view{flex:0 0 100%;height:100%;position:relative;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;font-family:var(--mono);padding:11cqw;}
+  /* Infinite carousel: each view is placed independently at its shortest
+     signed distance from the current one, rather than being a cell in one long
+     strip. Wrapping from the last view to the first is then a single step
+     forward, instead of rewinding the whole strip backwards. */
+  .track{position:relative;height:100%;}
+  .view{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;font-family:var(--mono);padding:11cqw;
+    transition:transform .3s cubic-bezier(.4,0,.2,1);}
+  /* used while a view is repositioned off-screen, so it teleports silently
+     instead of flying across the display */
+  .view.noanim{transition:none;}
   /* sits inside the gauge ring so it never collides with the arc */
   .vtitle{position:absolute;top:18cqw;left:0;right:0;text-align:center;
     font-size:3.5cqw;letter-spacing:0.26em;color:var(--muted);z-index:2;}
@@ -107,6 +120,18 @@
   .tcell{text-align:center;}
   .tcell .tv{font-size:7.4cqw;font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;}
   .tcell .tl{font-size:2.9cqw;letter-spacing:0.09em;color:var(--faint);}
+  /* Thermals carries only three values now, so they get room to breathe.
+     Scoped to its own grid so the Trip view's denser 2x2 keeps its sizing. */
+  /* The view centres its content, but the title sits above it absolutely, so
+     plain centring leaves far more slack below than above. Nudge the whole
+     grid down so the space above and below it reads even. */
+  .tgrid-lg{gap:4.4cqw 7cqw;position:relative;top:8.6cqw;}
+  .tgrid-lg .tv{font-size:11cqw;}
+  .tgrid-lg .tl{font-size:3.7cqw;letter-spacing:0.13em;color:var(--muted);}
+  /* nudge the full-width row down a touch so it reads as its own line rather
+     than crowding the pair above. cqw not px, so it scales on the real 240px
+     panel — 1.4cqw is ~5px at the preview size. */
+  .tgrid-lg .wide{grid-column:1 / -1;margin-top:5cqw;}
   .stale{opacity:0.35;}
 
   /* controls */
@@ -224,14 +249,17 @@
       </div>
 
       <!-- 6 THERMALS -->
-      <div class="view" data-needs="coolant,intake,cat_b1s1,catalyst,fuel_rail_temp">
+      <div class="view" data-needs="coolant,intake,cat_b1s1,catalyst">
         <div class="na"><div class="nat">NO TEMP SENSORS</div><div class="nas">this car reports none of the temperature channels</div></div>
         <div class="vtitle">THERMALS</div>
-        <div class="tgrid">
+        <!-- three real temperatures. Fuel rail was dropped: it never moved
+             (375 samples, 2 distinct values) and there is no standard OBD PID
+             for rail TEMPERATURE anyway, only rail pressures — so it could
+             never have worked live. Catalyst spans both columns. -->
+        <div class="tgrid tgrid-lg">
           <div class="tcell"><div class="tv" id="th_cool">--</div><div class="tl">COOLANT</div></div>
           <div class="tcell"><div class="tv" id="th_iat">--</div><div class="tl">INTAKE AIR</div></div>
-          <div class="tcell"><div class="tv" id="th_cat">--</div><div class="tl">CATALYST</div></div>
-          <div class="tcell"><div class="tv" id="th_rail">--</div><div class="tl">FUEL RAIL</div></div>
+          <div class="tcell wide"><div class="tv" id="th_cat">--</div><div class="tl">CATALYST</div></div>
         </div>
         <!-- oil temp appears only on a car that actually reports PID 0x5C;
              no dead "not available" line for the ones that don't -->
@@ -358,19 +386,42 @@ const names=['Tacho','Engine','Fuel economy','Driving score','Trip','Power','The
 const dotsEl=document.getElementById('dots');
 for(let i=0;i<N;i++){const b=document.createElement('button');b.className='dot';b.dataset.i=i;
   b.setAttribute('aria-label','View '+(i+1));dotsEl.appendChild(b);}
-function go(i){idx=(i+N)%N;track.style.transform=`translateX(${-idx*100}%)`;
+/* Place every view relative to `idx`, wrapping the short way round.
+   A view only animates if it is sliding between two on-screen-adjacent slots;
+   anything crossing the seam is moved with transitions off, out of sight. */
+function go(i, animate=true){
+  idx=((i%N)+N)%N;
+  const kids=[...track.children];
+  const dist=kids.map((_v,j)=>{let d=(j-idx+N)%N; return d>N/2 ? d-N : d;});
+  kids.forEach((v,j)=>{
+    const was=v._d, now=dist[j];
+    const slides=animate && was!==undefined
+                 && Math.abs(was)<=1 && Math.abs(now)<=1;
+    v.classList.toggle('noanim',!slides);
+  });
+  void track.offsetWidth;                     // commit the transition change
+  kids.forEach((v,j)=>{
+    v.style.transform=`translateX(${dist[j]*100}%)`;
+    v._d=dist[j];
+  });
+  void track.offsetWidth;                     // commit the transforms
+  kids.forEach(v=>v.classList.remove('noanim'));
   [...dotsEl.children].forEach((d,k)=>d.classList.toggle('on',k===idx));
   document.getElementById('vname').textContent=names[idx];}
 document.getElementById('next').onclick=()=>go(idx+1);
 document.getElementById('prev').onclick=()=>go(idx-1);
-dotsEl.onclick=e=>{const b=e.target.closest('.dot');if(b)go(+b.dataset.i);};
+// a dot can be several views away; sliding through the ones between looks
+// frantic, so a non-adjacent jump cuts straight there
+dotsEl.onclick=e=>{const b=e.target.closest('.dot');if(!b)return;
+  const t=+b.dataset.i, step=Math.abs(((t-idx+N)%N+N)%N);
+  go(t, step===1 || step===N-1);};
 addEventListener('keydown',e=>{if(e.key==='ArrowRight')go(idx+1);if(e.key==='ArrowLeft')go(idx-1);});
 let down=false,x0=0,moved=0;
 screenEl.addEventListener('pointerdown',e=>{down=true;x0=e.clientX;moved=0;screenEl.setPointerCapture(e.pointerId);});
 screenEl.addEventListener('pointermove',e=>{if(down)moved=e.clientX-x0;});
 const endDrag=()=>{if(!down)return;down=false;if(moved<-32)go(idx+1);else if(moved>32)go(idx-1);moved=0;};
 screenEl.addEventListener('pointerup',endDrag);screenEl.addEventListener('pointercancel',endDrag);
-go(0);
+go(0, false);          // initial placement must not animate from nowhere
 
 /* ---- render from /data ---- */
 const $=id=>document.getElementById(id);
@@ -435,6 +486,12 @@ async function tick(){
 
   // 1 tacho — needle is animated separately at 60fps (see drawTacho below);
   // here we only publish the new target and the slow-moving text
+  // desk mode asks for a continuous sweep, so the visuals are previewable on a
+  // capture that never revs. The URL always wins over the server's suggestion.
+  if (!urlSpec && !RPM_SWEEP && d.preview_sweep){
+    const s = parseRpmSpec(d.preview_sweep);
+    if (s && s.sweep) RPM_SWEEP = s.sweep;
+  }
   // a sweep drives rpm from the animation loop instead, at display rate
   if (!RPM_SWEEP)
     tachTarget = (RPM_FORCE!=null) ? RPM_FORCE : ((L.rpm==null) ? null : L.rpm);
@@ -499,7 +556,6 @@ async function tick(){
   $('th_cool').textContent=L.coolant==null?'--':fmt(L.coolant)+'°';
   $('th_iat').textContent=L.intake==null?'--':fmt(L.intake)+'°';
   $('th_cat').textContent=L.catalyst==null?'--':fmt(L.catalyst)+'°';
-  $('th_rail').textContent=L.fuel_rail_temp==null?'--':fmt(L.fuel_rail_temp)+'°';
   $('th_oil').style.display=(L.oil==null)?'none':'';
   if(L.oil!=null) $('th_oil').innerHTML=
     '<span style="color:var(--faint)">OIL</span> <b>'+fmt(L.oil)+'°</b>';
@@ -592,18 +648,25 @@ const QS = new URLSearchParams(location.search);
    ?rpm=1000-7000   sweep between the two, continuously
    &sweepms=9000    period of one full up-and-down cycle              */
 let RPM_FORCE = null, RPM_SWEEP = null;
-(function(){
-  const raw = (QS.get('rpm') || '').trim();
-  if (!raw) return;
+function parseRpmSpec(raw){
+  raw = (raw || '').toString().trim();
+  if (!raw) return null;
   const range = raw.match(/^(\d+)\s*-\s*(\d+)$/);
   if (range){
     const a = +range[1], b = +range[2];
-    RPM_SWEEP = {lo: Math.min(a,b), hi: Math.max(a,b),
-                 ms: Math.max(800, parseFloat(QS.get('sweepms')) || 9000)};
-  } else if (isFinite(parseFloat(raw))){
-    RPM_FORCE = parseFloat(raw);
+    return {sweep: {lo: Math.min(a,b), hi: Math.max(a,b),
+                    ms: Math.max(800, parseFloat(QS.get('sweepms')) || 9000)}};
   }
-})();
+  if (isFinite(parseFloat(raw))) return {force: parseFloat(raw)};
+  return null;
+}
+// the URL wins over whatever the server suggests, so a pinned ?rpm= is never
+// overridden by desk mode's sweep
+const urlSpec = parseRpmSpec(QS.get('rpm'));
+if (urlSpec){
+  RPM_FORCE = (urlSpec.force === undefined) ? null : urlSpec.force;
+  RPM_SWEEP = urlSpec.sweep || null;
+}
 function sweptRpm(){
   // cosine ease: revs up and back down smoothly and dwells briefly at each
   // end, so the colour at idle and at the redline is easy to actually look at

@@ -122,10 +122,11 @@
   .tcell .tl{font-size:2.9cqw;letter-spacing:0.09em;color:var(--faint);}
   /* Thermals carries only three values now, so they get room to breathe.
      Scoped to its own grid so the Trip view's denser 2x2 keeps its sizing. */
-  /* The view centres its content, but the title sits above it absolutely, so
-     plain centring leaves far more slack below than above. Nudge the whole
-     grid down so the space above and below it reads even. */
-  .tgrid-lg{gap:4.4cqw 7cqw;position:relative;top:8.6cqw;}
+  /* Left on the view's own centring. Nudging the whole grid down to even out
+     the slack above and below it was measurably balanced but read as all
+     three numbers sitting too low, so the optical centre beats the arithmetic
+     one here. */
+  .tgrid-lg{gap:4.4cqw 7cqw;}
   .tgrid-lg .tv{font-size:11cqw;}
   .tgrid-lg .tl{font-size:3.7cqw;letter-spacing:0.13em;color:var(--muted);}
   /* nudge the full-width row down a touch so it reads as its own line rather

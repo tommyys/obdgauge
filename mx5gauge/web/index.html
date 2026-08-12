@@ -233,7 +233,9 @@
           <div class="tcell"><div class="tv" id="th_cat">--</div><div class="tl">CATALYST</div></div>
           <div class="tcell"><div class="tv" id="th_rail">--</div><div class="tl">FUEL RAIL</div></div>
         </div>
-        <div class="sub" id="th_oil" style="color:var(--faint)">oil temp — not on OBD</div>
+        <!-- oil temp appears only on a car that actually reports PID 0x5C;
+             no dead "not available" line for the ones that don't -->
+        <div class="sub" id="th_oil" style="display:none"></div>
       </div>
 
       <!-- 7 ELECTRICAL -->
@@ -498,7 +500,9 @@ async function tick(){
   $('th_iat').textContent=L.intake==null?'--':fmt(L.intake)+'°';
   $('th_cat').textContent=L.catalyst==null?'--':fmt(L.catalyst)+'°';
   $('th_rail').textContent=L.fuel_rail_temp==null?'--':fmt(L.fuel_rail_temp)+'°';
-  $('th_oil').textContent=L.oil==null?'oil temp — not on OBD':'oil '+fmt(L.oil)+'°';
+  $('th_oil').style.display=(L.oil==null)?'none':'';
+  if(L.oil!=null) $('th_oil').innerHTML=
+    '<span style="color:var(--faint)">OIL</span> <b>'+fmt(L.oil)+'°</b>';
 
   // 7 electrical
   $('el_v').innerHTML=(L.volts==null?'--':fmt(L.volts,1))+'<span style="font-size:5.5cqw"> v</span>';

@@ -51,6 +51,20 @@ for _k in ('fuel_press', 'rail_press', 'rail_gauge', 'rail_abs'):
     RANGES[_k] = (0, 800000)
 
 
+def _first(v, *keys):
+    """First of `keys` that holds a reading, else None.
+
+    Live and replay don't always name the same channel identically — a live
+    poll decodes PID 0x3C to `cat_b1s1`, while a Car Scanner capture calls it
+    `catalyst` — and cars differ in which bank/sensor they populate. Checking
+    for `is not None` rather than truthiness matters: 0 °C is a real reading.
+    """
+    for k in keys:
+        if v.get(k) is not None:
+            return v[k]
+    return None
+
+
 def plausible(key, value):
     """True if `value` is a sane reading for `key`.
 
@@ -175,7 +189,8 @@ class Gauge(object):
                     'load': v.get('load'),
                     'maf': v.get('maf'),
                     'timing': v.get('timing'),
-                    'catalyst': v.get('catalyst'),
+                    'catalyst': _first(v, 'catalyst', 'cat_b1s1', 'cat_b2s1',
+                                       'cat_b1s2', 'cat_b2s2'),
                     'fuel_rail_temp': v.get('fuel_rail_temp'),
                     'power_kw': v.get('power_kw'),
                     'oil': v.get('oil'),

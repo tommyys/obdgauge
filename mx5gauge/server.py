@@ -1,13 +1,19 @@
-"""Tiny stdlib HTTP server: serves the gauge UI and a JSON snapshot endpoint."""
+"""Tiny stdlib HTTP server: serves the gauge UI, a JSON snapshot, and the
+drive library the on-screen picker browses."""
 import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import library
+
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 
+# Refuse absurd request bodies outright rather than reading them into memory.
+MAX_BODY = 4096
 
-def make_handler(gauge):
+
+def make_handler(gauge, root=None, on_select=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass                                  # keep the console clean
@@ -25,10 +31,22 @@ def make_handler(gauge):
             except BrokenPipeError:
                 pass
 
+        def _json(self, code, obj):
+            self._send(code, json.dumps(obj), 'application/json')
+
         def do_GET(self):
             path = self.path.split('?')[0]
             if path == '/data':
-                self._send(200, json.dumps(gauge.snapshot()), 'application/json')
+                self._json(200, gauge.snapshot())
+                return
+            if path == '/sessions':
+                self._json(200, {
+                    'entries': library.scan(root) if root else [],
+                    'current': gauge.current_file,
+                    # switching is a replay-only idea: in the car the live link
+                    # is the whole point, so the picker shows but cannot load
+                    'can_switch': bool(on_select) and gauge.source_kind != 'live',
+                })
                 return
             if path == '/':
                 path = '/index.html'
@@ -43,6 +61,37 @@ def make_handler(gauge):
                 return
             self._send(404, 'not found', 'text/plain')
 
+        def do_POST(self):
+            if self.path.split('?')[0] != '/select':
+                self._send(404, 'not found', 'text/plain')
+                return
+            if on_select is None:
+                self._json(409, {'ok': False, 'error': 'switching not available'})
+                return
+            if gauge.source_kind == 'live':
+                self._json(409, {'ok': False,
+                                 'error': 'live session — not switching'})
+                return
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+            except ValueError:
+                n = 0
+            if n <= 0 or n > MAX_BODY:
+                self._json(400, {'ok': False, 'error': 'bad body'})
+                return
+            try:
+                req = json.loads(self.rfile.read(n).decode('utf-8'))
+                name = (req or {}).get('name')
+            except Exception:
+                self._json(400, {'ok': False, 'error': 'bad json'})
+                return
+            entry = library.resolve(root, name) if root else None
+            if entry is None:
+                self._json(404, {'ok': False, 'error': 'no such drive'})
+                return
+            on_select(entry)
+            self._json(200, {'ok': True, 'name': entry['name']})
+
     return Handler
 
 
@@ -50,9 +99,10 @@ class PortInUse(Exception):
     pass
 
 
-def serve(gauge, port=8420):
+def serve(gauge, port=8420, root=None, on_select=None):
     try:
-        httpd = ThreadingHTTPServer(('127.0.0.1', port), make_handler(gauge))
+        httpd = ThreadingHTTPServer(('127.0.0.1', port),
+                                    make_handler(gauge, root, on_select))
     except OSError as exc:
         # EADDRINUSE — almost always a previous run still holding the port
         raise PortInUse(

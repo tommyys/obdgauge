@@ -12,62 +12,44 @@ Then open http://127.0.0.1:8420
 import argparse
 import asyncio
 import glob
-import json
 import os
 import sys
 import webbrowser
 
-from mx5gauge import recorder, server, sources, state
+from mx5gauge import library, recorder, server, sources, state
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-LOG_DIR = os.path.join(HERE, 'logs')
-
-
-def list_sessions():
-    """Recorded drives, newest first, with whatever the summary json holds."""
-    out = []
-    for csv_path in sorted(glob.glob(os.path.join(LOG_DIR, '*.csv')), reverse=True):
-        meta = {}
-        jp = csv_path.replace('.csv', '.json')
-        if os.path.exists(jp):
-            try:
-                with open(jp) as fh:
-                    meta = json.load(fh)
-            except Exception:
-                meta = {}
-        out.append((csv_path, meta))
-    return out
-
-
 def print_sessions():
-    rows = list_sessions()
+    """List everything replayable — the same library the on-screen picker shows.
+
+    Reads through `library` rather than only globbing logs/, so the terminal and
+    the Drives view can never disagree about what exists.
+    """
+    rows = library.scan(HERE)
     if not rows:
-        print('\n  No recorded sessions yet. Drive with --live and they land in logs/\n')
+        print('\n  Nothing to replay yet. Drive with --live (drives land in '
+              'logs/), or put a .brc capture in captures/\n')
         return
-    print('\n  Recorded sessions (newest first)\n')
-    print('  %-34s %8s %8s %7s %6s' % ('file', 'dist', 'moving', 'score', 'rows'))
-    print('  ' + '-' * 68)
-    for path, meta in rows:
-        d = meta.get('derived') or {}
-        s = meta.get('score') or {}
-        dist = '%.2f km' % d['dist_km'] if d.get('dist_km') is not None else '-'
-        mov = '%.0f min' % ((d.get('moving_s') or 0) / 60.0) if d else '-'
-        sc = '%.0f' % s['total'] if s.get('total') is not None else '-'
-        print('  %-34s %8s %8s %7s %6s' % (
-            os.path.basename(path), dist, mov, sc, meta.get('rows', '-')))
-    print('\n  Replay one with:  run.py --replay "logs/<file>"')
-    print('  Or the latest:    run.py --replay last\n')
+    print('\n  Replayable drives (newest first)\n')
+    print('  %-26s %-8s %-34s' % ('when', 'kind', 'summary'))
+    print('  ' + '-' * 70)
+    for e in rows:
+        print('  %-26s %-8s %-34s' % (e['when'], e['kind'], e['summary']))
+        print('  %-26s %s' % ('', e['name']))
+    print('\n  Replay one with:  run.py --replay "<path>"')
+    print('  Or the latest:    run.py --replay last')
+    print('  Or pick it on screen: the Drives view in the carousel\n')
 
 
 def resolve_replay(arg):
     """Turn --replay's argument into a path. Accepts 'last' and 'auto'."""
     if arg == 'last':
-        rows = list_sessions()
-        if not rows:
-            return None
-        return rows[0][0]
+        # newest replayable thing, drive or capture — same library the Drives
+        # view lists, so "last" means the same in both places
+        rows = library.scan(HERE)
+        return rows[0]['path'] if rows else None
     if arg in (None, 'auto'):
         return pick_default_capture()
     return arg
@@ -93,6 +75,73 @@ def pick_default_capture():
         if moving > best_score:
             best, best_score = f, moving
     return best or max(files, key=os.path.getsize)
+
+
+class Player(object):
+    """Runs one source, and can swap it for another drive while running.
+
+    The HTTP server lives on its own thread, so `select` may be called from
+    anywhere: it only records the request and pokes the event loop, leaving all
+    the source handling on the loop where it belongs.
+    """
+
+    def __init__(self, gauge, src, root, speed=4.0, make=None, model=None):
+        self.g = gauge
+        self.src = src
+        self.root = root
+        self.speed = speed
+        self.make = make
+        self.model = model
+        self.loop = None
+        self.request = None
+        self.event = asyncio.Event()
+
+    def select(self, entry):
+        """Ask for `entry` to start playing. Thread-safe, returns immediately."""
+        self.request = entry
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(self.event.set)
+
+    def _load(self, entry):
+        # a different drive must not inherit the last one's trip or channels
+        self.g.reset()
+        self.src = sources.ReplaySource(entry['path'], speed=self.speed,
+                                        make=self.make, model=self.model)
+        self.g.source_kind = self.src.kind
+        self.g.status = self.src.status
+        self.g.current_file = entry['name']
+        print('  loaded : %s' % entry['name'])
+
+    async def run(self):
+        self.loop = asyncio.get_event_loop()
+        while True:
+            self.event.clear()
+            playing = asyncio.create_task(self.src.run(self.g.sample))
+            switch = asyncio.create_task(self.event.wait())
+            done, _pending = await asyncio.wait(
+                {playing, switch}, return_when=asyncio.FIRST_COMPLETED)
+
+            if switch in done and self.request is not None:
+                playing.cancel()
+                try:
+                    await playing
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:                  # noqa: BLE001
+                    print('  (previous source stopped: %s)' % exc)
+                entry, self.request = self.request, None
+                self._load(entry)
+                continue
+
+            switch.cancel()
+            if playing in done:
+                # a non-looping source ran out; hold the last frame rather than
+                # spinning, so the UI keeps showing where the drive ended
+                exc = playing.exception()
+                if exc:
+                    self.g.status = 'source error: %s' % exc
+                    print('  !! source error: %s' % exc)
+                await self.event.wait()
 
 
 async def main():
@@ -186,8 +235,14 @@ async def main():
                             enabled=(not args.no_record) and src.kind == 'live')
     g.recorder = rec
 
+    player = Player(g, src, HERE, speed=args.speed,
+                    make=args.make, model=args.model)
+    if src.kind == 'replay':
+        g.current_file = os.path.basename(src.path)
+
     try:
-        httpd = server.serve(g, port=args.port)
+        httpd = server.serve(g, port=args.port, root=HERE,
+                             on_select=player.select)
     except server.PortInUse as exc:
         print('\n  !! %s\n' % exc)
         return 2
@@ -217,11 +272,13 @@ async def main():
 
     async def pump():
         while True:
-            g.status = src.status
+            # read through the player: the source it holds changes when the
+            # on-screen picker loads a different drive
+            g.status = player.src.status
             await asyncio.sleep(0.3)
 
     try:
-        await asyncio.gather(src.run(g.sample), pump())
+        await asyncio.gather(player.run(), pump())
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:

@@ -166,16 +166,23 @@ duplicate a file you already have).
 
 ## Replaying past drives
 
-List what you have:
+**On screen:** swipe to the last view, **Drives**. It lists every replayable
+drive — your own recordings and the Car Scanner captures — newest first. Tap one
+and the gauge loads it there and then; the row you're playing is marked. In live
+mode the list still shows, but the rows are inert: loading a drive would drop
+the link to the car.
+
+**From the terminal**, the same library:
 
 ```bash
 .venv/bin/python run.py --sessions
 ```
 
 ```
-  file                                   dist   moving   score   rows
-  --------------------------------------------------------------------
-  drive-20260812-212705.csv           8.42 km   18 min      86  38104
+  when                       kind     summary
+  ----------------------------------------------------------------------
+  12 Aug 16:50               capture  10 ch · 12.9k pts · 54 min
+                             2026-08-12 16-50-58.brc
 ```
 
 Replay the most recent drive, or a specific one:
@@ -184,6 +191,10 @@ Replay the most recent drive, or a specific one:
 .venv/bin/python run.py --replay last
 .venv/bin/python run.py --replay "logs/drive-20260812-212705.csv" --speed 10
 ```
+
+Your own drives quote distance and a score. Captures quote channels, sample
+count and duration instead — distance integrated from a Car Scanner file is
+meaningless, because iOS suspends the app and leaves gaps in the recording.
 
 Recorded CSVs and Car Scanner `.brc` captures are both accepted. Replay uses the
 file's own timeline, so the driving score comes out the same at any speed.
@@ -209,6 +220,7 @@ captures/      your .brc recordings
 ```bash
 .venv/bin/python tests/test_pids.py
 .venv/bin/python tests/test_vehicle.py
+.venv/bin/python tests/test_library.py
 ```
 
 `test_pids` covers the decode formulas against known byte inputs (e.g. RPM
@@ -218,6 +230,11 @@ supported-PID bitmask, and the poll-cycle builder.
 `test_vehicle` covers VIN handling: multi-frame mode-09 reassembly, WMI →
 make, and the model-year cycle (including that `W` must read as 1998, not the
 still-future 2028).
+
+`test_library` covers the drive library: pulling each drive's date out of its
+filename (mtime is useless — every capture shares one), the summary lines, and
+that `resolve` only ever returns a file the library already listed, so a
+crafted path like `../mx5gauge/server.py` cannot be loaded.
 
 ## Troubleshooting: the adapter keeps disconnecting
 

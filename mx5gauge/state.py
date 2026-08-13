@@ -102,6 +102,26 @@ class Gauge(object):
         # recorded revs, so the visuals can be judged on a capture that idles.
         # Never set in live mode — real rpm is the point when you're driving.
         self.preview_sweep = None
+        self.current_file = None   # basename of the drive being replayed, if any
+
+    def reset(self):
+        """Clear everything a new drive must not inherit.
+
+        Loading another drive has to start from nothing: leftover trip totals
+        would silently accumulate across two unrelated drives, and stale
+        channel values would keep views lit for data the new file never sends.
+        Metadata (`_car`, `_supported_keys`) goes too, so the banner and the
+        view gating re-derive from whatever is now playing.
+        """
+        with self.lock:
+            self.values.clear()
+            self.updated.clear()
+            self.trip = metrics.Trip()
+            self.score = metrics.DrivingScore()
+            self.peak_rpm = 0.0
+            self.peak_kw = 0.0
+            self._t0 = None
+            self.rejected = 0
 
     # -- ingest --------------------------------------------------------------
     def sample(self, key, value, t=None):
@@ -229,4 +249,5 @@ class Gauge(object):
                 'car': v.get('_car') or vehicle.identify(),
                 'channels': v.get('_supported_keys'),
                 'preview_sweep': self.preview_sweep,
+                'file': self.current_file,
             }

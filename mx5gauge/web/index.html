@@ -135,6 +135,34 @@
   .tgrid-lg .wide{grid-column:1 / -1;margin-top:5cqw;}
   .stale{opacity:0.35;}
 
+  /* drive picker. Inset well inside the circle: a rectangular list in a round
+     screen loses its corners, so the scroll area sits within the inscribed
+     square rather than the full width. */
+  .drives{position:absolute;left:0;right:0;top:23cqw;bottom:13cqw;
+    overflow-y:auto;overscroll-behavior:contain;padding:0 15cqw;
+    display:flex;flex-direction:column;gap:2.2cqw;
+    scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+  .drives::-webkit-scrollbar{display:none;}
+  .drow{width:100%;text-align:left;font-family:var(--mono);color:var(--txt);
+    border:1px solid var(--line-2);border-radius:2.6cqw;padding:2cqw 2.8cqw;
+    background:rgba(255,255,255,0.035);cursor:pointer;display:block;}
+  .drow:hover{border-color:var(--line-2);background:rgba(255,255,255,0.07);}
+  .drow.on{border-color:var(--accent);background:rgba(225,0,10,0.15);}
+  .drow.busy{opacity:0.45;}
+  /* date left, kind (or PLAYING) right, so neither pushes the other onto a
+     second line — a wrapped row grows tall enough to shove the list out of
+     the circle */
+  .drow .dwhen{display:flex;justify-content:space-between;align-items:baseline;
+    gap:1.6cqw;font-size:3.3cqw;color:var(--phos);letter-spacing:0.04em;}
+  .drow .dkind{font-size:2.2cqw;color:var(--faint);letter-spacing:0.11em;
+    flex:none;}
+  .drow .dnow{font-size:2.2cqw;color:var(--accent);letter-spacing:0.11em;
+    flex:none;}
+  .drow .dsum{font-size:2.7cqw;color:var(--muted);margin-top:0.5cqw;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .dnote{font-size:2.9cqw;color:var(--faint);text-align:center;line-height:1.6;
+    padding:2cqw 0;}
+
   /* controls */
   .dots{display:flex;gap:8px;justify-content:center;}
   .dot{width:9px;height:9px;border-radius:50%;background:#2c2930;border:none;cursor:pointer;padding:0;}
@@ -280,6 +308,15 @@
         <div class="status" id="el_status"><span class="dotled"></span><span id="el_status_t">—</span></div>
       </div>
 
+      <!-- 8 DRIVES — browse past drives and load one. No data-needs: the
+           library is about files on disk, not channels the car reports. -->
+      <div class="view">
+        <div class="vtitle">DRIVES</div>
+        <div class="drives" id="drives">
+          <div class="dnote">reading the library…</div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -383,7 +420,8 @@ scoreSvg.appendChild(scoreArc);
 /* ---- carousel ---- */
 const track=document.getElementById('track'),screenEl=document.getElementById('screen');
 const N=track.children.length;let idx=0;
-const names=['Tacho','Engine','Fuel economy','Driving score','Trip','Power','Thermals','Electrical'];
+const names=['Tacho','Engine','Fuel economy','Driving score','Trip','Power','Thermals','Electrical','Drives'];
+const DRIVES_VIEW=names.indexOf('Drives');
 const dotsEl=document.getElementById('dots');
 for(let i=0;i<N;i++){const b=document.createElement('button');b.className='dot';b.dataset.i=i;
   b.setAttribute('aria-label','View '+(i+1));dotsEl.appendChild(b);}
@@ -408,7 +446,10 @@ function go(i, animate=true){
   void track.offsetWidth;                     // commit the transforms
   kids.forEach(v=>v.classList.remove('noanim'));
   [...dotsEl.children].forEach((d,k)=>d.classList.toggle('on',k===idx));
-  document.getElementById('vname').textContent=names[idx];}
+  document.getElementById('vname').textContent=names[idx];
+  // the library only changes when a drive is recorded, so it is read on
+  // arrival at the view rather than polled with everything else
+  if(idx===DRIVES_VIEW) loadDrives();}
 document.getElementById('next').onclick=()=>go(idx+1);
 document.getElementById('prev').onclick=()=>go(idx-1);
 // a dot can be several views away; sliding through the ones between looks
@@ -418,11 +459,95 @@ dotsEl.onclick=e=>{const b=e.target.closest('.dot');if(!b)return;
   go(t, step===1 || step===N-1);};
 addEventListener('keydown',e=>{if(e.key==='ArrowRight')go(idx+1);if(e.key==='ArrowLeft')go(idx-1);});
 let down=false,x0=0,moved=0;
-screenEl.addEventListener('pointerdown',e=>{down=true;x0=e.clientX;moved=0;screenEl.setPointerCapture(e.pointerId);});
-screenEl.addEventListener('pointermove',e=>{if(down)moved=e.clientX-x0;});
-const endDrag=()=>{if(!down)return;down=false;if(moved<-32)go(idx+1);else if(moved>32)go(idx-1);moved=0;};
+/* Capture is deferred until the pointer has actually travelled. Grabbing it on
+   pointerdown retargets the following events to the screen, which swallows the
+   click on anything inside it — the drive rows could never be tapped. */
+let capturing=false,pid=null;
+screenEl.addEventListener('pointerdown',e=>{
+  down=true;x0=e.clientX;moved=0;capturing=false;pid=e.pointerId;});
+screenEl.addEventListener('pointermove',e=>{
+  if(!down)return;
+  moved=e.clientX-x0;
+  if(!capturing&&Math.abs(moved)>8){
+    capturing=true;
+    try{screenEl.setPointerCapture(pid);}catch(_e){}
+  }});
+const endDrag=()=>{if(!down)return;down=false;capturing=false;
+  if(moved<-32)go(idx+1);else if(moved>32)go(idx-1);moved=0;};
 screenEl.addEventListener('pointerup',endDrag);screenEl.addEventListener('pointercancel',endDrag);
 go(0, false);          // initial placement must not animate from nowhere
+
+/* ---- drive picker ------------------------------------------------------
+   Rows are built with textContent rather than innerHTML: the text comes from
+   filenames on disk, and a filename is not something to trust with markup. */
+// looked up on demand, not captured in a const: go() can fire loadDrives
+// during carousel setup, before this part of the script has run
+const drivesBox=()=>document.getElementById('drives');
+let drivesBusy=false;
+
+function dnote(text){
+  const n=document.createElement('div');
+  n.className='dnote'; n.textContent=text;
+  return n;
+}
+
+function driveRow(e, current, canSwitch){
+  const row=document.createElement(canSwitch?'button':'div');
+  const isNow=e.name===current;
+  row.className='drow'+(isNow?' on':'');
+  const when=document.createElement('div');
+  when.className='dwhen';
+  const date=document.createElement('span');
+  date.textContent=e.when;
+  // the right-hand tag doubles as the kind marker and the playing indicator,
+  // so a row never carries both and never needs two lines
+  const tag=document.createElement('span');
+  tag.className=isNow?'dnow':'dkind';
+  tag.textContent=isNow?'PLAYING'
+                       :(e.kind==='capture'?'CAPTURE':'DRIVE');
+  when.append(date,tag);
+  const sum=document.createElement('div');
+  sum.className='dsum';
+  sum.textContent=e.summary;
+  row.append(when,sum);
+  if(canSwitch) row.onclick=()=>selectDrive(e.name,row);
+  return row;
+}
+
+async function loadDrives(){
+  let r;
+  try{ r=await (await fetch('/sessions',{cache:'no-store'})).json(); }
+  catch(_e){ drivesBox().replaceChildren(dnote('could not read the library')); return; }
+  const kids=[];
+  if(!r.entries || !r.entries.length){
+    kids.push(dnote('No drives yet. Record one with the LIVE launcher — '
+                    + 'they land in logs/'));
+  } else {
+    if(!r.can_switch)
+      kids.push(dnote('live session — loading a drive would drop the link'));
+    for(const e of r.entries) kids.push(driveRow(e,r.current,r.can_switch));
+  }
+  drivesBox().replaceChildren(...kids);
+}
+
+async function selectDrive(name,row){
+  if(drivesBusy) return;
+  drivesBusy=true; row.classList.add('busy');
+  try{
+    const res=await fetch('/select',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name})});
+    if(!res.ok){
+      const j=await res.json().catch(()=>({}));
+      drivesBox().replaceChildren(dnote(j.error||'could not load that drive'));
+      return;
+    }
+    // the swap happens on the server's event loop; give it a moment to take
+    // effect so the refreshed list marks the right row as playing
+    await new Promise(r=>setTimeout(r,400));
+    await loadDrives();
+  } finally { drivesBusy=false; row.classList.remove('busy'); }
+}
 
 /* ---- render from /data ---- */
 const $=id=>document.getElementById(id);

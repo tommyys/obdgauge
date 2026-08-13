@@ -104,8 +104,10 @@ Recording the reasoning so it isn't relitigated:
   and parks mid-scale almost regardless, whereas this shows the real number
   (logs show a clean 72 → 95 °C warm-up the stock gauge hides).
 - **Views degrade honestly.** Anything the car isn't reporting shows `--` or
-  `n/a`, never a plausible-looking zero. The thermals view says outright that
-  oil temp isn't on OBD.
+  `n/a`, never a plausible-looking zero — and a view whose channels are all
+  missing says so outright rather than drawing an empty dial. No dead "not
+  available" labels either: the oil-temp line only appears on a car that
+  actually reports PID 0x5C.
 - **Log everything, not just what's drawn.** Polling only display channels made
   the log a narrow slice. Now every supported PID is swept, with rpm/speed/
   throttle interleaved between each so the needle stays responsive.
@@ -142,7 +144,9 @@ BLE / replay  ->  ELM327  ->  PID decode  ->  VehicleState
 | `mx5gauge/sources.py` | BLE + ELM327 client; `.brc`/CSV replay | `src/obd/ble_transport.*`, `elm327.*` |
 | `mx5gauge/state.py` | shared state, range validation, derived snapshot | `VehicleState` struct |
 | `mx5gauge/recorder.py` | CSV logging + JSON summary | SD-card logging (phase 3) |
-| `mx5gauge/web/index.html` | the eight views | LVGL screens |
+| `mx5gauge/web/index.html` | the nine views | LVGL screens |
+| `mx5gauge/library.py` | the replayable-drive library | SD-card index |
+| `mx5gauge/vehicle.py` | VIN decode, per-car dial profiles | `src/vehicle.*` |
 
 `pids.py` and `metrics.py` are pure and host-tested — that's deliberate, so the
 maths is proven before it ever runs on the board.
@@ -157,7 +161,7 @@ maths is proven before it ever runs on the board.
 
 ---
 
-## 6. The eight views
+## 6. The nine views
 
 | # | View | Fed by |
 |---|---|---|
@@ -167,8 +171,19 @@ maths is proven before it ever runs on the board.
 | 4 | Driving score | smoothness + economy + calm, coach word |
 | 5 | Trip | distance, time, avg speed, fuel, cost |
 | 6 | Power | actual torque % × reference torque × rpm |
-| 7 | Thermals | coolant, intake, catalyst, fuel rail |
+| 7 | Thermals | coolant, intake, catalyst |
 | 8 | Electrical | control-module voltage / ATRV, charge status |
+| 9 | Drives | the replayable-drive library (§12) |
+
+Fuel rail temperature was dropped from Thermals: across every capture it
+returned **2 distinct values in 375 samples** (72/73 °C), so it is a canned
+number rather than a sensor — and there is no standard mode-01 PID for rail
+*temperature* anyway (only pressures), so it could never have worked live.
+Catalyst, by contrast, is real: 1765 samples, 971 distinct values, 503–688 °C.
+
+The carousel wraps infinitely: each view is placed at its shortest signed
+distance from the current one, so the last-to-first step is one slide rather
+than a rewind of the whole strip.
 
 ---
 
@@ -209,7 +224,7 @@ first so nothing gets lost, then graduates into section 5/6/7 once built.
 | # | Item | Status |
 |---|---|---|
 | B1 | Startup + shutdown animation on ignition on/off | designed, not built (`docs/superpowers/specs/2026-08-12-ignition-animations-design.md`) |
-| B2 | In-UI view to browse and pick a past drive to replay | **not started** |
+| B2 | In-UI view to browse and pick a past drive to replay | **shipped (simulator) — §12** |
 | B3 | Define the driving score: what is "spirited", what is "harsh"? | **open question — see below** |
 | B4 | Does OBD expose convertible-roof up/down? | **answered: NO — see below** |
 | B5 | Make it a *universal* gauge; show car make/model at the top | **shipped in the simulator — §10** |
@@ -401,3 +416,68 @@ rpm, so there's no extra timer and the colour can't strobe on a jittery reading.
 
 On the board this becomes a background gradient redrawn on the same rpm easing —
 no per-frame allocation needed.
+
+---
+
+## 12. The Drives view (B2, shipped in the simulator)
+
+A ninth view in the carousel lists every past drive and loads one on tap, so
+picking a drive no longer means restarting the process from a terminal.
+
+### What counts as a drive — `mx5gauge/library.py`
+
+Two kinds of file are replayable and both belong in one list: `logs/*.csv`
+(drives the gauge recorded itself, usually with a `.json` summary beside them)
+and `captures/*.brc` (Car Scanner recordings that predate the project). On the
+board this module becomes the SD-card index — same shape, cheaper source.
+
+Summarising a `.brc` means parsing it, so results are cached against each
+file's size and mtime. A cold scan of four captures takes ~90 ms; a warm one is
+instant.
+
+Two details that matter more than they look:
+
+- **The date comes from the filename, not mtime.** Every capture in the repo
+  shares an mtime (they were copied in together), which made the picker's most
+  useful column read `12 Aug 19:10` on every row. Both naming schemes carry the
+  real moment — `2026-08-11 21-43-36.brc` and `drive-20260812-212705.csv` — so
+  that is parsed out, and used for sorting too.
+- **Captures do not quote a distance.** Integrating speed from a Car Scanner
+  file gives nonsense (§2: iOS suspends the app, leaving gaps), so a capture row
+  quotes what is solid — channel count, sample count, duration, and whether the
+  file contains any driving at all. Only our own logs quote km and a score.
+
+### Loading a drive
+
+`GET /sessions` lists the library plus what is currently playing.
+`POST /select {"name": …}` switches. `run.py`'s `Player` owns the running
+source: the HTTP thread only records the request and pokes the event loop, and
+the swap itself happens on the loop, cancelling the old source before starting
+the new one.
+
+`Gauge.reset()` runs on every load. Without it a second drive would inherit the
+first one's trip totals, and stale channel values would keep views lit for data
+the new file never sends. Metadata goes too, so the car banner and the view
+gating re-derive from whatever is now playing.
+
+**Switching is replay-only.** In the car the live link is the point, so the view
+still lists your drives but the rows are inert and say why; `POST /select`
+answers 409. Same reasoning as `--sweep`.
+
+**A request can only ever select a file the library already listed.** `resolve`
+matches on basename against the real listing, so a crafted path cannot reach
+anything else on disk — covered by `tests/test_library.py`, which asserts
+`../mx5gauge/server.py`, `/etc/passwd` and friends are all refused.
+
+### Tapping had to be made possible
+
+The carousel grabbed the pointer on `pointerdown`, which retargets everything
+that follows to the screen and swallows clicks on anything inside it — the rows
+could never have been tapped. Capture is now deferred until the pointer has
+actually travelled 8px, so a tap stays a tap and a drag still swipes.
+
+### The terminal and the view agree
+
+`run.py --sessions` and `--replay last` read the same library, so neither can
+disagree with what the Drives view shows. Before this they globbed `logs/` only
+and reported "no sessions" while the picker listed four captures.

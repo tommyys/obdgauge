@@ -122,11 +122,23 @@ def _summarise_csv(path):
         'profile': None,
     }
     if not meta:
-        # no sidecar: the drive was interrupted before it could be written.
-        # Count the rows so the entry is still honest about its size.
+        # No sidecar, so the drive was cut short before the summary could be
+        # written — laptop shut, ignition off, power pulled. The CSV itself
+        # survives (it is flushed every second), so recover what we can from it
+        # in one pass: how many samples, and how long it ran.
+        out['partial'] = True
         try:
+            rows, last = 0, None
             with open(path) as fh:
-                out['samples'] = max(0, sum(1 for _ in fh) - 1)
+                next(fh, None)                    # header
+                for line in fh:
+                    if line.strip():
+                        rows += 1
+                        last = line
+            out['samples'] = rows
+            if last:
+                # long format is  iso,t,key,value  — t is seconds from the start
+                out['duration_s'] = float(last.split(',')[1])
         except Exception:
             pass
     return out
@@ -172,13 +184,20 @@ def _summary_line(e):
         return 'unreadable'
     mins = (e.get('duration_s') or 0) / 60.0
     bits = []
-    if e['kind'] == 'drive':
-        if e.get('dist_km') is not None:
-            bits.append('%.1f km' % e['dist_km'])
+    if e['kind'] == 'drive' and e.get('dist_km') is not None:
+        bits.append('%.1f km' % e['dist_km'])
         if mins >= 1:
             bits.append('%.0f min' % mins)
         if e.get('score') is not None:
             bits.append('score %.0f' % e['score'])
+    elif e['kind'] == 'drive':
+        # cut short, so there is no distance or score to quote — say what the
+        # file does hold rather than calling a 4000-sample drive "empty"
+        n = e.get('samples') or 0
+        bits.append(('%.1fk pts' % (n / 1000.0)) if n >= 1000 else '%d pts' % n)
+        if mins >= 1:
+            bits.append('%.0f min' % mins)
+        bits.append('interrupted')
     else:
         bits.append('%d ch' % len(e.get('channels') or ()))
         n = e.get('samples') or 0

@@ -61,6 +61,16 @@ check('capture with driving is not flagged idle',
 check('unreadable says so',
       library._summary_line({'kind': 'unreadable'}), 'unreadable')
 
+# A drive cut short (laptop shut, ignition off) has no .json sidecar, so no
+# distance and no score. It must still describe itself — calling a 4000-sample
+# drive "empty" invites deleting a real one.
+cut = {'kind': 'drive', 'duration_s': 1020.0, 'dist_km': None, 'score': None,
+       'channels': [], 'samples': 4000, 'moving_samples': None,
+       'partial': True}
+check('interrupted drive quotes what it has',
+      library._summary_line(cut), '4.0k pts · 17 min · interrupted')
+check('never renders as empty', library._summary_line(cut) == 'empty', False)
+
 # --- resolve(): only ever a file the library already listed ---------------
 # The picker POSTs a name back to us. Matching on basename against the real
 # listing means a crafted string cannot reach anything else on disk.
@@ -83,6 +93,35 @@ check('newest first', stamps == sorted(stamps, reverse=True), True)
 check('every entry has a summary', all(e.get('summary') for e in real), True)
 check('every entry names a real file',
       all(os.path.isfile(e['path']) for e in real), True)
+
+# --- recorder: a failed session must leave nothing behind ------------------
+# The first BLE connect in the car often needs a retry (the phone may still
+# hold the link). If each attempt left a header-only CSV, the Drives view would
+# fill with "empty" rows.
+import shutil, tempfile
+from mx5gauge import recorder  # noqa: E402
+
+tmp = tempfile.mkdtemp()
+logs = os.path.join(tmp, 'logs')
+rec = recorder.Recorder(logs, prefix='drive', enabled=True)
+check('path is known up front (printable at startup)', bool(rec.path), True)
+check('but no file until there is data', os.path.exists(rec.path), False)
+check('close() reports nothing recorded', rec.close(summary={}), None)
+check('no logs dir created either', os.path.isdir(logs), False)
+check('library lists nothing', library.scan(tmp), [])
+
+rec = recorder.Recorder(logs, prefix='drive', enabled=True)
+rec.write('rpm', 812.0, 0.0)
+check('file appears on the first reading', os.path.exists(rec.path), True)
+rec.write('_car', {'label': 'X'}, 0.1)          # metadata is not a reading
+saved = rec.close(summary={'derived': {'dist_km': 1.5, 'elapsed_s': 120.0},
+                           'score': {'total': 70.0}})
+check('close() returns the path once there is data', saved == rec.path, True)
+with open(saved) as fh:
+    body = fh.read()
+check('metadata kept out of the log', '_car' in body, False)
+check('the reading is in the log', ',rpm,812.0' in body, True)
+shutil.rmtree(tmp)
 
 print()
 if FAILED:

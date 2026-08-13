@@ -25,6 +25,7 @@ class Recorder(object):
         self.enabled = enabled
         self.path = None
         self.rows = 0
+        self._dir = directory
         self._fh = None
         self._w = None
         self._t0 = None
@@ -33,15 +34,22 @@ class Recorder(object):
         self._channels = {}          # key -> count, for the summary
         if not enabled:
             return
-        os.makedirs(directory, exist_ok=True)
+        # The path is decided now so it can be printed at startup, but the file
+        # is not created until there is something to put in it. A live session
+        # that never connects — no adapter, BLE denied, phone still holding the
+        # link — would otherwise leave a header-only CSV behind on every
+        # attempt, and the Drives view would list each one as an empty drive.
         stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
         self.path = os.path.join(directory, '%s-%s.csv' % (prefix, stamp))
+
+    def _open(self):
+        os.makedirs(self._dir, exist_ok=True)
         self._fh = open(self.path, 'w', newline='')
         self._w = csv.writer(self._fh)
         self._w.writerow(['iso', 't', 'key', 'value'])
 
     def write(self, key, value, t=None):
-        if not self.enabled or self._w is None:
+        if not self.enabled:
             return
         if key.startswith('_'):
             return
@@ -49,6 +57,8 @@ class Recorder(object):
         if t is None:
             t = now
         with self._lock:
+            if self._w is None:
+                self._open()          # first real reading: commit to a file
             if self._t0 is None:
                 self._t0 = t
             iso = datetime.datetime.fromtimestamp(now).isoformat(timespec='milliseconds')
@@ -63,7 +73,11 @@ class Recorder(object):
                 self._fh.flush()
 
     def close(self, summary=None):
-        """Flush, close, and drop a .json summary beside the CSV."""
+        """Flush, close, and drop a .json summary beside the CSV.
+
+        Returns None when nothing was ever recorded, so the caller knows there
+        is no session to announce and no file was left on disk.
+        """
         if not self.enabled or self._fh is None:
             return None
         with self._lock:

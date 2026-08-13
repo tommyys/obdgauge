@@ -135,9 +135,16 @@ class Player(object):
 
             switch.cancel()
             if playing in done:
-                # a non-looping source ran out; hold the last frame rather than
-                # spinning, so the UI keeps showing where the drive ended
                 exc = playing.exception()
+                if self.src.kind == 'live':
+                    # Nothing can revive a dead live source: switching drives is
+                    # refused in live mode, so waiting here would leave a frozen
+                    # gauge and no explanation. Fail loudly instead.
+                    if exc:
+                        raise exc
+                    raise RuntimeError('the live source stopped unexpectedly')
+                # a replay ran out; hold the last frame rather than spinning, so
+                # the UI keeps showing where the drive ended
                 if exc:
                     self.g.status = 'source error: %s' % exc
                     print('  !! source error: %s' % exc)

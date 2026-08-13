@@ -154,6 +154,9 @@
   .drow.locked{cursor:default;border-style:dashed;border-color:var(--line);
     background:transparent;opacity:0.6;}
   .drow.locked:hover{background:transparent;border-color:var(--line);}
+  /* the drive being written right now */
+  .drow.rec{border-color:var(--green);background:rgba(53,224,107,0.10);}
+  .drow.rec .dnow{color:var(--green);}
   .dwarn{font-size:2.8cqw;color:var(--amber);text-align:center;line-height:1.5;
     border:1px solid rgba(255,197,61,0.45);background:rgba(255,197,61,0.10);
     border-radius:2.4cqw;padding:1.6cqw 2cqw;}
@@ -499,10 +502,12 @@ function dnote(text){
   return n;
 }
 
-function driveRow(e, current, canSwitch){
+function driveRow(e, current, canSwitch, recording){
   const row=document.createElement(canSwitch?'button':'div');
   const isNow=e.name===current;
-  row.className='drow'+(isNow?' on':'')+(canSwitch?'':' locked');
+  const isRec=recording && e.name===recording;
+  row.className='drow'+(isNow?' on':'')+(canSwitch?'':' locked')
+              +(isRec?' rec':'');
   const when=document.createElement('div');
   when.className='dwhen';
   const date=document.createElement('span');
@@ -510,13 +515,18 @@ function driveRow(e, current, canSwitch){
   // the right-hand tag doubles as the kind marker and the playing indicator,
   // so a row never carries both and never needs two lines
   const tag=document.createElement('span');
-  tag.className=isNow?'dnow':'dkind';
-  tag.textContent=isNow?'PLAYING'
-                       :(e.kind==='capture'?'CAPTURE':'DRIVE');
+  tag.className=(isRec||isNow)?'dnow':'dkind';
+  tag.textContent=isRec?'● REC'
+                       :(isNow?'PLAYING'
+                       :(e.kind==='capture'?'CAPTURE':'DRIVE'));
   when.append(date,tag);
   const sum=document.createElement('div');
   sum.className='dsum';
-  sum.textContent=e.summary;
+  // "interrupted" is right for an abandoned log but wrong for the one being
+  // written this second — that one is simply still going
+  sum.textContent=isRec
+    ? e.summary.replace(' · interrupted','') + ' · recording now'
+    : e.summary;
   row.append(when,sum);
   if(canSwitch) row.onclick=()=>selectDrive(e.name,row);
   return row;
@@ -540,7 +550,8 @@ async function loadDrives(){
                   + 'link to the car and stop recording.';
       kids.push(w);
     }
-    for(const e of r.entries) kids.push(driveRow(e,r.current,r.can_switch));
+    for(const e of r.entries)
+      kids.push(driveRow(e,r.current,r.can_switch,r.recording));
   }
   drivesBox().replaceChildren(...kids);
 }

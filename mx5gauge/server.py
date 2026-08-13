@@ -40,9 +40,17 @@ def make_handler(gauge, root=None, on_select=None):
                 self._json(200, gauge.snapshot())
                 return
             if path == '/sessions':
+                # the drive being written right now has no summary yet, so it
+                # would otherwise be listed as "interrupted" while you drive it
+                rec = getattr(gauge, 'recorder', None)
+                writing = None
+                if rec is not None and getattr(rec, 'path', None) \
+                        and getattr(rec, 'rows', 0) > 0:
+                    writing = os.path.basename(rec.path)
                 self._json(200, {
                     'entries': library.scan(root) if root else [],
                     'current': gauge.current_file,
+                    'recording': writing,
                     # switching is a replay-only idea: in the car the live link
                     # is the whole point, so the picker shows but cannot load
                     'can_switch': bool(on_select) and gauge.source_kind != 'live',

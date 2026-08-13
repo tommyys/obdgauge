@@ -93,83 +93,119 @@ class DrivingScore(object):
     smooth : penalises jerky throttle use
     econ   : rewards efficient fuel use and time in the efficient rpm band
     calm   : penalises harsh acceleration / braking events
+
+    **Every rate here is measured against its own channel's clock.** The gauge
+    feeds this on every sample of *any* channel, carrying the last-known value
+    of the rest, so `t` advances far faster than any single channel updates: on
+    a real 35-channel drive samples arrive every 0.077 s while speed refreshes
+    every 0.330 s. Dividing a speed change by the time since the last *sample*
+    rather than the last *speed* reading inflated acceleration roughly 4x and
+    turned every 1 km/h wiggle into a harsh event — 2285 of them on a drive
+    that really contained 4. It also made the score depend on how many channels
+    a car happens to report, so the same driving scored differently in
+    different cars. Rates are now per-channel and sample-rate independent.
     """
 
     def __init__(self):
-        self._last_t = None
-        self._last_thr = None
-        self._last_speed = None
-        self.jerk_sum = 0.0
-        self.jerk_n = 0
+        self._last_t = None          # any sample; used to integrate time
+        self._thr = None             # last throttle value and when it was seen
+        self._thr_t = None
+        self._spd = None             # last speed value and when it was seen
+        self._spd_t = None
+        self.thr_travel = 0.0        # total throttle movement, %
+        self.thr_seconds = 0.0       # seconds of throttle observation
         self.eco_s = 0.0
         self.rev_s = 0.0
-        self.econ_sum = 0.0
-        self.econ_n = 0
+        self.econ_sum = 0.0          # economy weighted by time, not by sample
+        self.econ_s = 0.0
         self.harsh = 0
         self.events = []
 
+    def _rebase(self, t, speed_kph, throttle_pct):
+        """Drop the derivative baselines. Used at the start and across gaps, so
+        a pause in the recording is never read as violent driving."""
+        self._last_t = t
+        self._thr, self._thr_t = throttle_pct, t
+        self._spd, self._spd_t = speed_kph, t
+
     def update(self, t, speed_kph, rpm, throttle_pct, fuel_rate_lph):
         if self._last_t is None:
-            self._last_t = t
-            self._last_thr = throttle_pct
-            self._last_speed = speed_kph
+            self._rebase(t, speed_kph, throttle_pct)
             return
         dt = t - self._last_t
-        if dt <= 0 or dt > 5.0:
-            self._last_t = t
-            self._last_thr = throttle_pct
-            self._last_speed = speed_kph
+        if dt == 0:
+            # Two channels sampled in the same millisecond — a tie, not a gap.
+            # Timestamps are written to 3 decimals and a 35-channel sweep fills
+            # those easily. Rebasing here was the real defect: it dragged the
+            # per-channel baseline timestamps forward while their values stayed
+            # put, so the next genuine speed change was divided by a fraction of
+            # the time it actually took. A 15->13 km/h lift became -4.6 m/s².
             return
+        if dt < 0 or dt > 5.0:
+            self._rebase(t, speed_kph, throttle_pct)
+            return
+        self._last_t = t
 
-        # throttle jerk (%/s) -> smoothness
-        if throttle_pct is not None and self._last_thr is not None:
-            self.jerk_sum += abs(throttle_pct - self._last_thr) / dt
-            self.jerk_n += 1
+        # Throttle movement per second. Total travel over total time rather than
+        # an average of per-sample jerk: holding a steady throttle correctly
+        # contributes time but no travel, whatever the sample rate.
+        if throttle_pct is not None:
+            if self._thr is None:
+                self._thr, self._thr_t = throttle_pct, t
+            else:
+                d = t - self._thr_t
+                if d > 0:
+                    self.thr_travel += abs(throttle_pct - self._thr)
+                    self.thr_seconds += d
+                    self._thr, self._thr_t = throttle_pct, t
 
-        # time in the efficient rev band
+        # time in the efficient rev band — integrating time, so the every-sample
+        # dt is the right one to use here
         if rpm is not None and rpm > 400:
             if ECO_RPM_LO <= rpm <= ECO_RPM_HI:
                 self.eco_s += dt
             self.rev_s += dt
 
-        # instantaneous economy samples
+        # economy, weighted by time so a densely-sampled channel cannot
+        # outvote a sparse one
         ie = instant_econ(speed_kph, fuel_rate_lph)
         if ie is not None and ie < 40:
-            self.econ_sum += ie
-            self.econ_n += 1
+            self.econ_sum += ie * dt
+            self.econ_s += dt
 
-        # harsh accel / braking from speed delta (m/s^2)
-        if speed_kph is not None and self._last_speed is not None:
-            a = (speed_kph - self._last_speed) / 3.6 / dt
-            if a > HARSH_ACCEL:
-                self.harsh += 1
-                self.events.append((t, 'accel', round(a, 2)))
-            elif a < HARSH_BRAKE:
-                self.harsh += 1
-                self.events.append((t, 'brake', round(a, 2)))
-
-        self._last_t = t
-        if throttle_pct is not None:
-            self._last_thr = throttle_pct
+        # Harsh accel / braking, from one speed reading to the next actual
+        # change — never from a stale value against a fresh timestamp.
         if speed_kph is not None:
-            self._last_speed = speed_kph
+            if self._spd is None:
+                self._spd, self._spd_t = speed_kph, t
+            elif speed_kph != self._spd:
+                d = t - self._spd_t
+                if d > 0:
+                    a = (speed_kph - self._spd) / 3.6 / d
+                    if a > HARSH_ACCEL:
+                        self.harsh += 1
+                        self.events.append((t, 'accel', round(a, 2)))
+                    elif a < HARSH_BRAKE:
+                        self.harsh += 1
+                        self.events.append((t, 'brake', round(a, 2)))
+                self._spd, self._spd_t = speed_kph, t
 
     # --- sub-scores (each 0-100) -------------------------------------------
     @property
     def smooth(self):
-        if self.jerk_n < 5:
+        if self.thr_seconds < 5:
             return None
-        avg = self.jerk_sum / self.jerk_n          # %/s
+        rate = self.thr_travel / self.thr_seconds  # %/s of throttle movement
         # 0 %/s -> 100 ; 12 %/s -> 0
-        return _clamp(100.0 - avg * 8.0)
+        return _clamp(100.0 - rate * 8.0)
 
     @property
     def econ(self):
         parts = []
         if self.rev_s > 5:
             parts.append(self.eco_s / self.rev_s * 100.0)
-        if self.econ_n > 5:
-            avg = self.econ_sum / self.econ_n      # L/100km
+        if self.econ_s > 5:
+            avg = self.econ_sum / self.econ_s      # L/100km, time-weighted
             # 5 L/100 -> 100 ; 15 L/100 -> 0
             parts.append(_clamp((15.0 - avg) * 10.0))
         if not parts:

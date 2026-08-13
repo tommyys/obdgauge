@@ -149,6 +149,14 @@
   .drow:hover{border-color:var(--line-2);background:rgba(255,255,255,0.07);}
   .drow.on{border-color:var(--accent);background:rgba(225,0,10,0.15);}
   .drow.busy{opacity:0.45;}
+  /* Inert while live. Must not look tappable: identical styling with a dead
+     click reads as a broken button, which is exactly how it was reported. */
+  .drow.locked{cursor:default;border-style:dashed;border-color:var(--line);
+    background:transparent;opacity:0.6;}
+  .drow.locked:hover{background:transparent;border-color:var(--line);}
+  .dwarn{font-size:2.8cqw;color:var(--amber);text-align:center;line-height:1.5;
+    border:1px solid rgba(255,197,61,0.45);background:rgba(255,197,61,0.10);
+    border-radius:2.4cqw;padding:1.6cqw 2cqw;}
   /* date left, kind (or PLAYING) right, so neither pushes the other onto a
      second line — a wrapped row grows tall enough to shove the list out of
      the circle */
@@ -494,7 +502,7 @@ function dnote(text){
 function driveRow(e, current, canSwitch){
   const row=document.createElement(canSwitch?'button':'div');
   const isNow=e.name===current;
-  row.className='drow'+(isNow?' on':'');
+  row.className='drow'+(isNow?' on':'')+(canSwitch?'':' locked');
   const when=document.createElement('div');
   when.className='dwhen';
   const date=document.createElement('span');
@@ -523,8 +531,15 @@ async function loadDrives(){
     kids.push(dnote('No drives yet. Record one with the LIVE launcher — '
                     + 'they land in logs/'));
   } else {
-    if(!r.can_switch)
-      kids.push(dnote('live session — loading a drive would drop the link'));
+    if(!r.can_switch){
+      // stated loudly, not as a faint aside: a dead tap with no visible reason
+      // reads as a bug rather than a deliberate guard
+      const w=document.createElement('div');
+      w.className='dwarn';
+      w.textContent='LIVE — drives are locked. Loading one would drop the '
+                  + 'link to the car and stop recording.';
+      kids.push(w);
+    }
     for(const e of r.entries) kids.push(driveRow(e,r.current,r.can_switch));
   }
   drivesBox().replaceChildren(...kids);

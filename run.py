@@ -94,15 +94,33 @@ class Player(object):
         self.model = model
         self.loop = None
         self.request = None
+        self.at_end = False
         self.event = asyncio.Event()
 
-    def select(self, entry):
+    def select(self, entry, seek_to_end=False):
         """Ask for `entry` to start playing. Thread-safe, returns immediately."""
         self.request = entry
+        self.at_end = seek_to_end
         if self.loop is not None:
             self.loop.call_soon_threadsafe(self.event.set)
 
-    def _load(self, entry):
+    def seek(self, t):
+        """Scrub the drive being replayed to `t`. Thread-safe.
+
+        The work happens on the event loop rather than the HTTP thread: a seek
+        feeds thousands of samples through the gauge, and doing that underneath
+        the running source would interleave two writers into one set of totals.
+        """
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(self._seek_now, t)
+
+    def _seek_now(self, t):
+        src = self.src
+        if getattr(src, 'kind', None) != 'replay':
+            return
+        src.seek(t, self.g)
+
+    def _load(self, entry, at_end=False):
         # a different drive must not inherit the last one's trip or channels
         self.g.reset()
         self.src = sources.ReplaySource(entry['path'], speed=self.speed,
@@ -110,6 +128,11 @@ class Player(object):
         self.g.source_kind = self.src.kind
         self.g.status = self.src.status
         self.g.current_file = entry['name']
+        self.g.replay = self.src
+        if at_end:
+            # opening a drive shows what it came to: its finished totals, with
+            # the bar full. Scrubbing back from there is what replays it.
+            self.src.seek(self.src.duration, self.g)
         print('  loaded : %s' % entry['name'])
 
     async def run(self):
@@ -130,7 +153,7 @@ class Player(object):
                 except Exception as exc:                  # noqa: BLE001
                     print('  (previous source stopped: %s)' % exc)
                 entry, self.request = self.request, None
-                self._load(entry)
+                self._load(entry, at_end=self.at_end)
                 continue
 
             switch.cancel()
@@ -246,10 +269,11 @@ async def main():
                     make=args.make, model=args.model)
     if src.kind == 'replay':
         g.current_file = os.path.basename(src.path)
+        g.replay = src
 
     try:
         httpd = server.serve(g, port=args.port, root=HERE,
-                             on_select=player.select)
+                             on_select=player.select, on_seek=player.seek)
     except server.PortInUse as exc:
         print('\n  !! %s\n' % exc)
         return 2

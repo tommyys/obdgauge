@@ -173,7 +173,7 @@ maths is proven before it ever runs on the board.
 | 6 | Power | actual torque % × reference torque × rpm |
 | 7 | Thermals | coolant, intake, catalyst |
 | 8 | Electrical | control-module voltage / ATRV, charge status |
-| 9 | Drives | the replayable-drive library (§12) |
+| 9 | Drives | the replayable-drive library (§12), and one drive's summary + timeline (§13) |
 
 Fuel rail temperature was dropped from Thermals: across every capture it
 returned **2 distinct values in 375 samples** (72/73 °C), so it is a canned
@@ -481,3 +481,66 @@ actually travelled 8px, so a tap stays a tap and a drag still swipes.
 `run.py --sessions` and `--replay last` read the same library, so neither can
 disagree with what the Drives view shows. Before this they globbed `logs/` only
 and reported "no sessions" while the picker listed four captures.
+
+---
+
+## 13. Reviewing a drive: the timeline (shipped in the simulator)
+
+Replay existed to *watch* a drive; this makes it possible to *review* one. Three
+changes, agreed 2026-08-13 and built 2026-08-14.
+
+### One primitive: `ReplaySource.seek(t, gauge)`
+
+Everything here rests on a single operation. Seeking to `t` resets the gauge,
+then pushes every row before `t` through `gauge.sample()` with its own logical
+timestamp and no sleeping at all, before playback carries on from there.
+
+The point of doing it that way is that there is no second implementation of the
+maths. The trip totals and the driving score at any scrub position are produced
+by exactly the code that produces them during playback, so the summary can
+never drift from what the gauge would have shown had you sat and watched. The
+rows are already in memory, so even seeking to the end of a 3000-second capture
+is instant. `tests/test_sources.py` asserts the equivalence directly: seek to
+`t` and play straight through to `t` must agree on every trip and score field.
+
+Seeking to the very end **parks**: the source holds that frame and waits rather
+than looping round, because "opened at the end" is a drive's summary, not a
+replay that ran out. Anywhere else resumes playing.
+
+### 1. Position bar
+
+`ReplaySource` tracks `pos` and `duration` along the **capture's own timeline**,
+which is the time the drive really took — playing it back at 8x does not make
+the drive eight times shorter, and the bar must not claim it did. `snapshot()`
+reports `replay: {pos, dur, paused}`, or `null` when live: there is no recorded
+timeline to sit on when the data is the car in front of you.
+
+The bar is a chord across the bottom of the circle, not a full-width strip — at
+the rim the round screen has already clipped most of the width away.
+
+### 2. The drive card
+
+Tapping a row in Drives no longer just starts the drive. It opens that drive **at
+its end**, and replaces the list with a summary card: distance (or sample count
+— captures still refuse to quote km, §12), elapsed, score, channel count, over a
+full-width bar sitting at 100%. Scrubbing back from full is what replays it;
+`POST /seek {"t": …}` carries the request, and the seek runs on the event loop,
+never the HTTP thread, so two writers never interleave into one set of totals.
+
+Three details:
+
+- **The seek fires on release, not on every move.** Each seek re-feeds the whole
+  log up to that point; one per pixel would swamp the loop.
+- **The card follows playback, except while a thumb is down.** Otherwise the
+  100 ms poll yanks the handle out from under the drag.
+- **The scrub target is far taller than the track it draws,** and stops
+  propagation on both pointer and arrow-key events — the carousel listens on the
+  same gestures, and scrubbing must not slide the view out from under you.
+
+### 3. Replay shows the revs the drive actually turned
+
+The REPLAY launcher passed `--sweep 1000-7000`, which made the rev-reactive
+visuals easy to admire on a capture that idles — and made replay useless for
+reviewing a drive, which is now what replay is for. The launcher no longer
+passes it. The flag survives on `run.py` for judging visuals against an idling
+capture, still labelled as a preview on screen and still refused in live mode.

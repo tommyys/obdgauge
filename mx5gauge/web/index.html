@@ -143,6 +143,7 @@
     display:flex;flex-direction:column;gap:2.2cqw;
     scrollbar-width:none;-webkit-overflow-scrolling:touch;}
   .drives::-webkit-scrollbar{display:none;}
+  .drives[hidden]{display:none;}
   .drow{width:100%;text-align:left;font-family:var(--mono);color:var(--txt);
     border:1px solid var(--line-2);border-radius:2.6cqw;padding:2cqw 2.8cqw;
     background:rgba(255,255,255,0.035);cursor:pointer;display:block;}
@@ -173,6 +174,42 @@
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .dnote{font-size:2.9cqw;color:var(--faint);text-align:center;line-height:1.6;
     padding:2cqw 0;}
+
+  /* one drive's summary, in the same slot the list occupies */
+  .dcard{position:absolute;left:0;right:0;top:22cqw;bottom:11cqw;padding:0 13cqw;
+    display:flex;flex-direction:column;justify-content:center;gap:3.4cqw;}
+  .dcard[hidden]{display:none;}
+  .dstats{display:grid;grid-template-columns:1fr 1fr;gap:2.2cqw 3cqw;}
+  .dstat{min-width:0;}
+  .dstat .dk{font-size:2.2cqw;color:var(--faint);letter-spacing:0.11em;}
+  .dstat .dv{font-family:var(--mono);font-size:4.4cqw;color:var(--phos);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .dstat .dv small{font-size:2.4cqw;color:var(--muted);margin-left:0.6cqw;}
+  /* The scrub target is deliberately much taller than the track it draws:
+     this is a 240px round screen operated with a thumb, and a 4px hit area
+     would be unusable. */
+  .dscrub{padding:2.4cqw 0 0;cursor:pointer;touch-action:none;}
+  .dscrub:focus-visible{outline:2px solid var(--accent);outline-offset:3px;
+    border-radius:1cqw;}
+  .dtrack{height:1.6cqw;border-radius:1cqw;background:rgba(255,255,255,0.10);
+    overflow:hidden;}
+  .dfill{height:100%;width:100%;background:var(--accent);border-radius:1cqw;}
+  .dclock{display:flex;justify-content:space-between;margin-top:1.4cqw;
+    font-family:var(--mono);font-size:2.5cqw;color:var(--muted);}
+  .dback{margin:0 auto;border:1px solid var(--line-2);border-radius:2.4cqw;
+    background:transparent;color:var(--muted);font-family:var(--mono);
+    font-size:2.5cqw;letter-spacing:0.08em;padding:1.4cqw 3.4cqw;cursor:pointer;}
+  .dback:hover{border-color:var(--accent);color:var(--phos);}
+
+  /* Position through the drive, on every view. A chord across the bottom of
+     the circle rather than a full-width bar: at the rim the round screen has
+     already clipped most of the width away. */
+  .rprog{position:absolute;left:26%;right:26%;bottom:5.5cqw;height:1.2cqw;
+    border-radius:1cqw;background:rgba(255,255,255,0.09);overflow:hidden;
+    z-index:5;pointer-events:none;}
+  .rprog[hidden]{display:none;}
+  .rfill{height:100%;width:0;background:var(--accent);border-radius:1cqw;
+    transition:width 0.25s linear;}
 
   /* controls */
   .dots{display:flex;gap:8px;justify-content:center;}
@@ -322,13 +359,30 @@
       <!-- 8 DRIVES — browse past drives and load one. No data-needs: the
            library is about files on disk, not channels the car reports. -->
       <div class="view">
-        <div class="vtitle">DRIVES</div>
+        <div class="vtitle" id="dtitle">DRIVES</div>
         <div class="drives" id="drives">
           <div class="dnote">reading the library…</div>
+        </div>
+        <!-- the same slot, showing one drive instead of the list. Opened at
+             the drive's end: the totals are the summary, and scrubbing the
+             bar back from full is what replays it. -->
+        <div class="dcard" id="dcard" hidden>
+          <div class="dstats" id="dstats"></div>
+          <div class="dscrub" id="dscrub" role="slider" tabindex="0"
+               aria-label="Position in this drive"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+            <div class="dtrack"><div class="dfill" id="dfill"></div></div>
+            <div class="dclock"><span id="dpos">0:00</span>
+              <span id="ddur">0:00</span></div>
+          </div>
+          <button class="dback" id="dback">‹ ALL DRIVES</button>
         </div>
       </div>
 
     </div>
+    <!-- position through the logged drive, on every view. Replay only: there
+         is no timeline to sit on when the data is the car in front of you. -->
+    <div class="rprog" id="rprog" hidden><div class="rfill" id="rfill"></div></div>
   </div>
 </div>
 
@@ -348,6 +402,11 @@ function polar(cx,cy,r,deg){const a=deg*Math.PI/180;return [cx+r*Math.cos(a),cy+
 function arc(cx,cy,r,a0,a1){const p0=polar(cx,cy,r,a0),p1=polar(cx,cy,r,a1),lg=(a1-a0)>180?1:0;
   return `M${p0[0].toFixed(2)},${p0[1].toFixed(2)} A${r},${r} 0 ${lg} 1 ${p1[0].toFixed(2)},${p1[1].toFixed(2)}`;}
 const fmt=(v,d=0,dash='--')=>(v===null||v===undefined||isNaN(v))?dash:Number(v).toFixed(d);
+const $=id=>document.getElementById(id);
+const mmss=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
+// the most recent /data snapshot, so the drive card can quote live figures
+// rather than re-deriving what the gauge already worked out
+let LAST=null;
 
 /* ---- shared gauge geometry (declared before any gauge uses it) ---- */
 const CX=130,CY=130,R=104,START=135,SWEEP=270,TLO=40,THI=120;
@@ -495,6 +554,10 @@ go(0, false);          // initial placement must not animate from nowhere
 // during carousel setup, before this part of the script has run
 const drivesBox=()=>document.getElementById('drives');
 let drivesBusy=false;
+// The card showing one drive. Declared up here with the rest of the picker's
+// state because `go(0)` runs before the card's own code and can reach
+// loadDrives, which asks whether the card is open.
+const CARD={open:false, entry:null, dragging:false, dur:0, pos:0};
 
 function dnote(text){
   const n=document.createElement('div');
@@ -528,11 +591,15 @@ function driveRow(e, current, canSwitch, recording){
     ? e.summary.replace(' · interrupted','') + ' · recording now'
     : e.summary;
   row.append(when,sum);
-  if(canSwitch) row.onclick=()=>selectDrive(e.name,row);
+  if(canSwitch) row.onclick=()=>selectDrive(e,row);
   return row;
 }
 
 async function loadDrives(){
+  // arriving back on this view while a drive's card is open should not throw
+  // it away — you swipe off to watch the tacho and back again constantly
+  if(CARD.open) return;
+  showList();
   let r;
   try{ r=await (await fetch('/sessions',{cache:'no-store'})).json(); }
   catch(_e){ drivesBox().replaceChildren(dnote('could not read the library')); return; }
@@ -556,29 +623,159 @@ async function loadDrives(){
   drivesBox().replaceChildren(...kids);
 }
 
-async function selectDrive(name,row){
+async function selectDrive(entry,row){
   if(drivesBusy) return;
   drivesBusy=true; row.classList.add('busy');
   try{
     const res=await fetch('/select',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name})});
+      body:JSON.stringify({name:entry.name})});
     if(!res.ok){
       const j=await res.json().catch(()=>({}));
       drivesBox().replaceChildren(dnote(j.error||'could not load that drive'));
       return;
     }
     // the swap happens on the server's event loop; give it a moment to take
-    // effect so the refreshed list marks the right row as playing
+    // effect so the card opens on the drive that is actually loaded
     await new Promise(r=>setTimeout(r,400));
-    await loadDrives();
+    showCard(entry);
   } finally { drivesBusy=false; row.classList.remove('busy'); }
 }
 
+/* ---- one drive's summary, with a scrubbable timeline -------------------
+   The card opens at the end of the drive, so what you see first is what the
+   drive came to. Dragging the bar back seeks the replay, and because seeking
+   re-feeds the log through the same metrics that playback uses, the totals on
+   the card are always the real ones for wherever the bar sits.          */
+function showList(){
+  CARD.open=false; CARD.entry=null;
+  $('dcard').hidden=true;
+  drivesBox().hidden=false;
+  $('dtitle').textContent='DRIVES';
+}
+
+function showCard(entry){
+  CARD.open=true; CARD.entry=entry; CARD.dragging=false;
+  CARD.dur=entry.duration_s||0; CARD.pos=CARD.dur;
+  drivesBox().hidden=true;
+  $('dcard').hidden=false;
+  $('dtitle').textContent=entry.when||'DRIVE';
+  drawCard();
+}
+
+function stat(k,v,unit){
+  const d=document.createElement('div'); d.className='dstat';
+  const kk=document.createElement('div'); kk.className='dk'; kk.textContent=k;
+  const vv=document.createElement('div'); vv.className='dv'; vv.textContent=v;
+  if(unit){const u=document.createElement('small');u.textContent=unit;vv.append(u);}
+  d.append(kk,vv);
+  return d;
+}
+
+/* Live figures win over the library's stored summary: once you scrub, the
+   stored numbers describe the whole drive and no longer describe what the
+   gauge is showing. Before any data arrives, fall back to the library. */
+function drawCard(){
+  const e=CARD.entry; if(!e) return;
+  const d=(LAST&&LAST.derived)||{}, sc=(LAST&&LAST.score)||{};
+  const cells=[];
+  // Car Scanner captures arrive in bursts with long holes in them, so a
+  // distance integrated from their speed trace is meaningless — the same
+  // reason the list quotes sample counts for them. Say what the file supports.
+  if(e.dist_reliable){
+    const km = d.dist_km!=null ? d.dist_km : e.dist_km;
+    cells.push(stat('DISTANCE', km!=null? km.toFixed(1) : '—', km!=null?'km':''));
+  } else {
+    const n=e.samples||0;
+    cells.push(stat('SAMPLES', n>=1000? (n/1000).toFixed(1) : String(n),
+                    n>=1000?'k':''));
+  }
+  cells.push(stat('ELAPSED', mmss(CARD.pos)));
+  const score = sc.total!=null ? sc.total : e.score;
+  cells.push(stat('SCORE', score!=null? Math.round(score) : '—'));
+  cells.push(stat('CHANNELS', (e.channels||[]).length||'—'));
+  $('dstats').replaceChildren(...cells);
+  const frac=CARD.dur>0 ? Math.max(0,Math.min(1,CARD.pos/CARD.dur)) : 1;
+  $('dfill').style.width=(frac*100).toFixed(2)+'%';
+  $('dpos').textContent=mmss(CARD.pos);
+  $('ddur').textContent=mmss(CARD.dur);
+  $('dscrub').setAttribute('aria-valuenow',Math.round(frac*100));
+}
+
+function scrubTo(clientX){
+  const box=$('dscrub').getBoundingClientRect();
+  const frac=Math.max(0,Math.min(1,(clientX-box.left)/(box.width||1)));
+  CARD.pos=frac*CARD.dur;
+  drawCard();
+  return CARD.pos;
+}
+
+function sendSeek(t){
+  fetch('/seek',{method:'POST',headers:{'Content-Type':'application/json'},
+                 body:JSON.stringify({t})}).catch(()=>{});
+}
+
+(function wireScrub(){
+  const el=$('dscrub');
+  // Pointer events rather than mouse+touch: the same gesture has to work
+  // under a thumb on the device and a mouse at the desk.
+  el.addEventListener('pointerdown',ev=>{
+    if(!CARD.open||!CARD.dur) return;
+    CARD.dragging=true; el.setPointerCapture(ev.pointerId);
+    scrubTo(ev.clientX); ev.preventDefault(); ev.stopPropagation();
+  });
+  el.addEventListener('pointermove',ev=>{
+    if(!CARD.dragging) return;
+    scrubTo(ev.clientX); ev.preventDefault(); ev.stopPropagation();
+  });
+  const end=ev=>{
+    if(!CARD.dragging) return;
+    CARD.dragging=false;
+    // seek on release, not on every move: each seek re-feeds the whole log up
+    // to that point, and firing one per pixel would swamp the event loop
+    sendSeek(scrubTo(ev.clientX));
+    ev.preventDefault(); ev.stopPropagation();
+  };
+  el.addEventListener('pointerup',end);
+  el.addEventListener('pointercancel',()=>{CARD.dragging=false;});
+  el.addEventListener('keydown',ev=>{
+    if(!CARD.open||!CARD.dur) return;
+    const step=CARD.dur/20;
+    let t=null;
+    if(ev.key==='ArrowLeft') t=Math.max(0,CARD.pos-step);
+    else if(ev.key==='ArrowRight') t=Math.min(CARD.dur,CARD.pos+step);
+    else if(ev.key==='Home') t=0;
+    else if(ev.key==='End') t=CARD.dur;
+    if(t===null) return;
+    CARD.pos=t; drawCard(); sendSeek(t);
+    // the carousel also listens on the arrows; scrubbing must not slide views
+    ev.preventDefault(); ev.stopPropagation();
+  });
+  // close first: loadDrives declines to rebuild while a card is open
+  $('dback').onclick=()=>{showList();loadDrives();};
+})();
+
+/* ---- position through the logged drive -------------------------------- */
+function applyReplayPosition(r){
+  const bar=$('rprog');
+  if(!r||!r.dur){ bar.hidden=true; }
+  else {
+    bar.hidden=false;
+    $('rfill').style.width=(Math.max(0,Math.min(1,r.pos/r.dur))*100).toFixed(2)+'%';
+  }
+  // the card follows playback too — but not while a thumb is on the bar, or
+  // the poll would keep yanking the handle out from under the drag
+  if(CARD.open && r && !CARD.dragging){
+    // the library's duration and the source's can differ by a sample or two;
+    // the source is the one being played, so it wins
+    if(r.dur) CARD.dur=r.dur;
+    CARD.pos=r.pos;
+    drawCard();
+  }
+}
+
 /* ---- render from /data ---- */
-const $=id=>document.getElementById(id);
 function setStatus(el,txt,cls){el.className='status '+(cls||'');$(el.id+'_t').textContent=txt;}
-const mmss=s=>{s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
 
 /* ---- universal: adapt to whatever car is plugged in --------------------
    Two things change per car: the dial scales (from its profile) and which
@@ -623,6 +820,8 @@ async function tick(){
   try{ d=await (await fetch('/data',{cache:'no-store'})).json(); }
   catch(e){ $('led').className='led err'; $('srcTxt').textContent='server gone'; return; }
   const L=d.live,D=d.derived,S=d.score;
+  LAST=d;
+  applyReplayPosition(d.replay);
 
   // header
   const bad=/error|no OBD|disconnected/i.test(d.status);

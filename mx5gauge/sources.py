@@ -52,6 +52,52 @@ class ReplaySource(object):
                                     model=model or base.get('model'),
                                     year=base.get('year'), source='capture')
         self.status = 'replay: %s' % path.split('/')[-1]
+        # Position and length along the *capture's own* timeline, which is what
+        # the drive actually took — playing it back at 8x does not make the
+        # drive eight times shorter, and the progress bar must not say it did.
+        self.duration = self.rows[-1][0] if self.rows else 0.0
+        self.pos = 0.0
+        self._cursor = 0            # next row `run` will play
+        self._seek = None           # a seek requested while the loop is awake
+        # Parked at the end of the drive, showing its totals, waiting for a
+        # scrub. This is what clicking a drive lands you in — distinct from a
+        # replay that simply ran out, which loops back round.
+        self.paused = False
+        self._wake = asyncio.Event()
+
+    # -- seeking -------------------------------------------------------------
+    def seek(self, t, gauge):
+        """Put `gauge` in the state it would hold `t` seconds into this drive.
+
+        Every row before `t` is pushed through the gauge with its own logical
+        timestamp and no sleeping at all, so the trip totals and the driving
+        score are the genuine article rather than a second, parallel summary
+        that could drift from what playback produces. The rows are already in
+        memory, so even seeking to the end of a long drive is immediate.
+        """
+        t = max(0.0, min(float(t), self.duration))
+        gauge.reset()
+        # reset() clears the metadata too, so put the identity and the channel
+        # list back before any reading lands — otherwise the banner blanks and
+        # every view greys out for as long as it takes to scrub
+        gauge.sample('_car', self.car)
+        gauge.sample('_supported_keys', self.supported_keys)
+        i = 0
+        for i, (ts, key, val) in enumerate(self.rows):
+            if ts > t:
+                break
+            gauge.sample(key, val, ts)
+        else:
+            i = len(self.rows)
+        self._cursor = i
+        self.pos = t
+        # Seeking to the very end means "show me this drive's totals", so park
+        # there. Anywhere else means "play on from here".
+        self.paused = self._cursor >= len(self.rows)
+        # if the loop is mid-sleep it must abandon its place and pick this up
+        self._seek = t
+        self._wake.set()
+        return t
 
     async def run(self, on_sample):
         lap = 0.0
@@ -59,20 +105,51 @@ class ReplaySource(object):
         on_sample('_supported_keys', self.supported_keys)
         while True:
             prev = None
-            for ts, key, val in self.rows:
+            self._seek = None
+            while self._cursor < len(self.rows):
+                ts, key, val = self.rows[self._cursor]
+                self._cursor += 1
                 if prev is not None:
                     gap = min(ts - prev, self.max_gap)
                     if gap > 0:
                         await asyncio.sleep(gap / self.speed)
+                # a scrub landed while we were asleep: drop the row we were
+                # about to play and pick up from where the seek left the cursor
+                if self._seek is not None:
+                    self._seek = None
+                    prev = None
+                    continue
                 prev = ts
+                self.pos = ts
                 # pass the capture's own timeline, not wall-clock: metrics must
                 # see real-world seconds even when we play back at 10x
                 on_sample(key, val, lap + ts)
+            if self.paused:
+                await self._park()
+                continue
             if not self.loop:
+                self.pos = self.duration
                 self.status = 'replay finished'
-                return
-            lap += (self.rows[-1][0] if self.rows else 0.0) + 1.0
+                self.paused = True
+                await self._park()
+                continue
+            lap += self.duration + 1.0
+            self._cursor = 0
+            self.pos = 0.0
             await asyncio.sleep(1.0)
+
+    async def _park(self):
+        """Hold the current frame until someone scrubs.
+
+        The gauge keeps showing where the drive ended — which is the whole
+        point of the summary — instead of spinning through the file again or
+        blanking out.
+        """
+        self._wake.clear()
+        while self.paused:
+            await self._wake.wait()
+            self._wake.clear()
+        self._seek = None
 
 
 # ---------------------------------------------------------------------------

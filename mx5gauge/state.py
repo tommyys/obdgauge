@@ -103,6 +103,9 @@ class Gauge(object):
         # Never set in live mode — real rpm is the point when you're driving.
         self.preview_sweep = None
         self.current_file = None   # basename of the drive being replayed, if any
+        # set by run.py to the ReplaySource currently playing, so the snapshot
+        # can report where along the drive we are. None when live.
+        self.replay = None
 
     def reset(self):
         """Clear everything a new drive must not inherit.
@@ -250,4 +253,22 @@ class Gauge(object):
                 'channels': v.get('_supported_keys'),
                 'preview_sweep': self.preview_sweep,
                 'file': self.current_file,
+                'replay': self._replay_position(),
             }
+
+    def _replay_position(self):
+        """Where along the logged drive we are, or None when this is live.
+
+        Both figures are in the capture's own seconds — the time the drive
+        really took — so a replay running at 8x still reports an honest
+        position. Called with the lock held.
+        """
+        src = self.replay
+        if src is None:
+            return None
+        dur = getattr(src, 'duration', 0.0) or 0.0
+        return {
+            'pos': min(getattr(src, 'pos', 0.0) or 0.0, dur),
+            'dur': dur,
+            'paused': bool(getattr(src, 'paused', False)),
+        }

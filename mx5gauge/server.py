@@ -13,7 +13,7 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 MAX_BODY = 4096
 
 
-def make_handler(gauge, root=None, on_select=None):
+def make_handler(gauge, root=None, on_select=None, on_seek=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass                                  # keep the console clean
@@ -69,10 +69,31 @@ def make_handler(gauge, root=None, on_select=None):
                 return
             self._send(404, 'not found', 'text/plain')
 
+        def _body(self):
+            """The decoded JSON body, or None (a reply has been sent)."""
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+            except ValueError:
+                n = 0
+            if n <= 0 or n > MAX_BODY:
+                self._json(400, {'ok': False, 'error': 'bad body'})
+                return None
+            try:
+                return json.loads(self.rfile.read(n).decode('utf-8')) or {}
+            except Exception:
+                self._json(400, {'ok': False, 'error': 'bad json'})
+                return None
+
         def do_POST(self):
-            if self.path.split('?')[0] != '/select':
+            path = self.path.split('?')[0]
+            if path == '/select':
+                self._do_select()
+            elif path == '/seek':
+                self._do_seek()
+            else:
                 self._send(404, 'not found', 'text/plain')
-                return
+
+        def _do_select(self):
             if on_select is None:
                 self._json(409, {'ok': False, 'error': 'switching not available'})
                 return
@@ -80,25 +101,37 @@ def make_handler(gauge, root=None, on_select=None):
                 self._json(409, {'ok': False,
                                  'error': 'live session — not switching'})
                 return
-            try:
-                n = int(self.headers.get('Content-Length') or 0)
-            except ValueError:
-                n = 0
-            if n <= 0 or n > MAX_BODY:
-                self._json(400, {'ok': False, 'error': 'bad body'})
+            req = self._body()
+            if req is None:
                 return
-            try:
-                req = json.loads(self.rfile.read(n).decode('utf-8'))
-                name = (req or {}).get('name')
-            except Exception:
-                self._json(400, {'ok': False, 'error': 'bad json'})
-                return
-            entry = library.resolve(root, name) if root else None
+            entry = library.resolve(root, req.get('name')) if root else None
             if entry is None:
                 self._json(404, {'ok': False, 'error': 'no such drive'})
                 return
-            on_select(entry)
+            # A drive is opened at its end: what you asked to see is the
+            # finished drive's summary, and scrubbing back is how you replay it.
+            on_select(entry, seek_to_end=True)
             self._json(200, {'ok': True, 'name': entry['name']})
+
+        def _do_seek(self):
+            # Seeking is meaningless live — there is no recorded timeline to
+            # move along, only the car in front of you.
+            if on_seek is None or gauge.source_kind == 'live':
+                self._json(409, {'ok': False, 'error': 'nothing to scrub'})
+                return
+            req = self._body()
+            if req is None:
+                return
+            try:
+                t = float(req.get('t'))
+            except (TypeError, ValueError):
+                self._json(400, {'ok': False, 'error': 'bad position'})
+                return
+            if t != t or t in (float('inf'), float('-inf')):
+                self._json(400, {'ok': False, 'error': 'bad position'})
+                return
+            on_seek(t)
+            self._json(200, {'ok': True, 't': t})
 
     return Handler
 
@@ -107,10 +140,11 @@ class PortInUse(Exception):
     pass
 
 
-def serve(gauge, port=8420, root=None, on_select=None):
+def serve(gauge, port=8420, root=None, on_select=None, on_seek=None):
     try:
-        httpd = ThreadingHTTPServer(('127.0.0.1', port),
-                                    make_handler(gauge, root, on_select))
+        httpd = ThreadingHTTPServer(
+            ('127.0.0.1', port),
+            make_handler(gauge, root, on_select, on_seek))
     except OSError as exc:
         # EADDRINUSE — almost always a previous run still holding the port
         raise PortInUse(

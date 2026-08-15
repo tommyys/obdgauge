@@ -185,15 +185,16 @@
   .dscore{display:flex;align-items:baseline;justify-content:center;}
   .dscore .dsv{font-family:var(--mono);font-size:9.5cqw;line-height:1;
     color:var(--phos);}
-  /* five figures, so the last one centres across the pair rather than
-     hanging off the left of an orphan row */
-  .dstats{display:grid;grid-template-columns:1fr 1fr;gap:1.8cqw 3cqw;}
-  .dstat:nth-child(5){grid-column:1 / -1;text-align:center;}
+  /* Two lines of three: what the car was doing on top, how hot it was
+     underneath. Grouping them by row is what makes the pair readable at a
+     glance on a screen this small. */
+  .dstats{display:grid;grid-template-columns:repeat(3,1fr);gap:2.4cqw 2cqw;}
   .dstat{min-width:0;}
-  .dstat .dk{font-size:2.1cqw;color:var(--faint);letter-spacing:0.11em;}
-  .dstat .dv{font-family:var(--mono);font-size:4.1cqw;color:var(--phos);
+  .dstat .dk{font-size:1.9cqw;color:var(--faint);letter-spacing:0.08em;
+    white-space:nowrap;}
+  .dstat .dv{font-family:var(--mono);font-size:3.9cqw;color:var(--phos);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .dstat .dv small{font-size:2.4cqw;color:var(--muted);margin-left:0.6cqw;}
+  .dstat .dv small{font-size:2.1cqw;color:var(--muted);margin-left:0.5cqw;}
   /* The scrub target is deliberately much taller than the track it draws:
      this is a 240px round screen operated with a thumb, and a 4px hit area
      would be unusable. */
@@ -702,10 +703,13 @@ function drawCard(){
   // The car as it was at the moment the bar is sitting on — scrubbing is how
   // you look around the drive, so these follow the handle rather than
   // summarising the whole file.
+  const D=(LAST&&LAST.derived)||{};
   const num=(v,d=0)=>v==null? '—' : Number(v).toFixed(d);
+  // top line: what the car was doing. bottom line: how hot it was.
   const cells=[
     stat('RPM',      num(L.rpm)),
     stat('SPEED',    num(L.speed),    L.speed==null?    '' : 'km/h'),
+    stat('DIST',     num(D.dist_km,1), D.dist_km==null? '' : 'km'),
     stat('COOLANT',  num(L.coolant),  L.coolant==null?  '' : '°C'),
     stat('INTAKE',   num(L.intake),   L.intake==null?   '' : '°C'),
     stat('CATALYST', num(L.catalyst), L.catalyst==null? '' : '°C'),
@@ -964,6 +968,14 @@ let tachShown  = 0;         // what the needle is currently showing
 const GLOW_EMBER = [104, 26, 12];   // low intensity, deep ember
 const GLOW_RED   = [255, 34, 22];   // full intensity, hot red
 const GLOW_START = 0.22;            // fraction of redline before any tint
+/* Fraction of redline at which the glow is already fully hot. Tying full
+   intensity to the redline itself meant the top of the ramp was somewhere you
+   essentially never go on a road — 5000 rpm in an MX-5 read as a little over
+   half brightness, so the effect spent its life in the dull half. 0.72 of a
+   7000 redline is 5040 rpm: reachable in second on any decent road, and the
+   ramp below it still has the whole usable range to play with. Kept as a
+   fraction so a car with a different redline scales with it. */
+const GLOW_FULL  = 0.72;
 const glowEl = document.getElementById('glow');
 let glowPaintedAt = -1;             // last colour step actually written
 
@@ -994,9 +1006,9 @@ function glowGradient(c){
 function drawGlow(rpm, has){
   let f = 0;
   if (has && RPM_RED > 0){
-    f = (rpm/RPM_RED - GLOW_START) / (1 - GLOW_START);
+    f = (rpm/RPM_RED - GLOW_START) / (GLOW_FULL - GLOW_START);
     f = Math.max(0, Math.min(1, f));
-    f = Math.pow(f, 1.35);          // hold back the mid-range, bite near red
+    f = Math.pow(f, 1.35);          // hold back the mid-range, bite near the top
   }
   // opacity is cheap to change every frame; the gradient string is not, so it
   // is only rewritten when the colour moves a visible step (1/40th)

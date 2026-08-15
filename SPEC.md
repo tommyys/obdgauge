@@ -254,7 +254,10 @@ sessions list. Simulator-first; on hardware it reads the SD-card log index.
 **Current logic** (`metrics.py`, all host-tested) blends three 0–100 sub-scores:
 
 - **smooth (0.40):** average throttle jerk (%/s); 0 → 100, 12 %/s → 0.
-- **econ (0.30):** time in the 1200–2600 rpm band + average instant L/100km.
+- **econ (0.30):** time in the 1200–2600 rpm band + average instant
+  consumption. The display quotes **km/L**; the score keeps working in L/100km,
+  where its 5→100 / 15→0 band is tuned. `metrics.km_per_l` is the only place
+  the two units meet.
 - **calm (0.30):** harsh events per minute; each event drops it 25 pts/min.
 
 **"Harsh" today** = longitudinal acceleration from the *speed delta*

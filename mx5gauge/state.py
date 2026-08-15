@@ -225,8 +225,12 @@ class Gauge(object):
                 'derived': {
                     'warm': warm,
                     'charge': charge,
-                    'econ_now': metrics.instant_econ(v.get('speed'), v.get('fuel_rate')),
-                    'econ_avg': self.trip.econ_l_per_100,
+                    # km/L, which is how fuel economy is quoted here. The
+                    # score still works in L/100km internally, where its band
+                    # is tuned — see metrics.instant_econ.
+                    'econ_now': metrics.km_per_l(
+                        metrics.instant_econ(v.get('speed'), v.get('fuel_rate'))),
+                    'econ_avg': self.trip.econ_km_per_l,
                     'dist_km': self.trip.dist_km,
                     'fuel_l': self.trip.fuel_l,
                     'cost_rm': self.trip.cost_rm,

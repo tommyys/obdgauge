@@ -132,7 +132,7 @@ Swipe, drag, use ← →, or tap a dot.
 |---|------|-------|
 | 1 | **Tacho** | RPM needle + 0–8k dial, redline zone, speed / throttle / peak hold |
 | 2 | **Engine** | Coolant hero + COLD/WARMING/READY ring, battery, intake air |
-| 3 | **Fuel economy** | Instant L/100km, trip average, L/h, fuel used + RM cost |
+| 3 | **Fuel economy** | Instant km/L, trip average, L/h, fuel used + RM cost |
 | 4 | **Driving score** | 0–100 from smoothness + economy + calm, with a coach word |
 | 5 | **Trip** | Distance, time, average speed, fuel, cost |
 | 6 | **Power** | Estimated crank kW with peak hold — needs torque PIDs |

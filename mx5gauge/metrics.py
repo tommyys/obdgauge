@@ -72,6 +72,11 @@ class Trip(object):
         return self.fuel_l / self.dist_km * 100.0
 
     @property
+    def econ_km_per_l(self):
+        """Trip average km/L — the same figure the other way up."""
+        return km_per_l(self.econ_l_per_100)
+
+    @property
     def avg_speed_kph(self):
         if self.moving_s < 5:
             return 0.0
@@ -79,12 +84,29 @@ class Trip(object):
 
 
 def instant_econ(speed_kph, fuel_rate_lph):
-    """Instantaneous L/100km. None when stationary (it would be infinite)."""
+    """Instantaneous L/100km. None when stationary (it would be infinite).
+
+    Kept in L/100km because the driving score's econ band is tuned in those
+    units (§7.5 B3). Everything shown on screen goes through `km_per_l` first.
+    """
     if speed_kph is None or fuel_rate_lph is None:
         return None
     if speed_kph < 3.0:
         return None
     return fuel_rate_lph / speed_kph * 100.0
+
+
+def km_per_l(l_per_100km):
+    """L/100km -> km/L, the unit the display uses.
+
+    Returns None for a non-positive input as well as for no input. Zero
+    L/100km is a real reading — an engine on overrun cuts the injectors
+    entirely — but the reciprocal of it is infinite, which is neither
+    printable nor valid JSON. It shows as '--' for the second or two it lasts.
+    """
+    if l_per_100km is None or l_per_100km <= 0:
+        return None
+    return 100.0 / l_per_100km
 
 
 class DrivingScore(object):

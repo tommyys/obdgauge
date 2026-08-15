@@ -117,6 +117,28 @@ near('instant econ: 36km/h on 7.2L/h -> 20 L/100km',
 check('instant econ is None when stationary',
       metrics.instant_econ(0.0, 1.0), None)
 
+# The display quotes km/L; the score keeps working in L/100km, where its band
+# is tuned. The converter is the only place the two meet.
+near('20 L/100km reads as 5 km/L', metrics.km_per_l(20.0), 5.0, tol=0.001)
+near('5 L/100km reads as 20 km/L', metrics.km_per_l(5.0), 20.0, tol=0.001)
+check('no reading converts to no reading', metrics.km_per_l(None), None)
+# an engine on overrun cuts fuel entirely: a real reading whose reciprocal is
+# infinite, so it is reported as absent rather than as a number or an Infinity
+# the browser could not parse
+check('zero consumption has no km/L to quote', metrics.km_per_l(0.0), None)
+check('a negative reading is refused too', metrics.km_per_l(-3.0), None)
+
+tr = metrics.Trip()
+for i in range(101):                            # 100s at 36 km/h on 7.2 L/h
+    tr.update(i * 1.0, 36.0, 7.2)
+# 20 L/100km the other way up
+near('trip average in km/L', tr.econ_km_per_l, 5.0, tol=0.05)
+near('...is the reciprocal of the L/100km figure',
+     tr.econ_km_per_l, 100.0 / tr.econ_l_per_100, tol=1e-9)
+
+tr = metrics.Trip()
+check('too little distance to quote km/L', tr.econ_km_per_l, None)
+
 print()
 if FAILED:
     print('%d FAILURES:' % len(FAILED))

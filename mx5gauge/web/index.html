@@ -837,11 +837,16 @@ async function tick(){
 
   // 1 tacho — needle is animated separately at 60fps (see drawTacho below);
   // here we only publish the new target and the slow-moving text
-  // desk mode asks for a continuous sweep, so the visuals are previewable on a
-  // capture that never revs. The URL always wins over the server's suggestion.
-  if (!urlSpec && !RPM_SWEEP && d.preview_sweep){
-    const s = parseRpmSpec(d.preview_sweep);
-    if (s && s.sweep) RPM_SWEEP = s.sweep;
+  // Desk mode can ask for a continuous sweep, so the visuals are previewable on
+  // a capture that never revs. The URL always wins over the server's suggestion.
+  //
+  // Tracked every poll rather than latched once. Latching meant a tab that had
+  // ever seen a sweeping server kept breathing 1000-7000 for ever — through a
+  // restart without --sweep, and through loading a real drive — because nothing
+  // ever set it back. The preview then outlived the thing it was previewing.
+  if (!urlSpec){
+    const s = d.preview_sweep ? parseRpmSpec(d.preview_sweep) : null;
+    RPM_SWEEP = (s && s.sweep) ? s.sweep : null;
   }
   // a sweep drives rpm from the animation loop instead, at display rate
   if (!RPM_SWEEP)

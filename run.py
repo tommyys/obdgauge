@@ -56,15 +56,22 @@ def resolve_replay(arg):
 
 
 def pick_default_capture():
-    """Pick the most interesting capture — the one with the most actual driving.
+    """Pick the most interesting thing to replay when none was named.
 
-    Size is a poor proxy: the biggest file here is a 27-minute idle. Ranking by
-    how many moving samples a capture holds surfaces a real drive instead.
+    Prefers the capture holding the most actual driving. Size is a poor proxy:
+    the biggest capture in this repo is a 27-minute idle, so ranking by how
+    many moving samples a file holds surfaces a real drive instead.
+
+    With no captures on disk — which is the normal state once you have your own
+    recordings and have cleared the borrowed ones out — it falls back to the
+    newest drive in the library. Without that fallback the double-click REPLAY
+    launcher, which names no file, would simply refuse to start.
     """
     from mx5gauge import brc
     files = sorted(glob.glob(os.path.join(HERE, 'captures', '*.brc')))
     if not files:
-        return None
+        rows = library.scan(HERE)
+        return rows[0]['path'] if rows else None
     best, best_score = None, -1
     for f in files:
         try:

@@ -5,6 +5,9 @@ __pycache__/
 # recorded drives stay local — they're personal telemetry
 logs/
 
-# keep one sample capture so replay works out of the box; ignore the rest
+# Car Scanner captures stay local too. A sample one used to ship so that a
+# fresh clone could replay something immediately; it was borrowed telemetry
+# from before the gauge could record, and it has been cleared out now that
+# there are real drives. With captures/ empty, `--replay` falls back to the
+# newest drive in logs/.
 captures/*
-!captures/2026-08-11 21-43-36.brc

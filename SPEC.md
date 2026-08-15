@@ -315,12 +315,15 @@ Illustrated companions (design mockups, diagrams, findings):
 1. Read this file, then `README.md` for the commands.
 2. `.venv/bin/python tests/test_pids.py` — should print `all decode tests passed`.
 3. `.venv/bin/python run.py --replay` — the gauge should come up at
-   <http://127.0.0.1:8420> playing the sample capture.
+   <http://127.0.0.1:8420> playing the newest drive in `logs/`.
 4. `.venv/bin/python run.py --sessions` — lists any drives recorded locally
    (they're gitignored, so a fresh clone shows none).
 
-Recorded drives and three of the four captures stay local by design — they're
-personal telemetry. One sample capture ships so replay works out of the box.
+Drives and captures both stay local by design — they're personal telemetry, so
+a fresh clone has nothing to replay until you record a drive with `--live` or
+drop a `.brc` into `captures/`. A sample capture used to ship for that reason;
+it was borrowed telemetry from before the gauge could record its own, and it
+has been cleared out now that there are real drives to use instead.
 
 ---
 
@@ -364,7 +367,7 @@ set comes from the supported-PID bitmasks when live, and from what the file
 actually contains when replaying. A view with none of its channels dims and
 states why — *"NO TORQUE DATA · power needs actual + reference torque, which
 this car does not report"* — instead of drawing a convincing zero. Verified on
-the sample capture: exactly one view (Power) gates, because that capture holds
+a capture without torque channels: exactly one view (Power) gates, because it holds
 no torque channels.
 
 Battery voltage is treated as always available: it comes from the adapter's

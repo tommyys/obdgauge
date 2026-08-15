@@ -51,8 +51,9 @@ actual driving, plays it at 4×, and loops.
 Options:
 
 ```bash
-.venv/bin/python run.py --replay "captures/2026-08-11 21-43-36.brc" --speed 10
-.venv/bin/python run.py --replay --speed 1        # real time
+.venv/bin/python run.py --replay last --speed 10   # the newest drive
+.venv/bin/python run.py --replay "logs/drive-20260813-204128.csv"
+.venv/bin/python run.py --replay --speed 1         # real time
 ```
 
 ## Any car, not just the MX-5
@@ -76,8 +77,8 @@ OBD-II is universal; what each car *reports* is not. The gauge adapts:
 
 - **Views degrade honestly.** Each view knows which channels it needs. If the
   car doesn't report them, the view dims and says so rather than showing a
-  convincing zero. On the sample capture the Power view gates itself, because
-  that drive has no torque channels.
+  convincing zero. A drive with no torque channels gates the Power view, and
+  one with no catalyst sensor leaves that figure as a dash.
 
 - **The backdrop tracks rpm** — near-black at idle, ember mid-range, intense red
   at the redline, and it persists across every view. Scaled to the car's own
@@ -85,8 +86,10 @@ OBD-II is universal; what each car *reports* is not. The gauge adapts:
   `rpm-reactive backdrop` block in `mx5gauge/web/index.html`: `GLOW_START`
   (how early the tint appears), `GLOW_EMBER` / `GLOW_RED`.
 
-  The sample capture only reaches 1919 rpm, so replay barely shows it. To see
-  the full ramp at your desk, drive it manually in the browser console:
+  Full intensity is reached at `GLOW_FULL` (0.72 of redline, so ~5000 rpm on
+  the MX-5) rather than at the redline itself, which is somewhere you rarely
+  go on a road. A gentle drive may never light it far; to see the full ramp at
+  your desk, drive it manually in the browser console:
 
   ```js
   tachTarget = 6800; tachShown = 6800;   // then watch the screen
@@ -212,7 +215,7 @@ mx5gauge/
   web/         the round gauge UI
 run.py         CLI entry point
 tests/         host tests for the decode + metric maths
-captures/      your .brc recordings
+captures/      drop Car Scanner .brc files here to replay them
 ```
 
 ## Tests

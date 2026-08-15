@@ -4,6 +4,7 @@ Both expose the same shape:  async run(on_sample)  where on_sample(key, value)
 is called as readings arrive, plus a `.status` string for the UI.
 """
 import asyncio
+import bisect
 import time
 
 from . import brc, pids, vehicle
@@ -57,6 +58,14 @@ class ReplaySource(object):
         # drive eight times shorter, and the progress bar must not say it did.
         self.duration = self.rows[-1][0] if self.rows else 0.0
         self.pos = 0.0
+        # Progress is measured in samples, not seconds. A Car Scanner capture
+        # can span 53 minutes and hold 68 seconds of data (iOS suspends the
+        # app, §2), so a bar drawn against the clock is 98% dead zone: drag
+        # anywhere in it and you land in a hole and snap to the end. Against
+        # the sample count every part of the bar reaches something real, and
+        # for our own logs — which sample steadily — the two are the same bar.
+        self.total = len(self.rows)
+        self._times = [r[0] for r in self.rows]
         self._cursor = 0            # next row `run` will play
         self._seek = None           # a seek requested while the loop is awake
         # Parked at the end of the drive, showing its totals, waiting for a
@@ -66,38 +75,61 @@ class ReplaySource(object):
         self._wake = asyncio.Event()
 
     # -- seeking -------------------------------------------------------------
-    def seek(self, t, gauge):
-        """Put `gauge` in the state it would hold `t` seconds into this drive.
+    @property
+    def index(self):
+        """How many samples of this drive have been played."""
+        return self._cursor
 
-        Every row before `t` is pushed through the gauge with its own logical
-        timestamp and no sleeping at all, so the trip totals and the driving
+    def marks(self, count=129):
+        """`count` evenly-spaced (by sample) timestamps along the drive.
+
+        The UI needs to put a clock against a handle position before it has
+        asked the server to move there, and it cannot do that without knowing
+        how the sample axis maps onto the clock. Sending the whole timestamp
+        list would be wasteful on a long log; this is the same curve at a
+        resolution far finer than the bar is wide.
+        """
+        if not self.rows:
+            return []
+        last = self.total - 1
+        return [self._times[round(k / (count - 1) * last)]
+                for k in range(count)]
+
+    def seek(self, t, gauge):
+        """Seek to the last sample at or before `t` seconds. See `seek_index`."""
+        i = bisect.bisect_right(self._times, max(0.0, min(float(t),
+                                                          self.duration)))
+        return self.seek_index(i, gauge)
+
+    def seek_index(self, i, gauge):
+        """Put `gauge` in the state it would hold after `i` samples.
+
+        Those `i` rows are pushed through the gauge with their own logical
+        timestamps and no sleeping at all, so the trip totals and the driving
         score are the genuine article rather than a second, parallel summary
         that could drift from what playback produces. The rows are already in
         memory, so even seeking to the end of a long drive is immediate.
         """
-        t = max(0.0, min(float(t), self.duration))
+        i = max(0, min(int(i), self.total))
         gauge.reset()
         # reset() clears the metadata too, so put the identity and the channel
         # list back before any reading lands — otherwise the banner blanks and
         # every view greys out for as long as it takes to scrub
         gauge.sample('_car', self.car)
         gauge.sample('_supported_keys', self.supported_keys)
-        i = 0
-        for i, (ts, key, val) in enumerate(self.rows):
-            if ts > t:
-                break
+        for ts, key, val in self.rows[:i]:
             gauge.sample(key, val, ts)
-        else:
-            i = len(self.rows)
         self._cursor = i
-        self.pos = t
+        # the clock reports where the data actually is, not where the handle
+        # was dropped: landing in a recording hole means the last real sample
+        self.pos = self._times[i - 1] if i else 0.0
         # Seeking to the very end means "show me this drive's totals", so park
         # there. Anywhere else means "play on from here".
-        self.paused = self._cursor >= len(self.rows)
+        self.paused = self._cursor >= self.total
         # if the loop is mid-sleep it must abandon its place and pick this up
-        self._seek = t
+        self._seek = self.pos
         self._wake.set()
-        return t
+        return i
 
     async def run(self, on_sample):
         lap = 0.0

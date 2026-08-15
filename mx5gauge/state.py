@@ -268,7 +268,12 @@ class Gauge(object):
             return None
         dur = getattr(src, 'duration', 0.0) or 0.0
         return {
+            # the clock: where along the drive the data actually is
             'pos': min(getattr(src, 'pos', 0.0) or 0.0, dur),
             'dur': dur,
+            # the bar: measured in samples, so a capture full of recording
+            # holes has no dead stretches you cannot drag into
+            'i': getattr(src, 'index', 0),
+            'n': getattr(src, 'total', 0),
             'paused': bool(getattr(src, 'paused', False)),
         }

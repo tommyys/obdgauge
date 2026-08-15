@@ -136,6 +136,60 @@ check('the car identity survives a seek', bool(g.values.get('_car')), True)
 check('the channel list survives a seek',
       g.values.get('_supported_keys'), src.supported_keys)
 
+# --- the bar is measured in samples, not seconds -------------------------
+# A capture can span an hour and hold a minute of data. Seeking by fraction of
+# the samples is what makes every part of the bar reach something real.
+holey = os.path.join(tmp, 'drive-20260814-130000.csv')
+with open(holey, 'w', newline='') as fh:
+    w = csv.writer(fh)
+    w.writerow(['iso', 't', 'key', 'value'])
+    for i in range(50):                       # 50 samples in the first 50 s
+        w.writerow(['', '%.3f' % i, 'speed', 40])
+    for i in range(50):                       # then a 3000 s hole, 50 more
+        w.writerow(['', '%.3f' % (3050 + i), 'speed', 40])
+
+hs = sources.ReplaySource(holey, loop=False)
+check('holey drive: 100 samples', hs.total, 100)
+near('holey drive: spans ~3100 s', hs.duration, 3099.0, tol=1.0)
+
+g = state.Gauge()
+hs.seek_index(50, g)
+near('halfway by sample lands at the hole edge', hs.pos, 49.0, tol=0.01)
+check('...and has played exactly half the samples', hs.index, 50)
+
+# The same halfway point measured in *seconds* lands in the hole, which is
+# precisely the dead zone that made scrubbing feel broken.
+hs.seek(hs.duration / 2.0, g)
+near('halfway by clock falls in the hole, at its start', hs.pos, 49.0, tol=0.01)
+
+marks = hs.marks(129)
+check('marks span the whole drive', (marks[0], round(marks[-1])),
+      (0.0, round(hs.duration)))
+check('marks are one per requested step', len(marks), 129)
+check('marks never go backwards',
+      all(marks[i] <= marks[i + 1] for i in range(len(marks) - 1)), True)
+# No mark may land inside the hole. That is the whole point: every position on
+# the bar corresponds to a real sample, so there is nowhere to drag the handle
+# that means nothing. Marks either side of the hole jump straight across it.
+check('no mark falls inside the recording hole',
+      [m for m in marks if 49.0 < m < 3050.0], [])
+check('marks do cover both sides of it',
+      (any(m <= 49.0 for m in marks), any(m >= 3050.0 for m in marks)),
+      (True, True))
+
+# fraction seeking is clamped the same way
+check('frac beyond the end clamps', hs.seek_index(10 ** 6, g), 100)
+check('negative index clamps', hs.seek_index(-5, g), 0)
+
+# and a seek by index agrees with playing that many samples through
+ref = state.Gauge()
+for ts, key, val in hs.rows[:37]:
+    ref.sample(key, val, ts)
+got = state.Gauge()
+hs.seek_index(37, got)
+near('seek_index matches playing 37 samples', got.trip.dist_km,
+     ref.trip.dist_km, tol=1e-9)
+
 print()
 if FAILED:
     print('%d FAILURES:' % len(FAILED))

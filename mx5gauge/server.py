@@ -56,6 +56,15 @@ def make_handler(gauge, root=None, on_select=None, on_seek=None):
                     'can_switch': bool(on_select) and gauge.source_kind != 'live',
                 })
                 return
+            if path == '/timeline':
+                # how the bar's sample axis maps onto the clock, so the card
+                # can label a handle position before asking the server to move
+                src = getattr(gauge, 'replay', None)
+                self._json(200, {
+                    'marks': src.marks() if src is not None else [],
+                    'dur': getattr(src, 'duration', 0.0) if src else 0.0,
+                })
+                return
             if path == '/':
                 path = '/index.html'
             # serve any file in web/ — basename only, so '..' cannot escape
@@ -122,16 +131,19 @@ def make_handler(gauge, root=None, on_select=None, on_seek=None):
             req = self._body()
             if req is None:
                 return
+            # `frac` is what the bar speaks — a position along the samples.
+            # `t` (seconds) is still accepted, for the terminal and for tests.
+            key = 'frac' if 'frac' in req else 't'
             try:
-                t = float(req.get('t'))
+                v = float(req.get(key))
             except (TypeError, ValueError):
                 self._json(400, {'ok': False, 'error': 'bad position'})
                 return
-            if t != t or t in (float('inf'), float('-inf')):
+            if v != v or v in (float('inf'), float('-inf')):
                 self._json(400, {'ok': False, 'error': 'bad position'})
                 return
-            on_seek(t)
-            self._json(200, {'ok': True, 't': t})
+            on_seek(key, v)
+            self._json(200, {'ok': True, key: v})
 
     return Handler
 

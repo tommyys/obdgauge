@@ -183,12 +183,15 @@
      card is supporting detail. Unlabelled: a lone percentage on a drive's
      summary is not ambiguous enough to be worth two lines of caption. */
   .dscore{display:flex;align-items:baseline;justify-content:center;}
-  .dscore .dsv{font-family:var(--mono);font-size:11cqw;line-height:1;
+  .dscore .dsv{font-family:var(--mono);font-size:9.5cqw;line-height:1;
     color:var(--phos);}
-  .dstats{display:grid;grid-template-columns:1fr 1fr;gap:2cqw 3cqw;}
+  /* five figures, so the last one centres across the pair rather than
+     hanging off the left of an orphan row */
+  .dstats{display:grid;grid-template-columns:1fr 1fr;gap:1.8cqw 3cqw;}
+  .dstat:nth-child(5){grid-column:1 / -1;text-align:center;}
   .dstat{min-width:0;}
-  .dstat .dk{font-size:2.2cqw;color:var(--faint);letter-spacing:0.11em;}
-  .dstat .dv{font-family:var(--mono);font-size:4.4cqw;color:var(--phos);
+  .dstat .dk{font-size:2.1cqw;color:var(--faint);letter-spacing:0.11em;}
+  .dstat .dv{font-family:var(--mono);font-size:4.1cqw;color:var(--phos);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .dstat .dv small{font-size:2.4cqw;color:var(--muted);margin-left:0.6cqw;}
   /* The scrub target is deliberately much taller than the track it draws:
@@ -207,15 +210,8 @@
     font-size:2.5cqw;letter-spacing:0.08em;padding:1.4cqw 3.4cqw;cursor:pointer;}
   .dback:hover{border-color:var(--accent);color:var(--phos);}
 
-  /* Position through the drive, on every view. A chord across the bottom of
-     the circle rather than a full-width bar: at the rim the round screen has
-     already clipped most of the width away. */
-  .rprog{position:absolute;left:26%;right:26%;bottom:5.5cqw;height:1.2cqw;
-    border-radius:1cqw;background:rgba(255,255,255,0.09);overflow:hidden;
-    z-index:5;pointer-events:none;}
-  .rprog[hidden]{display:none;}
-  .rfill{height:100%;width:0;background:var(--accent);border-radius:1cqw;
-    transition:width 0.25s linear;}
+  /* The drive's timeline lives on the drive card and nowhere else. The other
+     views are instruments — a car's dashboard does not carry a scrub bar. */
 
   /* controls */
   .dots{display:flex;gap:8px;justify-content:center;}
@@ -387,9 +383,6 @@
       </div>
 
     </div>
-    <!-- position through the logged drive, on every view. Replay only: there
-         is no timeline to sit on when the data is the car in front of you. -->
-    <div class="rprog" id="rprog" hidden><div class="rfill" id="rfill"></div></div>
   </div>
 </div>
 
@@ -564,7 +557,10 @@ let drivesBusy=false;
 // The card showing one drive. Declared up here with the rest of the picker's
 // state because `go(0)` runs before the card's own code and can reach
 // loadDrives, which asks whether the card is open.
-const CARD={open:false, entry:null, dragging:false, dur:0, pos:0, score:null};
+// `frac` drives the handle and is measured in samples; `pos`/`dur` are the
+// clock. They are not the same axis on a capture full of recording holes.
+const CARD={open:false, entry:null, dragging:false, dur:0, pos:0, frac:1,
+            score:null, marks:null};
 
 function dnote(text){
   const n=document.createElement('div');
@@ -663,14 +659,29 @@ function showList(){
 
 function showCard(entry){
   CARD.open=true; CARD.entry=entry; CARD.dragging=false;
-  CARD.dur=entry.duration_s||0; CARD.pos=CARD.dur;
+  CARD.dur=entry.duration_s||0; CARD.pos=CARD.dur; CARD.frac=1;
   // left null until the first poll that finds the source parked at the end;
   // that reading is the whole drive's score, and it is then kept
   CARD.score=null;
+  CARD.marks=null;
   drivesBox().hidden=true;
   $('dcard').hidden=false;
   $('dtitle').textContent=entry.when||'DRIVE';
   drawCard();
+  // fetched once per drive: it is how the handle gets a clock against it
+  // mid-drag, before the server has been asked to move
+  fetch('/timeline',{cache:'no-store'}).then(r=>r.json()).then(j=>{
+    if(CARD.open && j && j.marks && j.marks.length) CARD.marks=j.marks;
+  }).catch(()=>{});
+}
+
+// the clock for a handle position, read off the sample-to-time curve
+function timeAt(frac){
+  const m=CARD.marks;
+  if(!m||!m.length) return frac*CARD.dur;      // before /timeline answers
+  const x=Math.max(0,Math.min(1,frac))*(m.length-1);
+  const i=Math.floor(x), j=Math.min(m.length-1,i+1);
+  return m[i]+(m[j]-m[i])*(x-i);
 }
 
 function stat(k,v,unit){
@@ -693,10 +704,11 @@ function drawCard(){
   // summarising the whole file.
   const num=(v,d=0)=>v==null? '—' : Number(v).toFixed(d);
   const cells=[
-    stat('RPM',     num(L.rpm)),
-    stat('SPEED',   num(L.speed),    L.speed==null?    '' : 'km/h'),
-    stat('POWER',   num(L.power_kw), L.power_kw==null? '' : 'kW'),
-    stat('COOLANT', num(L.coolant),  L.coolant==null?  '' : '°C'),
+    stat('RPM',      num(L.rpm)),
+    stat('SPEED',    num(L.speed),    L.speed==null?    '' : 'km/h'),
+    stat('COOLANT',  num(L.coolant),  L.coolant==null?  '' : '°C'),
+    stat('INTAKE',   num(L.intake),   L.intake==null?   '' : '°C'),
+    stat('CATALYST', num(L.catalyst), L.catalyst==null? '' : '°C'),
   ];
   $('dstats').replaceChildren(...cells);
   // The whole drive's score, captured when the card opened at the end — not
@@ -704,7 +716,7 @@ function drawCard(){
   // first minute should not tell you the drive scored 100.
   $('dscoreval').textContent =
     CARD.score!=null? Math.round(CARD.score)+'%' : '--';
-  const frac=CARD.dur>0 ? Math.max(0,Math.min(1,CARD.pos/CARD.dur)) : 1;
+  const frac=Math.max(0,Math.min(1,CARD.frac));
   $('dfill').style.width=(frac*100).toFixed(2)+'%';
   $('dpos').textContent=mmss(CARD.pos);
   $('ddur').textContent=mmss(CARD.dur);
@@ -713,15 +725,15 @@ function drawCard(){
 
 function scrubTo(clientX){
   const box=$('dscrub').getBoundingClientRect();
-  const frac=Math.max(0,Math.min(1,(clientX-box.left)/(box.width||1)));
-  CARD.pos=frac*CARD.dur;
+  CARD.frac=Math.max(0,Math.min(1,(clientX-box.left)/(box.width||1)));
+  CARD.pos=timeAt(CARD.frac);
   drawCard();
-  return CARD.pos;
+  return CARD.frac;
 }
 
-function sendSeek(t){
+function sendSeek(frac){
   fetch('/seek',{method:'POST',headers:{'Content-Type':'application/json'},
-                 body:JSON.stringify({t})}).catch(()=>{});
+                 body:JSON.stringify({frac})}).catch(()=>{});
 }
 
 (function wireScrub(){
@@ -749,14 +761,13 @@ function sendSeek(t){
   el.addEventListener('pointercancel',()=>{CARD.dragging=false;});
   el.addEventListener('keydown',ev=>{
     if(!CARD.open||!CARD.dur) return;
-    const step=CARD.dur/20;
-    let t=null;
-    if(ev.key==='ArrowLeft') t=Math.max(0,CARD.pos-step);
-    else if(ev.key==='ArrowRight') t=Math.min(CARD.dur,CARD.pos+step);
-    else if(ev.key==='Home') t=0;
-    else if(ev.key==='End') t=CARD.dur;
-    if(t===null) return;
-    CARD.pos=t; drawCard(); sendSeek(t);
+    let f=null;
+    if(ev.key==='ArrowLeft') f=Math.max(0,CARD.frac-0.05);
+    else if(ev.key==='ArrowRight') f=Math.min(1,CARD.frac+0.05);
+    else if(ev.key==='Home') f=0;
+    else if(ev.key==='End') f=1;
+    if(f===null) return;
+    CARD.frac=f; CARD.pos=timeAt(f); drawCard(); sendSeek(f);
     // the carousel also listens on the arrows; scrubbing must not slide views
     ev.preventDefault(); ev.stopPropagation();
   });
@@ -766,30 +777,19 @@ function sendSeek(t){
 
 /* ---- position through the logged drive -------------------------------- */
 function applyReplayPosition(r){
-  const bar=$('rprog');
-  // One bar at a time, and only while something is actually moving. The card
-  // carries its own — scrubbable, with a clock — so the plain one underneath
-  // it is the same fact drawn twice; and a drive parked at its end is not
-  // being replayed, so a full bar reporting on it is just clutter.
-  if(!r||!r.dur||CARD.open||r.paused){ bar.hidden=true; }
-  else {
-    bar.hidden=false;
-    $('rfill').style.width=(Math.max(0,Math.min(1,r.pos/r.dur))*100).toFixed(2)+'%';
-  }
+  if(!CARD.open || !r) return;
   // the whole drive's score, read once while the source is still parked at the
   // end — after this the running score describes only the part replayed so far
-  if(CARD.open && CARD.score===null && r && r.paused && LAST && LAST.score
+  if(CARD.score===null && r.paused && LAST && LAST.score
      && LAST.score.total!=null)
     CARD.score=LAST.score.total;
-  // the card follows playback too — but not while a thumb is on the bar, or
-  // the poll would keep yanking the handle out from under the drag
-  if(CARD.open && r && !CARD.dragging){
-    // the library's duration and the source's can differ by a sample or two;
-    // the source is the one being played, so it wins
-    if(r.dur) CARD.dur=r.dur;
-    CARD.pos=r.pos;
-    drawCard();
-  }
+  // the card follows playback — but not while a thumb is on the bar, or the
+  // poll would keep yanking the handle out from under the drag
+  if(CARD.dragging) return;
+  if(r.dur) CARD.dur=r.dur;
+  CARD.pos=r.pos;
+  CARD.frac=r.n? r.i/r.n : 1;
+  drawCard();
 }
 
 /* ---- render from /data ---- */

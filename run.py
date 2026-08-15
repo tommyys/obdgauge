@@ -104,21 +104,26 @@ class Player(object):
         if self.loop is not None:
             self.loop.call_soon_threadsafe(self.event.set)
 
-    def seek(self, t):
-        """Scrub the drive being replayed to `t`. Thread-safe.
+    def seek(self, kind, value):
+        """Scrub the drive being replayed. Thread-safe.
 
-        The work happens on the event loop rather than the HTTP thread: a seek
-        feeds thousands of samples through the gauge, and doing that underneath
-        the running source would interleave two writers into one set of totals.
+        `kind` is 'frac' (a position along the samples, what the bar speaks) or
+        't' (seconds). The work happens on the event loop rather than the HTTP
+        thread: a seek feeds thousands of samples through the gauge, and doing
+        that underneath the running source would interleave two writers into
+        one set of totals.
         """
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(self._seek_now, t)
+            self.loop.call_soon_threadsafe(self._seek_now, kind, value)
 
-    def _seek_now(self, t):
+    def _seek_now(self, kind, value):
         src = self.src
         if getattr(src, 'kind', None) != 'replay':
             return
-        src.seek(t, self.g)
+        if kind == 'frac':
+            src.seek_index(round(max(0.0, min(1.0, value)) * src.total), self.g)
+        else:
+            src.seek(value, self.g)
 
     def _load(self, entry, at_end=False):
         # a different drive must not inherit the last one's trip or channels

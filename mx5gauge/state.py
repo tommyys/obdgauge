@@ -92,6 +92,10 @@ class Gauge(object):
         self.score = metrics.DrivingScore()
         self.peak_rpm = 0.0
         self.peak_kw = 0.0
+        self.peak_speed = 0.0
+        # None, not 0: a drive that never reported coolant must say so rather
+        # than claim it peaked at absolute zero
+        self.peak_coolant = None
         self.status = 'starting'
         self.source_kind = ''
         self.started = time.time()
@@ -123,6 +127,8 @@ class Gauge(object):
             self.score = metrics.DrivingScore()
             self.peak_rpm = 0.0
             self.peak_kw = 0.0
+            self.peak_speed = 0.0
+            self.peak_coolant = None
             self._t0 = None
             self.rejected = 0
 
@@ -156,6 +162,11 @@ class Gauge(object):
 
             if key == 'rpm' and value > self.peak_rpm:
                 self.peak_rpm = value
+            elif key == 'speed' and value > self.peak_speed:
+                self.peak_speed = value
+            elif key == 'coolant' and (self.peak_coolant is None
+                                       or value > self.peak_coolant):
+                self.peak_coolant = value
 
             v = self.values
             # engine power estimate (kW) from torque % x reference torque x rpm
@@ -235,6 +246,8 @@ class Gauge(object):
                     'avg_speed': self.trip.avg_speed_kph,
                     'peak_rpm': self.peak_rpm,
                     'peak_kw': self.peak_kw,
+                    'peak_speed': self.peak_speed,
+                    'peak_coolant': self.peak_coolant,
                 },
                 'score': {
                     'total': self.score.total,

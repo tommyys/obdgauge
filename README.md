@@ -80,6 +80,20 @@ OBD-II is universal; what each car *reports* is not. The gauge adapts:
   convincing zero. A drive with no torque channels gates the Power view, and
   one with no catalyst sensor leaves that figure as a dash.
 
+- **It wakes like a cluster.** A boot splash holds the screen for 2.5 s and the
+  instruments are withheld until it finishes — no half-populated dials on the
+  way up. The animation is a labelled placeholder; `BOOT_MS` at the top of
+  `mx5gauge/state.py` sets how long it holds. There is no shutdown animation:
+  the gauge runs on ignition-switched power, so key-off is a hard cut with no
+  frame left to draw in.
+
+- **A drive ends when the engine does.** Ignition on/off is read from the
+  stream — the PIDs going quiet while battery voltage drops off the alternator,
+  and `run_time` resetting on a restart — so switching the car off and driving
+  on later leaves two files rather than one. Drives under a minute are
+  discarded. Because the summary is rewritten every 10 s, a drive that ends by
+  losing power still reports its distance instead of reading `interrupted`.
+
 - **The backdrop tracks rpm** — near-black at idle, ember mid-range, intense red
   at the redline, and it persists across every view. Scaled to the car's own
   redline, so it reads the same in any car. Tuning lives at the top of the

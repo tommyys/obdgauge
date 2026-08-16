@@ -54,6 +54,16 @@
      not a stacking context, and vanish behind the bezel. */
   .glow{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;
     border-radius:50%;}
+  /* Boot splash. Above the views and the glow, clipped to the round screen,
+     and never interactive — it is a curtain, not a control. */
+  .bootfx{position:absolute;inset:0;width:100%;height:100%;z-index:4;
+    pointer-events:none;border-radius:50%;}
+  .bootfx[hidden]{display:none;}
+  /* The instruments are withheld rather than merely covered: a real cluster
+     shows nothing until it has woken, and it also spares you the first second
+     of half-populated channels. */
+  .screen.booting .track,
+  .screen.booting .carbar{opacity:0;}
   /* Infinite carousel: each view is placed independently at its shortest
      signed distance from the current one, rather than being a cell in one long
      strip. Wrapping from the last view to the first is then a single step
@@ -384,6 +394,11 @@
       </div>
 
     </div>
+
+    <!-- PLACEHOLDER boot animation. The real asset drops into drawBoot()
+         later; the machinery around it — phase, progress, and withholding the
+         carousel until it finishes — is the part that matters. -->
+    <canvas class="bootfx" id="bootfx" width="480" height="480" hidden></canvas>
   </div>
 </div>
 
@@ -796,6 +811,49 @@ function applyReplayPosition(r){
   drawCard();
 }
 
+/* ---- boot splash --------------------------------------------------------
+   PLACEHOLDER ART. A ring sweeps one lap while the car's name fades in, then
+   hands over to the carousel. Everything is a pure function of
+   (phase, progress) coming off the snapshot — no timers here — so dropping the
+   real asset in later touches drawBoot() and nothing else. */
+const bootCanvas=$('bootfx'), bootCtx=bootCanvas.getContext('2d');
+
+function drawBoot(p){
+  const W=bootCanvas.width, C=W/2;
+  bootCtx.clearRect(0,0,W,W);
+  bootCtx.fillStyle='#0a0b0e';
+  bootCtx.fillRect(0,0,W,W);
+  const f=Math.max(0,Math.min(1,p));
+  const r=C*0.62;
+  bootCtx.lineWidth=W*0.026;
+  bootCtx.lineCap='round';
+  bootCtx.strokeStyle='rgba(255,255,255,0.10)';
+  bootCtx.beginPath(); bootCtx.arc(C,C,r,0,Math.PI*2); bootCtx.stroke();
+  bootCtx.strokeStyle='#e1000a';
+  bootCtx.beginPath();
+  bootCtx.arc(C,C,r,-Math.PI/2,-Math.PI/2+Math.PI*2*f);
+  bootCtx.stroke();
+  bootCtx.globalAlpha=Math.max(0,Math.min(1,f*1.6));
+  bootCtx.fillStyle='#dbe8ff';
+  bootCtx.textAlign='center';
+  bootCtx.textBaseline='middle';
+  bootCtx.font='600 '+(W*0.085)+'px ui-monospace,SFMono-Regular,Menlo,monospace';
+  bootCtx.fillText(($('c_make').textContent||'OBD-II').toUpperCase(),C,C-W*0.02);
+  bootCtx.globalAlpha=Math.max(0,Math.min(1,(f-0.35)/0.65));
+  bootCtx.font='500 '+(W*0.030)+'px ui-monospace,SFMono-Regular,Menlo,monospace';
+  bootCtx.fillStyle='#6b7280';
+  bootCtx.fillText('PLACEHOLDER ANIMATION',C,C+W*0.075);
+  bootCtx.globalAlpha=1;
+}
+
+function applyBoot(b){
+  if(!b) return;
+  const waking=b.phase!=='RUNNING';
+  bootCanvas.hidden=!waking;
+  screenEl.classList.toggle('booting',waking);
+  if(waking) drawBoot(b.progress);
+}
+
 /* ---- render from /data ---- */
 function setStatus(el,txt,cls){el.className='status '+(cls||'');$(el.id+'_t').textContent=txt;}
 
@@ -844,6 +902,7 @@ async function tick(){
   const L=d.live,D=d.derived,S=d.score;
   LAST=d;
   applyReplayPosition(d.replay);
+  applyBoot(d.boot);
 
   // header
   const bad=/error|no OBD|disconnected/i.test(d.status);

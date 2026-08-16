@@ -81,6 +81,55 @@ def plausible(key, value):
     return lo <= v <= hi
 
 
+# How long the boot splash holds the screen, in milliseconds of the drive's
+# own clock.
+BOOT_MS = 2500
+
+
+class Boot(object):
+    """Tracks the boot splash: 'WAKING' while it plays, then 'RUNNING'.
+
+    Told the time rather than reading a clock, so a capture replayed at 8x
+    splashes for the same 2.5 seconds *of the drive* that a car in front of you
+    does — and so the whole thing is testable without sleeping.
+
+    There is no 'ASLEEP'. The gauge is fed from an ignition-switched supply, so
+    a car that is off is a board with no power, not a board in a state. The
+    splash is the first thing that happens when the lights come on.
+    """
+
+    def __init__(self):
+        self.phase = 'WAKING'
+        self._t0 = None       # logical time of the first reading seen
+        self._t = None        # the latest, to notice the clock going backwards
+
+    def reset(self):
+        self.__init__()
+
+    @property
+    def progress(self):
+        """0 -> 1 through the splash; 1 once the instruments are up."""
+        if self.phase == 'RUNNING':
+            return 1.0
+        if self._t0 is None or BOOT_MS <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (self._t - self._t0) / (BOOT_MS / 1000.0)))
+
+    def update(self, t):
+        """Feed the logical timestamp of one real reading."""
+        t = float(t)
+        if self._t0 is None:
+            self._t0 = t
+        elif t < self._t:
+            # Scrubbed backwards on the replay timeline. Rebase, or the splash
+            # would sit waiting out an interval that has already gone by and
+            # can never come round again.
+            self._t0 = t
+        self._t = t
+        if self.phase == 'WAKING' and t - self._t0 >= BOOT_MS / 1000.0:
+            self.phase = 'RUNNING'
+
+
 class Gauge(object):
     """Holds the latest readings and the derived metrics the views render."""
 
@@ -90,6 +139,7 @@ class Gauge(object):
         self.updated = {}         # key -> monotonic timestamp
         self.trip = metrics.Trip()
         self.score = metrics.DrivingScore()
+        self.boot = Boot()
         self.ignition = ignition.Ignition()
         # Set by run.py on a live session to rotate the recording when the
         # engine stops and starts. Left None during replay: a recorded drive
@@ -127,6 +177,7 @@ class Gauge(object):
             self.updated.clear()
             self.trip = metrics.Trip()
             self.score = metrics.DrivingScore()
+            self.boot.reset()
             self.ignition = ignition.Ignition()
             self.peak_rpm = 0.0
             self.peak_kw = 0.0
@@ -178,6 +229,7 @@ class Gauge(object):
             self.trip.update(t, v.get('speed'), v.get('fuel_rate'))
             self.score.update(t, v.get('speed'), v.get('rpm'),
                               v.get('throttle'), v.get('fuel_rate'))
+            self.boot.update(t)
             event = (self.ignition.update(t, key, value)
                      if self.on_ignition is not None else None)
 
@@ -272,6 +324,8 @@ class Gauge(object):
                 'preview_sweep': self.preview_sweep,
                 'file': self.current_file,
                 'replay': self._replay_position(),
+                'boot': {'phase': self.boot.phase,
+                         'progress': self.boot.progress},
             }
 
     def _replay_position(self):

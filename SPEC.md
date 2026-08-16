@@ -223,24 +223,20 @@ first so nothing gets lost, then graduates into section 5/6/7 once built.
 
 | # | Item | Status |
 |---|---|---|
-| B1 | Startup + shutdown animation on ignition on/off | designed, not built (`docs/superpowers/specs/2026-08-12-ignition-animations-design.md`) |
+| B1 | Boot splash on ignition on (shutdown dropped — see below) | **shipped (simulator, placeholder art) — §14** |
 | B2 | In-UI view to browse and pick a past drive to replay | **shipped (simulator) — §12** |
 | B3 | Define the driving score: what is "spirited", what is "harsh"? | **open question — see below** |
 | B4 | Does OBD expose convertible-roof up/down? | **answered: NO — see below** |
 | B5 | Make it a *universal* gauge; show car make/model at the top | **shipped in the simulator — §10** |
 
-### B1 — Ignition on/off animations
+### B1 — Boot splash
 
-Play a startup animation when the car wakes and a shutdown animation when it
-sleeps. Ignition state is inferred, not a dedicated signal:
+Shipped as a boot splash only. The shutdown half was dropped on 2026-08-16:
+the gauge is fed from an **ignition-switched** supply (§3, Power), so key-off
+cuts power instantly and there is no frame left to draw a shutdown in. See §14.
 
-- **On:** BLE link establishes *and* first live RPM > 0 (engine cranking/running).
-- **Off:** RPM falls to 0 and the link goes idle → the shutdown animation runs,
-  then the board deep-sleeps (existing backstop in the roadmap).
-
-Note the earlier decision that *the user supplies the startup animation asset* —
-so this item is the **trigger + playback machinery**, plus a placeholder
-animation in the simulator. To design once we pick it up.
+Ignition itself is no longer inferred from rpm — `mx5gauge/ignition.py` reads
+it from `volts` and `run_time` (§15).
 
 ### B2 — Replay picker view
 
@@ -550,3 +546,98 @@ visuals easy to admire on a capture that idles — and made replay useless for
 reviewing a drive, which is now what replay is for. The launcher no longer
 passes it. The flag survives on `run.py` for judging visuals against an idling
 capture, still labelled as a preview on screen and still refused in live mode.
+
+---
+
+## 14. The boot splash (B1, shipped in the simulator)
+
+The gauge holds a splash for `BOOT_MS` (2.5 s) when it wakes, then reveals the
+carousel. The instruments are **withheld rather than covered**: nothing shows
+until the splash finishes, which is how a cluster behaves and which also spares
+you the first second of half-populated channels.
+
+`state.Boot` is a two-phase tracker — `WAKING` then `RUNNING` — fed the drive's
+**logical** clock, the same one the metrics use. A capture replayed at 8x
+therefore splashes for 2.5 s *of the drive*, not of your afternoon, and live
+and replay need no special cases between them. Scrubbing backwards rebases the
+start rather than stranding the splash waiting out an interval that has already
+gone by.
+
+There is deliberately no `ASLEEP` phase. A car that is off is a board with no
+power, not a board in a state, and modelling something the hardware cannot be
+in would be fiction.
+
+### Why there is no shutdown animation
+
+`SPEC.md` §3 feeds the buck converter from an ignition-switched source. Key-off
+is a hard power cut, so a shutdown animation could never be seen. This was
+weighed against moving to constant 12 V with a deep-sleep backstop, and against
+a hold-up capacitor to outlive the cut; switched power won on simplicity and
+on parked-car draw.
+
+### The consequence that had to be fixed
+
+`Recorder.close()` writes the `.json` sidecar holding distance, economy and
+score — and a power cut never reaches it. Without a sidecar `library.py` can
+only count rows, so **every drive in the car would have shown as
+`interrupted`** with no distance, exactly as the 13 Aug log does.
+
+So the recorder now rewrites the sidecar every `SIDECAR_SECONDS` (10) as the
+drive goes, via a `summary_fn` the caller supplies. `close()` still writes the
+final one, so a clean shutdown is unchanged and a cut costs at most ten seconds
+of summary. The periodic write happens outside the recorder's lock, because
+`summary_fn` reaches into `Gauge.snapshot()` and takes the gauge's — the two
+must never be acquired in both orders.
+
+### Placeholder art
+
+A ring sweeps one lap while the car's name fades in, labelled `PLACEHOLDER
+ANIMATION` on screen. It is a pure function of `(phase, progress)` off the
+snapshot with no timers of its own, so the real asset replaces `drawBoot()` and
+touches nothing else.
+
+---
+
+## 15. Knowing when a drive ends (shipped in the simulator)
+
+A recording used to end when the gauge process did, so switching the car off
+and coming back later put both journeys — and the dead time between them — in
+one file. `mx5gauge/ignition.py` reads the ignition from the stream instead, and
+`run.py` rotates the recording on it, so one file stays one drive.
+
+### Both edges come from the car, not from guesswork
+
+- **Stopping** — every PID goes silent while `volts` keeps arriving. The
+  adapter is powered from OBD pin 16, which stays live with the ignition off,
+  so the link outlives the engine: on a recorded stop it kept answering `ATRV`
+  every ~28.5 s. The value is the tell, **12.4–12.6 V parked against
+  13.9–14.0 V running** — that gap is the alternator.
+- **Starting** — `run_time` (PID 0x1F, seconds since engine start) goes
+  backwards. Any decrease is unambiguously a new start. It is polled on the
+  fast cycle for this reason alone; it is not a display channel.
+
+**Silence with no `volts` either is a dropped link, not an ignition event.**
+`sources.py` already reconnects on its own, and reading a dropout as an
+ignition change would chop one drive into a file per dropout. That distinction
+is why the off-edge demands positive evidence rather than merely noticing the
+quiet.
+
+### Only the restart rotates
+
+An ignition-off leaves the current file open and idling. The car can be off for
+ten seconds at a barrier, and waiting for the engine to come back before
+declaring a drive over costs nothing. A rotated drive holding under 60 s is
+deleted rather than left to clutter the picker.
+
+The two on-edges are redundant on purpose — the PIDs answering, and the
+`run_time` reset — because a restart may happen while the gauge is disconnected
+and only the second one would see it. They must not both fire, though: on a
+real drive they arrive six seconds apart, which would rotate twice and orphan a
+six-second file. Whichever fires first disarms the other.
+
+### What it is worth on the board
+
+With the gauge on ignition-switched power (§14) one power cycle is one drive,
+so the rotation never fires in the car. It earns its place on the
+laptop-in-the-car setup the logs were recorded on, and it is what a move to
+constant power would need.

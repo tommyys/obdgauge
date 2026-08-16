@@ -1,3 +1,11 @@
+> **SUPERSEDED — do not execute.** Written before ignition detection existed.
+> It adds a class named `Ignition` to `state.py` and creates
+> `tests/test_ignition.py`; both now exist and mean something else
+> (`mx5gauge/ignition.py`, shipped 2026-08-16). It also infers ignition from
+> rpm plus link state, which the `volts`/`run_time` detector replaced, and it
+> builds a shutdown animation that the power decision of 2026-08-16 rules out.
+> Current design: `docs/superpowers/specs/2026-08-16-boot-splash-design.md`.
+
 # Ignition Animations (B1) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

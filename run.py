@@ -89,6 +89,13 @@ def pick_default_capture():
 MIN_DRIVE_S = 60.0
 
 
+def drive_summary(g):
+    """The summary written beside a recording, live or at the end."""
+    snap = g.snapshot()
+    return {'derived': snap['derived'], 'score': snap['score'],
+            'supported_pids': snap.get('supported')}
+
+
 def finish_drive(g, rec, here, quiet=False):
     """Close the recording with its summary, and announce it.
 
@@ -99,10 +106,9 @@ def finish_drive(g, rec, here, quiet=False):
     """
     if rec is None:
         return None
-    snap = g.snapshot()
-    d, s = snap['derived'], snap['score']
-    path = rec.close(summary={'derived': d, 'score': s,
-                              'supported_pids': snap.get('supported')})
+    summary = drive_summary(g)
+    d, s = summary['derived'], summary['score']
+    path = rec.close(summary=summary)
     if not path:
         return None
 
@@ -147,6 +153,7 @@ def on_ignition(g, here):
         g.recorder = recorder.Recorder(
             os.path.join(here, 'logs'),
             prefix='drive', enabled=(old is None or old.enabled))
+        g.recorder.summary_fn = lambda: drive_summary(g)
         g.reset()
         print('  ignition on — new drive: %s'
               % os.path.basename(g.recorder.path or '(not recording)'))
@@ -345,6 +352,7 @@ async def main():
                             prefix='drive' if src.kind == 'live' else 'replay',
                             enabled=(not args.no_record) and src.kind == 'live')
     g.recorder = rec
+    rec.summary_fn = lambda: drive_summary(g)
     if src.kind == 'live':
         g.on_ignition = on_ignition(g, HERE)
 

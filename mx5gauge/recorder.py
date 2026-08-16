@@ -19,6 +19,11 @@ import time
 
 FLUSH_SECONDS = 1.0
 
+# How often the .json summary is rewritten while the drive is under way. The
+# drive in the car ends when its power is cut, so this is the most a finished
+# drive's summary can be out of date.
+SIDECAR_SECONDS = 10.0
+
 
 def _free_path(path):
     """`path`, or the first '-2', '-3'... variant of it that is not taken.
@@ -47,8 +52,13 @@ class Recorder(object):
         self._w = None
         self._t0 = None
         self._last_flush = 0.0
+        self._last_side = 0.0
         self._lock = threading.Lock()
         self._channels = {}          # key -> count, for the summary
+        # Set by the caller to a callable returning the summary dict. Without
+        # one the sidecar is only written at close(), which in the car never
+        # happens — see _write_sidecar.
+        self.summary_fn = None
         if not enabled:
             return
         # The path is decided now so it can be printed at startup, but the file
@@ -77,6 +87,9 @@ class Recorder(object):
         with self._lock:
             if self._w is None:
                 self._open()          # first real reading: commit to a file
+                # start the sidecar clock here, not at construction: a summary
+                # of a drive that has not begun says nothing worth saying
+                self._last_side = now
             if self._t0 is None:
                 self._t0 = t
             iso = datetime.datetime.fromtimestamp(now).isoformat(timespec='milliseconds')
@@ -89,6 +102,36 @@ class Recorder(object):
             if now - self._last_flush > FLUSH_SECONDS:
                 self._last_flush = now
                 self._fh.flush()
+            due = (self.summary_fn is not None
+                   and now - self._last_side > SIDECAR_SECONDS)
+            if due:
+                self._last_side = now
+
+        # Outside the lock on purpose: `summary_fn` reaches into the gauge and
+        # takes its lock, and the two must never be acquired in both orders.
+        if due:
+            self._write_sidecar(self.summary_fn())
+
+    def _write_sidecar(self, summary):
+        """Drop the .json summary beside the CSV, overwriting the last one.
+
+        Written as the drive goes rather than only at the end, because the end
+        is a power cut: the car's supply is ignition-switched, so `close()` is
+        never reached in the car. Without this every drive would land with no
+        summary and the picker could only report a row count — see
+        `library._summarise_csv`, which falls back to exactly that.
+        """
+        if summary is None or self.path is None:
+            return
+        meta = dict(summary)
+        meta['rows'] = self.rows
+        meta['channels'] = dict(self._channels)
+        meta['csv'] = os.path.basename(self.path)
+        try:
+            with open(self.path.replace('.csv', '.json'), 'w') as fh:
+                json.dump(meta, fh, indent=2, default=str)
+        except Exception:
+            pass
 
     def close(self, summary=None):
         """Flush, close, and drop a .json summary beside the CSV.
@@ -105,16 +148,7 @@ class Recorder(object):
             except Exception:
                 pass
             self._w = None
-        if summary is not None:
-            meta = dict(summary)
-            meta['rows'] = self.rows
-            meta['channels'] = self._channels
-            meta['csv'] = os.path.basename(self.path)
-            try:
-                with open(self.path.replace('.csv', '.json'), 'w') as fh:
-                    json.dump(meta, fh, indent=2, default=str)
-            except Exception:
-                pass
+        self._write_sidecar(summary)
         return self.path
 
 

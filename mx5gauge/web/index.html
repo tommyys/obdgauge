@@ -58,6 +58,9 @@
      and never interactive — it is a curtain, not a control. */
   .bootfx{position:absolute;inset:0;width:100%;height:100%;z-index:4;
     pointer-events:none;border-radius:50%;}
+  /* the clip is a square centre-crop; cover keeps the car centred and lets the
+     round bezel take the corners, which is what it is framed for */
+  video.bootfx{object-fit:cover;background:#000;z-index:5;}
   .bootfx[hidden]{display:none;}
   /* The instruments are withheld rather than merely covered: a real cluster
      shows nothing until it has woken, and it also spares you the first second
@@ -395,10 +398,13 @@
 
     </div>
 
-    <!-- PLACEHOLDER boot animation. The real asset drops into drawBoot()
-         later; the machinery around it — phase, progress, and withholding the
-         carousel until it finishes — is the part that matters. -->
+    <!-- Boot animation. The canvas behind it is the fallback: if the video
+         cannot load or decode, the ring sweep plays instead of a black screen. -->
     <canvas class="bootfx" id="bootfx" width="480" height="480" hidden></canvas>
+    <video class="bootfx" id="bootvid" width="480" height="480"
+           muted playsinline preload="auto" hidden>
+      <source src="boot.mp4" type="video/mp4">
+    </video>
   </div>
 </div>
 
@@ -812,11 +818,18 @@ function applyReplayPosition(r){
 }
 
 /* ---- boot splash --------------------------------------------------------
-   PLACEHOLDER ART. A ring sweeps one lap while the car's name fades in, then
-   hands over to the carousel. Everything is a pure function of
-   (phase, progress) coming off the snapshot — no timers here — so dropping the
-   real asset in later touches drawBoot() and nothing else. */
+   The MX-5 rising out of the dark, then the carousel. The clip is trimmed to
+   BOOT_MS so the video and the phase tracker finish together; the tracker
+   still owns the timing, and the video is only what gets drawn during it.
+
+   drawBoot() below is the fallback ring, used when the video cannot load or
+   decode — a gauge that boots to a black screen because an asset moved would
+   be worse than one that boots to a plain sweep. */
 const bootCanvas=$('bootfx'), bootCtx=bootCanvas.getContext('2d');
+const bootVid=$('bootvid');
+let bootBroken=false, bootPlaying=false;
+bootVid.addEventListener('error',()=>{bootBroken=true;});
+bootVid.querySelector('source').addEventListener('error',()=>{bootBroken=true;});
 
 function drawBoot(p){
   const W=bootCanvas.width, C=W/2;
@@ -839,19 +852,30 @@ function drawBoot(p){
   bootCtx.textBaseline='middle';
   bootCtx.font='600 '+(W*0.085)+'px ui-monospace,SFMono-Regular,Menlo,monospace';
   bootCtx.fillText(($('c_make').textContent||'OBD-II').toUpperCase(),C,C-W*0.02);
-  bootCtx.globalAlpha=Math.max(0,Math.min(1,(f-0.35)/0.65));
-  bootCtx.font='500 '+(W*0.030)+'px ui-monospace,SFMono-Regular,Menlo,monospace';
-  bootCtx.fillStyle='#6b7280';
-  bootCtx.fillText('PLACEHOLDER ANIMATION',C,C+W*0.075);
   bootCtx.globalAlpha=1;
 }
 
 function applyBoot(b){
   if(!b) return;
   const waking=b.phase!=='RUNNING';
-  bootCanvas.hidden=!waking;
   screenEl.classList.toggle('booting',waking);
-  if(waking) drawBoot(b.progress);
+  const useVideo=waking && !bootBroken;
+  bootVid.hidden=!useVideo;
+  bootCanvas.hidden=!(waking && bootBroken);
+
+  if(useVideo){
+    if(!bootPlaying){
+      bootPlaying=true;
+      bootVid.currentTime=0;
+      // autoplay is permitted because the clip is muted; if the browser
+      // refuses anyway, fall back rather than sit on a frozen first frame
+      const p=bootVid.play();
+      if(p&&p.catch) p.catch(()=>{bootBroken=true;});
+    }
+  } else {
+    if(bootPlaying){ bootPlaying=false; try{bootVid.pause();}catch(_e){} }
+    if(waking) drawBoot(b.progress);
+  }
 }
 
 /* ---- render from /data ---- */

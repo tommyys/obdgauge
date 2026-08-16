@@ -223,7 +223,7 @@ first so nothing gets lost, then graduates into section 5/6/7 once built.
 
 | # | Item | Status |
 |---|---|---|
-| B1 | Boot splash on ignition on (shutdown dropped — see below) | **shipped (simulator, placeholder art) — §14** |
+| B1 | Boot splash on ignition on (shutdown dropped — see below) | **shipped (simulator) — §14** |
 | B2 | In-UI view to browse and pick a past drive to replay | **shipped (simulator) — §12** |
 | B3 | Define the driving score: what is "spirited", what is "harsh"? | **open question — see below** |
 | B4 | Does OBD expose convertible-roof up/down? | **answered: NO — see below** |
@@ -589,55 +589,20 @@ of summary. The periodic write happens outside the recorder's lock, because
 `summary_fn` reaches into `Gauge.snapshot()` and takes the gauge's — the two
 must never be acquired in both orders.
 
-### Placeholder art
+### The animation
 
-A ring sweeps one lap while the car's name fades in, labelled `PLACEHOLDER
-ANIMATION` on screen. It is a pure function of `(phase, progress)` off the
-snapshot with no timers of its own, so the real asset replaces `drawBoot()` and
-touches nothing else.
+`mx5gauge/web/boot.mp4` — the MX-5 rising out of darkness, headlights igniting,
+then a push-in. User-supplied, 2026-08-16. The source clip was portrait
+560x752 and 4.06 s; it is centre-cropped square at y=96 (which also removes a
+watermark in the original's top-left), scaled to 480x480, sped up to
+`BOOT_MS`, and stripped of its audio track — the board has no speakers and
+browsers refuse to autoplay sound anyway.
 
----
+The phase tracker still owns the timing. The video is only what gets drawn
+during `WAKING`, and `drawBoot()` survives as the fallback: if the asset cannot
+load or the browser refuses to autoplay it, the ring sweep plays rather than a
+black screen.
 
-## 15. Knowing when a drive ends (shipped in the simulator)
-
-A recording used to end when the gauge process did, so switching the car off
-and coming back later put both journeys — and the dead time between them — in
-one file. `mx5gauge/ignition.py` reads the ignition from the stream instead, and
-`run.py` rotates the recording on it, so one file stays one drive.
-
-### Both edges come from the car, not from guesswork
-
-- **Stopping** — every PID goes silent while `volts` keeps arriving. The
-  adapter is powered from OBD pin 16, which stays live with the ignition off,
-  so the link outlives the engine: on a recorded stop it kept answering `ATRV`
-  every ~28.5 s. The value is the tell, **12.4–12.6 V parked against
-  13.9–14.0 V running** — that gap is the alternator.
-- **Starting** — `run_time` (PID 0x1F, seconds since engine start) goes
-  backwards. Any decrease is unambiguously a new start. It is polled on the
-  fast cycle for this reason alone; it is not a display channel.
-
-**Silence with no `volts` either is a dropped link, not an ignition event.**
-`sources.py` already reconnects on its own, and reading a dropout as an
-ignition change would chop one drive into a file per dropout. That distinction
-is why the off-edge demands positive evidence rather than merely noticing the
-quiet.
-
-### Only the restart rotates
-
-An ignition-off leaves the current file open and idling. The car can be off for
-ten seconds at a barrier, and waiting for the engine to come back before
-declaring a drive over costs nothing. A rotated drive holding under 60 s is
-deleted rather than left to clutter the picker.
-
-The two on-edges are redundant on purpose — the PIDs answering, and the
-`run_time` reset — because a restart may happen while the gauge is disconnected
-and only the second one would see it. They must not both fire, though: on a
-real drive they arrive six seconds apart, which would rotate twice and orphan a
-six-second file. Whichever fires first disarms the other.
-
-### What it is worth on the board
-
-With the gauge on ignition-switched power (§14) one power cycle is one drive,
-so the rotation never fires in the car. It earns its place on the
-laptop-in-the-car setup the logs were recorded on, and it is what a move to
-constant power would need.
+**This is a simulator asset.** The ESP32-S3 cannot decode H.264 — the firmware
+port needs the same animation as extracted frames or an LVGL sequence, which is
+phase 2 work.

@@ -1,6 +1,7 @@
 """Tiny stdlib HTTP server: serves the gauge UI, a JSON snapshot, and the
 drive library the on-screen picker browses."""
 import json
+import mimetypes
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,8 +72,15 @@ def make_handler(gauge, root=None, on_select=None, on_seek=None):
             name = os.path.basename(path)
             fn = os.path.join(WEB_DIR, name)
             if name and os.path.isfile(fn):
-                ctype = 'text/html; charset=utf-8' if name.endswith('.html') \
-                    else 'text/plain; charset=utf-8'
+                # guessed, not assumed: the boot animation is an mp4, and a
+                # video served as text/plain simply does not play
+                guess, _enc = mimetypes.guess_type(name)
+                if name.endswith('.html'):
+                    ctype = 'text/html; charset=utf-8'
+                elif guess:
+                    ctype = guess
+                else:
+                    ctype = 'text/plain; charset=utf-8'
                 with open(fn, 'rb') as fh:
                     self._send(200, fh.read(), ctype)
                 return

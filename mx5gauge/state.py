@@ -3,7 +3,7 @@ import math
 import threading
 import time
 
-from . import metrics, vehicle
+from . import ignition, metrics, vehicle
 
 # Physically plausible range per channel. Anything outside is dropped rather
 # than stored: a resync glitch in a capture (or a mangled BLE reply) can yield
@@ -90,6 +90,12 @@ class Gauge(object):
         self.updated = {}         # key -> monotonic timestamp
         self.trip = metrics.Trip()
         self.score = metrics.DrivingScore()
+        self.ignition = ignition.Ignition()
+        # Set by run.py on a live session to rotate the recording when the
+        # engine stops and starts. Left None during replay: a recorded drive
+        # replays its own ignition events, and acting on them would zero the
+        # trip totals under you mid-scrub.
+        self.on_ignition = None
         self.peak_rpm = 0.0
         self.peak_kw = 0.0
         self.status = 'starting'
@@ -121,6 +127,7 @@ class Gauge(object):
             self.updated.clear()
             self.trip = metrics.Trip()
             self.score = metrics.DrivingScore()
+            self.ignition = ignition.Ignition()
             self.peak_rpm = 0.0
             self.peak_kw = 0.0
             self._t0 = None
@@ -171,6 +178,13 @@ class Gauge(object):
             self.trip.update(t, v.get('speed'), v.get('fuel_rate'))
             self.score.update(t, v.get('speed'), v.get('rpm'),
                               v.get('throttle'), v.get('fuel_rate'))
+            event = (self.ignition.update(t, key, value)
+                     if self.on_ignition is not None else None)
+
+        # Outside the lock: the callback rotates the recording, which is file
+        # I/O and calls `reset()` — both of which would deadlock in here.
+        if event is not None:
+            self.on_ignition(event)
 
     # -- render --------------------------------------------------------------
     def snapshot(self):

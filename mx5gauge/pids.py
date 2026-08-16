@@ -239,7 +239,11 @@ PIDS = {
 
 # PIDs the gauge draws — polled between every other reading so the needle stays
 # responsive while the long tail is swept for the log.
-POLL_FAST = [0x0C, 0x0D, 0x11]                 # rpm, speed, throttle
+# rpm, speed, throttle — and run time since start, which is not a display
+# channel at all: it is how `ignition` catches an engine that restarted while
+# we were disconnected. On the slow sweep it came round every ~28 s, which is
+# long enough to lose the start of a drive.
+POLL_FAST = [0x0C, 0x0D, 0x11, 0x1F]
 # Preferred order for the rest, so the display-relevant ones refresh soonest.
 POLL_PRIORITY = [0x05, 0x0F, 0x5E, 0x04, 0x42, 0x63, 0x62, 0x5C, 0x3C, 0x33]
 

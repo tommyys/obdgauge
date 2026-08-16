@@ -20,6 +20,23 @@ import time
 FLUSH_SECONDS = 1.0
 
 
+def _free_path(path):
+    """`path`, or the first '-2', '-3'... variant of it that is not taken.
+
+    The name carries a timestamp only to the second, which was unique enough
+    when a drive lasted as long as the process. Ignition rotation can open a
+    second recorder in the same second as the one it just closed, and without
+    this the new drive would open on top of the finished one and erase it.
+    """
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists('%s-%d%s' % (stem, n, ext)):
+        n += 1
+    return '%s-%d%s' % (stem, n, ext)
+
+
 class Recorder(object):
     def __init__(self, directory, prefix='drive', enabled=True):
         self.enabled = enabled
@@ -40,7 +57,8 @@ class Recorder(object):
         # link — would otherwise leave a header-only CSV behind on every
         # attempt, and the Drives view would list each one as an empty drive.
         stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-        self.path = os.path.join(directory, '%s-%s.csv' % (prefix, stamp))
+        self.path = _free_path(
+            os.path.join(directory, '%s-%s.csv' % (prefix, stamp)))
 
     def _open(self):
         os.makedirs(self._dir, exist_ok=True)

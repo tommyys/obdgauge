@@ -84,6 +84,75 @@ def pick_default_capture():
     return best or max(files, key=os.path.getsize)
 
 
+# A rotated drive shorter than this is not a drive — it is a stall, a restart,
+# or the adapter flapping. Deleted rather than left to clutter the picker.
+MIN_DRIVE_S = 60.0
+
+
+def finish_drive(g, rec, here, quiet=False):
+    """Close the recording with its summary, and announce it.
+
+    Returns the saved path, or None when nothing was recorded or the drive was
+    too short to keep. Used both at shutdown and on every ignition rotation, so
+    a drive ended by switching the car off is saved exactly like one ended by
+    closing the gauge.
+    """
+    if rec is None:
+        return None
+    snap = g.snapshot()
+    d, s = snap['derived'], snap['score']
+    path = rec.close(summary={'derived': d, 'score': s,
+                              'supported_pids': snap.get('supported')})
+    if not path:
+        return None
+
+    if (d['elapsed_s'] or 0) < MIN_DRIVE_S:
+        # Scoped to the file this recorder just wrote, and only ever the pair
+        # it created — nothing else on disk is touched.
+        for victim in (path, path.replace('.csv', '.json')):
+            try:
+                os.remove(victim)
+            except OSError:
+                pass
+        if not quiet:
+            print('  (discarded %.0fs fragment)' % (d['elapsed_s'] or 0))
+        return None
+
+    if not quiet:
+        print('\n  ── session saved ───────────────────────────')
+        print('  %s' % os.path.relpath(path, here))
+        print('  %d readings · %.2f km · %.0f min moving'
+              % (rec.rows, d['dist_km'], (d['moving_s'] or 0) / 60.0))
+        if s['total'] is not None:
+            print('  driving score %.0f (%s)' % (s['total'], s['coach']))
+        print('  replay it with:  run.py --replay "%s"'
+              % os.path.relpath(path, here))
+        print()
+    return path
+
+
+def on_ignition(g, here):
+    """Build the callback that splits the recording on ignition events.
+
+    Only the restart rotates. An ignition-off leaves the current file open and
+    idling: the car may be off for ten seconds at a barrier, and there is no
+    cost to waiting for the restart before deciding a drive has ended.
+    """
+    def handle(event):
+        if event != 'on':
+            print('  ignition off — drive will end if the engine restarts')
+            return
+        old = g.recorder
+        finish_drive(g, old, here)
+        g.recorder = recorder.Recorder(
+            os.path.join(here, 'logs'),
+            prefix='drive', enabled=(old is None or old.enabled))
+        g.reset()
+        print('  ignition on — new drive: %s'
+              % os.path.basename(g.recorder.path or '(not recording)'))
+    return handle
+
+
 class Player(object):
     """Runs one source, and can swap it for another drive while running.
 
@@ -276,6 +345,8 @@ async def main():
                             prefix='drive' if src.kind == 'live' else 'replay',
                             enabled=(not args.no_record) and src.kind == 'live')
     g.recorder = rec
+    if src.kind == 'live':
+        g.on_ignition = on_ignition(g, HERE)
 
     player = Player(g, src, HERE, speed=args.speed,
                     make=args.make, model=args.model)
@@ -326,20 +397,7 @@ async def main():
         pass
     finally:
         httpd.shutdown()
-        snap = g.snapshot()
-        d, s = snap['derived'], snap['score']
-        path = rec.close(summary={'derived': d, 'score': s,
-                                  'supported_pids': snap.get('supported')})
-        if path:
-            print('\n  ── session saved ───────────────────────────')
-            print('  %s' % os.path.relpath(path, HERE))
-            print('  %d readings · %.2f km · %.0f min moving'
-                  % (rec.rows, d['dist_km'], (d['moving_s'] or 0) / 60.0))
-            if s['total'] is not None:
-                print('  driving score %.0f (%s)' % (s['total'], s['coach']))
-            print('  replay it with:  run.py --replay "%s"'
-                  % os.path.relpath(path, HERE))
-            print()
+        finish_drive(g, g.recorder, HERE)
     return 0
 
 

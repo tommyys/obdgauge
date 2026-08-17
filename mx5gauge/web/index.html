@@ -61,12 +61,21 @@
   /* the clip is a square centre-crop; cover keeps the car centred and lets the
      round bezel take the corners, which is what it is framed for */
   video.bootfx{object-fit:cover;background:#000;z-index:5;}
+  /* the dip is driven from the 100ms poll, so smooth between its steps or the
+     fade arrives in six visible jumps */
+  video.bootfx,canvas.bootfx{transition:opacity .12s linear;}
   .bootfx[hidden]{display:none;}
+  /* what the clip fades out onto */
+  .bootblack{position:absolute;inset:0;z-index:3;background:#000;
+    pointer-events:none;border-radius:50%;}
+  .bootblack[hidden]{display:none;}
   /* The instruments are withheld rather than merely covered: a real cluster
      shows nothing until it has woken, and it also spares you the first second
-     of half-populated channels. */
+     of half-populated channels. They then arrive on a slow fade out of the
+     black, so the hand-off reads as one movement rather than a cut. */
+  .track,.carbar{transition:opacity 1.1s ease-out;}
   .screen.booting .track,
-  .screen.booting .carbar{opacity:0;}
+  .screen.booting .carbar{opacity:0;transition:none;}
   /* Infinite carousel: each view is placed independently at its shortest
      signed distance from the current one, rather than being a cell in one long
      strip. Wrapping from the last view to the first is then a single step
@@ -398,8 +407,10 @@
 
     </div>
 
-    <!-- Boot animation. The canvas behind it is the fallback: if the video
-         cannot load or decode, the ring sweep plays instead of a black screen. -->
+    <!-- Boot animation. The black layer sits under the clip so the clip can
+         fade out onto it; the canvas is the fallback if the video cannot load
+         or decode, so a missing asset boots to a ring sweep, not a blank. -->
+    <div class="bootblack" id="bootblack" hidden></div>
     <canvas class="bootfx" id="bootfx" width="480" height="480" hidden></canvas>
     <video class="bootfx" id="bootvid" width="480" height="480"
            muted playsinline preload="auto" hidden>
@@ -826,7 +837,25 @@ function applyReplayPosition(r){
    decode — a gauge that boots to a black screen because an asset moved would
    be worse than one that boots to a plain sweep. */
 const bootCanvas=$('bootfx'), bootCtx=bootCanvas.getContext('2d');
-const bootVid=$('bootvid');
+const bootVid=$('bootvid'), bootBlack=$('bootblack');
+const pageOpened=performance.now();
+
+/* On a replay the boot sequence runs off the *page's* clock, so every refresh
+   plays it — which is the only way to watch it at a desk. The gauge's own
+   phase is no use here: a drive opened from the picker is seeked to its end,
+   which pushes the boot clock past the whole sequence before the first frame,
+   and even on a fresh launch the browser takes about as long to open as the
+   sequence lasts.
+
+   Live keeps the gauge's phase. Refreshing the page mid-drive should not
+   blank the instruments for three seconds while you are moving. */
+function localBoot(b){
+  const bootMs=b.ms||2500, fadeMs=b.fade_ms||600;
+  const e=performance.now()-pageOpened;
+  if(e<bootMs)        return {phase:'WAKING', progress:e/bootMs};
+  if(e<bootMs+fadeMs) return {phase:'FADING', progress:(e-bootMs)/fadeMs};
+  return {phase:'RUNNING', progress:1};
+}
 let bootBroken=false, bootPlaying=false;
 bootVid.addEventListener('error',()=>{bootBroken=true;});
 bootVid.querySelector('source').addEventListener('error',()=>{bootBroken=true;});
@@ -857,11 +886,20 @@ function drawBoot(p){
 
 function applyBoot(b){
   if(!b) return;
-  const waking=b.phase!=='RUNNING';
-  screenEl.classList.toggle('booting',waking);
-  const useVideo=waking && !bootBroken;
+  const booting=b.phase!=='RUNNING';
+  const fading=b.phase==='FADING';
+  screenEl.classList.toggle('booting',booting);
+  bootBlack.hidden=!booting;
+
+  const useVideo=booting && !bootBroken;
   bootVid.hidden=!useVideo;
-  bootCanvas.hidden=!(waking && bootBroken);
+  bootCanvas.hidden=!(booting && bootBroken);
+
+  // the dip: the clip dissolves into the black layer behind it, and only then
+  // does the carousel fade up out of that same black
+  const shown = fading ? 1-b.progress : 1;
+  bootVid.style.opacity=shown;
+  bootCanvas.style.opacity=shown;
 
   if(useVideo){
     if(!bootPlaying){
@@ -874,7 +912,7 @@ function applyBoot(b){
     }
   } else {
     if(bootPlaying){ bootPlaying=false; try{bootVid.pause();}catch(_e){} }
-    if(waking) drawBoot(b.progress);
+    if(booting) drawBoot(fading?1:b.progress);
   }
 }
 
@@ -926,7 +964,7 @@ async function tick(){
   const L=d.live,D=d.derived,S=d.score;
   LAST=d;
   applyReplayPosition(d.replay);
-  applyBoot(d.boot);
+  applyBoot(d.boot && d.source==='replay' ? localBoot(d.boot) : d.boot);
 
   // header
   const bad=/error|no OBD|disconnected/i.test(d.status);

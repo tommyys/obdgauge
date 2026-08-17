@@ -81,13 +81,19 @@ def plausible(key, value):
     return lo <= v <= hi
 
 
-# How long the boot splash holds the screen, in milliseconds of the drive's
-# own clock.
+# How long the boot clip holds the screen, in milliseconds of the drive's own
+# clock, and how long it then dips to black before the instruments arrive.
 BOOT_MS = 2500
+BOOT_FADE_MS = 600
 
 
 class Boot(object):
-    """Tracks the boot splash: 'WAKING' while it plays, then 'RUNNING'.
+    """Tracks the boot sequence: 'WAKING', 'FADING', then 'RUNNING'.
+
+    The dip to black between the clip and the instruments is what keeps the
+    two from colliding — the animation ends on a lit car filling the screen,
+    and cutting straight from that to a dial would read as a glitch rather
+    than a hand-off.
 
     Told the time rather than reading a clock, so a capture replayed at 8x
     splashes for the same 2.5 seconds *of the drive* that a car in front of you
@@ -108,12 +114,21 @@ class Boot(object):
 
     @property
     def progress(self):
-        """0 -> 1 through the splash; 1 once the instruments are up."""
-        if self.phase == 'RUNNING':
+        """0 -> 1 through whichever step is playing; 1 once running.
+
+        Measured within the current phase, so the UI can drive the clip and
+        the dip to black off the same number without knowing the durations.
+        """
+        if self.phase == 'RUNNING' or self._t0 is None:
+            return 1.0 if self.phase == 'RUNNING' else 0.0
+        elapsed = self._t - self._t0
+        if self.phase == 'WAKING':
+            span = BOOT_MS / 1000.0
+            return 1.0 if span <= 0 else max(0.0, min(1.0, elapsed / span))
+        span = BOOT_FADE_MS / 1000.0
+        if span <= 0:
             return 1.0
-        if self._t0 is None or BOOT_MS <= 0:
-            return 0.0
-        return max(0.0, min(1.0, (self._t - self._t0) / (BOOT_MS / 1000.0)))
+        return max(0.0, min(1.0, (elapsed - BOOT_MS / 1000.0) / span))
 
     def update(self, t):
         """Feed the logical timestamp of one real reading."""
@@ -121,13 +136,18 @@ class Boot(object):
         if self._t0 is None:
             self._t0 = t
         elif t < self._t:
-            # Scrubbed backwards on the replay timeline. Rebase, or the splash
+            # Scrubbed backwards on the replay timeline. Rebase, or the boot
             # would sit waiting out an interval that has already gone by and
             # can never come round again.
             self._t0 = t
         self._t = t
-        if self.phase == 'WAKING' and t - self._t0 >= BOOT_MS / 1000.0:
+        elapsed = t - self._t0
+        if elapsed >= (BOOT_MS + BOOT_FADE_MS) / 1000.0:
             self.phase = 'RUNNING'
+        elif elapsed >= BOOT_MS / 1000.0:
+            self.phase = 'FADING'
+        else:
+            self.phase = 'WAKING'
 
 
 class Gauge(object):
@@ -324,8 +344,11 @@ class Gauge(object):
                 'preview_sweep': self.preview_sweep,
                 'file': self.current_file,
                 'replay': self._replay_position(),
+                # the durations travel with the phase so the page can run the
+                # same sequence off its own clock on a replay refresh
                 'boot': {'phase': self.boot.phase,
-                         'progress': self.boot.progress},
+                         'progress': self.boot.progress,
+                         'ms': BOOT_MS, 'fade_ms': BOOT_FADE_MS},
             }
 
     def _replay_position(self):

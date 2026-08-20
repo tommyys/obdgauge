@@ -1177,7 +1177,13 @@ real time before they were understood.
    with pyserial instead, and only reach for esptool when you intend to flash.
 3. **`idf.py monitor` cannot be used here at all** — idf_monitor requires stdin
    to be a TTY and exits 1 otherwise. Use a passive pyserial read.
-4. **The console is USB-Serial/JTAG only.** There is no USB-UART bridge, so
+4. **The component manifest must live at `main/idf_component.yml`.** A manifest
+   at the *project* root (`firmware/idf_component.yml`) is silently ignored:
+   `idf.py reconfigure` succeeds, downloads nothing, and `managed_components/`
+   never appears. Note also that `idf.py add-dependency` only edits the
+   manifest — it does not contact the registry, so it "succeeding" proves
+   nothing about whether a component exists.
+5. **The console is USB-Serial/JTAG only.** There is no USB-UART bridge, so
    IDF's default UART0 console prints to pins nothing is connected to.
    `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` is mandatory, not optional.
 
@@ -1199,6 +1205,11 @@ PORT=$(ls /dev/cu.usbmodem* | head -1)
   the plausibility gate that `replay_check` can never exercise on clean logs.
 - **The restore path works end to end**: `write-flash 0` of the backup brought
   Xiaozhi back, booting, with its UI on the display, in ~2.5 minutes.
+- **Panel is 466x466** (`BSP_LCD_H_RES`/`V_RES`), and a full-rim arc renders
+  unclipped — so there is no rotation or offset error to chase.
+- **A real UI runs on the panel**: the section 6 view 2 engine-vitals screen,
+  animating, driven by `gauge_core` with the plausibility gate in the path.
+  Tasks 12's display half is done; touch and IMU (Task 13) are not.
 
 ## Part B — hardware bring-up (board required)
 

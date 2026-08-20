@@ -44,13 +44,19 @@ design in §6 and the harsh-event work in B3 carry over untouched.
 **§3 of `SPEC.md` must be rewritten** as part of this work, along with the BOM
 (the board line changes, and the buck converter becomes optional — see Power).
 
-### Panel geometry is not yet confirmed
+### Panel geometry — CONFIRMED 2026-08-21: 466x466
 
-Resolution lives in compile-time constants, so it was not recoverable from the
-flash dump. The 1.75" Waveshare AMOLEDs are 466×466 round. **Phase 0 confirms
-this against the real panel and the number is fixed once, in one header.** No
-layout work starts before that. Every figure below that depends on resolution is
-computed from 466×466 and is provisional until Phase 0 says otherwise.
+Resolution was not recoverable from the flash dump (compile-time constants), so
+466×466 was an assumption. The vendor BSP settles it: `waveshare/esp32_s3_touch_amoled_1_75c`
+defines `BSP_LCD_H_RES` and `BSP_LCD_V_RES` as **466**, and a full-rim arc renders
+with no clipping on the real panel.
+
+So the figures in this document hold: **434,312 bytes (~424KB) per RGB565 frame**,
+comfortable in 8MB PSRAM, with bandwidth still the constraint rather than capacity.
+
+The number is not redefined anywhere in this project — code uses `BSP_LCD_H_RES`
+directly, so the vendor header stays the single source of truth. The
+`gauge_ui/display_config.h` the plan called for is therefore unnecessary.
 
 ## Strategy
 
@@ -333,7 +339,7 @@ iterated against captures without a car.
 
 ## Open questions
 
-1. **Panel resolution** — 466×466 assumed, confirmed in Phase 0.
+1. ~~Panel resolution~~ — **answered 2026-08-21: 466×466**, from the vendor BSP and confirmed visually.
 2. **B3, the driving-score definition** — yours to decide; does not block.
 3. **Car USB socket: switched or constant?** — physical test at the car; changes
    the BOM, not the code.

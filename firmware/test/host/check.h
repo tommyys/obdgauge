@@ -26,6 +26,12 @@ inline std::string show(const std::vector<uint8_t>& v) {
     return s + "]";
 }
 
+inline std::string show(const std::vector<std::string>& v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) { if (i) s += ", "; s += "'" + v[i] + "'"; }
+    return s + "]";
+}
+
 template <typename T>
 inline std::string show(const std::optional<T>& v) { return v ? show(*v) : "None"; }
 

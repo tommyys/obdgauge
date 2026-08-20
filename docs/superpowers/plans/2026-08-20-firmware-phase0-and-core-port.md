@@ -1163,6 +1163,43 @@ transcription is exactly where a port of this shape goes wrong.
 42,412 samples** from all three drives in `logs/`. The Python suite still
 passes unchanged.
 
+## Board quirks (learned the hard way, 2026-08-21)
+
+This board fights the standard ESP-IDF workflow in four ways. All four cost
+real time before they were understood.
+
+1. **There is no RESET button — only BOOT.** So "tap RESET" is not a thing you
+   can do: the reset is *unplug, wait ~5s, replug, touching nothing*. Holding
+   BOOT while replugging is what enters download mode.
+2. **Every `esptool` invocation re-enters download mode** (`--before
+   default-reset` is the default). Diagnosing "why won't it boot?" with esptool
+   therefore recreates the state being diagnosed. Read the port **passively**
+   with pyserial instead, and only reach for esptool when you intend to flash.
+3. **`idf.py monitor` cannot be used here at all** — idf_monitor requires stdin
+   to be a TTY and exits 1 otherwise. Use a passive pyserial read.
+4. **The console is USB-Serial/JTAG only.** There is no USB-UART bridge, so
+   IDF's default UART0 console prints to pins nothing is connected to.
+   `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` is mandatory, not optional.
+
+Also: the port number changes with the Mac's USB socket (`usbmodem1101` vs
+`usbmodem3101`). Detect it, never hardcode it:
+
+```sh
+PORT=$(ls /dev/cu.usbmodem* | head -1)
+```
+
+**The working loop is:** build -> flash -> replug -> passive read.
+
+### Confirmed on hardware
+
+- **PSRAM is octal**: `esp_psram: SPI SRAM memory test OK`, 8388608 bytes.
+  Spec open question 1 (PSRAM mode) is answered; `CONFIG_SPIRAM_MODE_OCT=y`.
+- **32MB flash size config boots fine.**
+- **`gauge_core` runs unchanged on the board**: 9/9 bring-up checks, including
+  the plausibility gate that `replay_check` can never exercise on clean logs.
+- **The restore path works end to end**: `write-flash 0` of the backup brought
+  Xiaozhi back, booting, with its UI on the display, in ~2.5 minutes.
+
 ## Part B — hardware bring-up (board required)
 
 Tasks 11–14 need the board. **Before the first flash, verify the backup:**

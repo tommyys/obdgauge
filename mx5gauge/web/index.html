@@ -726,19 +726,41 @@ function stat(k,v,unit){
   return d;
 }
 
+/* The handle is parked at the far end, which is where the card opens and
+   where the drive is over. Anywhere else and you are looking around inside it. */
+function atEnd(){ return CARD.frac>=0.999; }
+
 /* Live figures win over the library's stored summary: once you scrub, the
    stored numbers describe the whole drive and no longer describe what the
    gauge is showing. Before any data arrives, fall back to the library. */
 function drawCard(){
   if(!CARD.entry) return;
   const L=(LAST&&LAST.live)||{};
-  // The car as it was at the moment the bar is sitting on — scrubbing is how
-  // you look around the drive, so these follow the handle rather than
-  // summarising the whole file.
   const D=(LAST&&LAST.derived)||{};
   const num=(v,d=0)=>v==null? '—' : Number(v).toFixed(d);
-  // top line: what the car was doing. bottom line: how hot it was.
-  const cells=[
+  /* The same six cells answer two different questions depending on where the
+     handle is.
+
+     Parked at the end, the drive is finished and the question is what it came
+     to: the highest it revved, the fastest it went, how far it got and how hot
+     it ran. Because seeking replays the log from the start, the running maxima
+     at the end *are* the whole drive's peaks — no separate bookkeeping.
+
+     Scrub back and the question changes to what the car was doing right then,
+     so the cells return to live readings. Peaks are deliberately not shown
+     there: mid-drive they describe only the part replayed so far, which reads
+     as a finished summary of a drive that has not finished.
+
+     Either way, top row is what the car was doing and bottom row is how hot it
+     was — the grouping the layout was built around. */
+  const cells = atEnd()? [
+    stat('PEAK RPM',     num(D.peak_rpm)),
+    stat('PEAK SPEED',   num(D.peak_speed),    D.peak_speed==null?   '' : 'km/h'),
+    stat('DISTANCE',     num(D.dist_km,1),     D.dist_km==null?      '' : 'km'),
+    stat('PEAK COOLANT', num(D.peak_coolant),  D.peak_coolant==null? '' : '°C'),
+    stat('PEAK INTAKE',  num(D.peak_intake),   D.peak_intake==null?  '' : '°C'),
+    stat('PEAK CAT',     num(D.peak_catalyst), D.peak_catalyst==null?'' : '°C'),
+  ] : [
     stat('RPM',      num(L.rpm)),
     stat('SPEED',    num(L.speed),    L.speed==null?    '' : 'km/h'),
     stat('DIST',     num(D.dist_km,1), D.dist_km==null? '' : 'km'),

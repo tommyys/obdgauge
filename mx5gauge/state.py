@@ -150,6 +150,20 @@ class Boot(object):
             self.phase = 'WAKING'
 
 
+# The catalyst temperature can arrive on any of several channels depending on
+# which banks and sensors the car reports. `snapshot()` shows the first one
+# present; a peak takes the hottest of whichever turned up, because the drive
+# only got as hot as it got, whatever bank happened to measure it.
+CATALYST_KEYS = ('catalyst', 'cat_b1s1', 'cat_b2s1', 'cat_b1s2', 'cat_b2s2')
+
+# Channel -> the summary field its high-water mark belongs in. Every catalyst
+# channel folds into one figure; the rest stand for themselves. These are the
+# readings a drive is remembered by: how hard it was revved, how fast it went,
+# and how hot it got doing it.
+PEAK_FIELDS = dict([(k, k) for k in ('rpm', 'speed', 'coolant', 'intake')] +
+                   [(k, 'catalyst') for k in CATALYST_KEYS])
+
+
 class Gauge(object):
     """Holds the latest readings and the derived metrics the views render."""
 
@@ -166,7 +180,10 @@ class Gauge(object):
         # replays its own ignition events, and acting on them would zero the
         # trip totals under you mid-scrub.
         self.on_ignition = None
-        self.peak_rpm = 0.0
+        # field -> highest value seen this drive, for the channels in
+        # PEAK_FIELDS. A dict rather than an attribute each, so the catalyst
+        # family can collapse into one entry.
+        self.peaks = {}
         self.peak_kw = 0.0
         self.status = 'starting'
         self.source_kind = ''
@@ -199,10 +216,22 @@ class Gauge(object):
             self.score = metrics.DrivingScore()
             self.boot.reset()
             self.ignition = ignition.Ignition()
-            self.peak_rpm = 0.0
+            self.peaks = {}
             self.peak_kw = 0.0
             self._t0 = None
             self.rejected = 0
+
+    @property
+    def peak_rpm(self):
+        """Highest rpm this drive, or 0.0 before any rev is seen.
+
+        Zero rather than None because the tacho and the score footer draw it
+        unconditionally. The peaks added for the drive card report None when
+        their channel never arrived, which is the honest answer there: a car
+        that never sent a catalyst reading has no peak catalyst, and '--' says
+        so where a bold 0 degrees would lie.
+        """
+        return self.peaks.get('rpm', 0.0)
 
     # -- ingest --------------------------------------------------------------
     def sample(self, key, value, t=None):
@@ -232,8 +261,12 @@ class Gauge(object):
             self.values[key] = value
             self.updated[key] = now
 
-            if key == 'rpm' and value > self.peak_rpm:
-                self.peak_rpm = value
+            # High-water marks. Below the plausibility gate above on purpose:
+            # a peak is the most memorable number on the summary card, and a
+            # single bad frame would otherwise pin it there for the whole drive.
+            field = PEAK_FIELDS.get(key)
+            if field is not None and value > self.peaks.get(field, float('-inf')):
+                self.peaks[field] = value
 
             v = self.values
             # engine power estimate (kW) from torque % x reference torque x rpm
@@ -302,8 +335,7 @@ class Gauge(object):
                     'load': v.get('load'),
                     'maf': v.get('maf'),
                     'timing': v.get('timing'),
-                    'catalyst': _first(v, 'catalyst', 'cat_b1s1', 'cat_b2s1',
-                                       'cat_b1s2', 'cat_b2s2'),
+                    'catalyst': _first(v, *CATALYST_KEYS),
                     'fuel_rail_temp': v.get('fuel_rail_temp'),
                     'power_kw': v.get('power_kw'),
                     'oil': v.get('oil'),
@@ -325,6 +357,11 @@ class Gauge(object):
                     'avg_speed': self.trip.avg_speed_kph,
                     'peak_rpm': self.peak_rpm,
                     'peak_kw': self.peak_kw,
+                    # None until the channel reports — see `peak_rpm`
+                    'peak_speed': self.peaks.get('speed'),
+                    'peak_coolant': self.peaks.get('coolant'),
+                    'peak_intake': self.peaks.get('intake'),
+                    'peak_catalyst': self.peaks.get('catalyst'),
                 },
                 'score': {
                     'total': self.score.total,

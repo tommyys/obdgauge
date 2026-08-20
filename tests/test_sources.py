@@ -81,7 +81,16 @@ def compare(label, path, t):
     for field in ('total', 'smooth', 'econ', 'calm', 'harsh'):
         near('%s: score.%s' % (label, field),
              getattr(got.score, field), getattr(ref.score, field), tol=1e-9)
+    # Every high-water mark, not just rpm. A seek that skipped the frame a
+    # peak was set on would leave the summary card quoting a milder drive than
+    # the one on disk, and nothing else here would notice: peaks are maxima,
+    # so a missed sample is invisible in the totals. The thermal channels are
+    # absent from this fixture and compare None to None, which is the point —
+    # the assertion is that both routes agree, including on having nothing.
     near('%s: peak rpm' % label, got.peak_rpm, ref.peak_rpm)
+    for field in ('speed', 'coolant', 'intake', 'catalyst'):
+        near('%s: peak %s' % (label, field),
+             got.peaks.get(field), ref.peaks.get(field))
     check('%s: speed reading' % label,
           got.values.get('speed'), ref.values.get('speed'))
     return src

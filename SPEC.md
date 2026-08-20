@@ -529,6 +529,31 @@ full-width bar sitting at 100%. Scrubbing back from full is what replays it;
 `POST /seek {"t": …}` carries the request, and the seek runs on the event loop,
 never the HTTP thread, so two writers never interleave into one set of totals.
 
+**The six stat cells read two ways, chosen by where the handle sits** (added
+2026-08-20). Parked at the far end — where the card opens — the drive is over,
+so they answer what it came to: `PEAK RPM`, `PEAK SPEED`, `DISTANCE`, then
+`PEAK COOLANT`, `PEAK INTAKE`, `PEAK CAT`. Scrub back and they revert to the
+live readings at that moment. Peaks are deliberately not shown mid-scrub: there
+they would describe only the part replayed so far, which reads as a finished
+summary of a drive that has not finished.
+
+The peaks cost no extra bookkeeping, and that is a consequence of the seek
+primitive above. Seeking replays the log from the start, so the gauge's running
+maxima at the end already *are* the whole drive's peaks — the card reads them
+straight out of `derived`. `Gauge.peaks` is a dict keyed by summary field
+rather than an attribute per channel, because catalyst temperature arrives on
+any of five bank/sensor channels (`state.CATALYST_KEYS`) and the drive's peak
+is the hottest of whichever the car reported. The marks sit *behind* the
+plausibility gate: a maximum is the one statistic a single garbage frame can
+pin for an entire drive. `peak_rpm` still answers `0.0` before any rev, because
+the tacho and score footer draw it unconditionally; the four new fields answer
+`None`, which the card shows as `—` rather than lying with a bold `0`.
+
+Because `run.py:drive_summary()` writes `snapshot()['derived']` wholesale, the
+peaks land in each drive's `.json` sidecar with no change to the recorder. They
+are **not** in the C++ core (§ firmware): the port still holds only `peak_rpm`
+and `peak_kw`, so `verify_port.sh` does not cross-validate them.
+
 Three details:
 
 - **The seek fires on release, not on every move.** Each seek re-feeds the whole

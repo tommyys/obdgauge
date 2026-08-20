@@ -1,5 +1,10 @@
 CONFIG_IDF_TARGET="esp32s3"
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+# 8MB embedded PSRAM, octal (esptool reports "Embedded PSRAM 8MB (AP_3v3)").
+# Needed for the 466x466 framebuffer: ~424KB per frame.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # This board has no USB-to-UART bridge: the only link to the Mac is the

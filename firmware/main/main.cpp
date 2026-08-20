@@ -8,6 +8,7 @@
 #include <cstdio>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include "parse.h"
 #include "pid.h"
 #include "poll.h"
@@ -62,6 +63,13 @@ extern "C" void app_main(void) {
         expect("VIN -> MAZDA MX-5", id.label == "MAZDA MX-5", id.label.c_str());
         snprintf(buf, sizeof buf, "%.0f", id.rpm_red);
         expect("MX-5 profile redline == 7000", id.rpm_red == 7000.0, buf);
+
+        // PSRAM is required for the 466x466 framebuffer, so report it rather
+        // than discovering at Phase 2 that it never initialised.
+        size_t psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        printf("  psram total                        %s  %u bytes\n",
+               psram > 4u * 1024 * 1024 ? "ok  " : "FAIL", (unsigned)psram);
+        if (psram <= 4u * 1024 * 1024) ++fail; else ++pass;
 
         printf("=== %d passed, %d failed ===\n", pass, fail);
         vTaskDelay(pdMS_TO_TICKS(3000));

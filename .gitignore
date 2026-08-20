@@ -23,3 +23,6 @@ firmware/test/host/build/
 
 # fetched by the IDF component manager; dependencies.lock pins the versions
 firmware/managed_components/
+
+# extracted from mx5gauge/web/boot.mp4 by tools/build_boot_asset.sh
+build-assets/

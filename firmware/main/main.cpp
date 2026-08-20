@@ -1,216 +1,193 @@
-// Phase 0 Task 13: measure the cost of the SPEC.md section 11 rpm backdrop at
-// 466x466, so Phase 2's view design is built on a number instead of a guess.
+// The boot splash (SPEC.md section 14) followed by the engine-vitals home view.
 //
-// Section 11 defines it precisely: transparent to ~24% radius, ramping to
-// near-opaque red at the rim; f = rpm/rpm_red, tint starting at 22% of redline,
-// raised to the power 1.35. Those constants are reproduced here so the thing
-// being measured is the real backdrop, not an approximation of it.
+// Section 14's rule is that the instruments are *withheld rather than covered*:
+// nothing shows until the splash finishes, which is how a cluster behaves and
+// spares you the first second of half-populated channels. So the sequence here
+// is WAKING (the clip) -> FADING (a dip to black) -> RUNNING (the gauge), and
+// the gauge objects are not even created until the dip is over.
+//
+// The clip is 31 frames of raw RGB565 in the `assets` partition, paced by the
+// wall clock across BOOT_MS. Pacing by time rather than by frame index means a
+// panel that cannot keep up drops frames instead of running the animation slow
+// -- the splash always lasts 2.5 s, which is what section 14 specifies.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include "bsp/esp-bsp.h"
 #include "esp_heap_caps.h"
+#include "esp_partition.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+
+#include "state.h"
 #include "vehicle.h"
+#include "version.h"
 
 namespace {
 
-constexpr int   W = BSP_LCD_H_RES;
-constexpr int   H = BSP_LCD_V_RES;
-constexpr int   CX = W / 2;
-constexpr int   CY = H / 2;
-constexpr int   R  = W / 2;
-constexpr float kCoreRadius = 0.24f;   // transparent below this fraction of R
-constexpr float kTintStart  = 0.22f;   // fraction of redline before any tint
-constexpr float kGamma      = 1.35f;
-constexpr int   kShift      = 8;       // r2 >> 8 indexes the LUT
-constexpr int   kLutN       = ((R * R) >> kShift) + 2;
+// state.py: BOOT_MS = 2500, BOOT_FADE_MS = 600
+constexpr int64_t kBootUs = 2500 * 1000;
+constexpr int64_t kFadeUs = 600 * 1000;
 
-uint16_t* g_fb   = nullptr;            // 466x466 RGB565 canvas in PSRAM
-uint16_t  g_lut[kLutN];
-int       g_annulus_r2 = 0;            // r2 below which nothing is drawn
+constexpr int W = BSP_LCD_H_RES;
+constexpr int H = BSP_LCD_V_RES;
 
-// Alpha for a given rpm, exactly as section 11 specifies.
-float backdrop_alpha(float rpm, float rpm_red) {
-    float f = rpm / rpm_red;
-    if (f <= kTintStart) return 0.0f;
-    float x = (f - kTintStart) / (1.0f - kTintStart);
-    if (x > 1.0f) x = 1.0f;
-    return powf(x, kGamma) * 0.92f;    // 0.92 = "near-opaque" at redline
-}
+struct AssetHeader {
+    char     magic[4];   // "MX5B"
+    uint16_t w, h;
+    uint16_t frames;
+    uint16_t fps;
+    uint32_t reserved;
+} __attribute__((packed));
 
-// Rebuild the radius->colour table. This is the only per-rpm work; the inner
-// pixel loop is then a shift and a table lookup.
-void build_lut(float alpha) {
-    for (int i = 0; i < kLutN; ++i) {
-        int   r2 = i << kShift;
-        float r  = sqrtf(static_cast<float>(r2)) / R;
-        float v  = 0.0f;
-        if (r > kCoreRadius && r <= 1.0f) {
-            float t = (r - kCoreRadius) / (1.0f - kCoreRadius);
-            v = alpha * t * t;          // vignette ramps toward the rim
-        }
-        int red = static_cast<int>(v * 31.0f + 0.5f);
-        if (red > 31) red = 31;
-        g_lut[i] = static_cast<uint16_t>(red << 11);   // RGB565, red only
+uint16_t* g_fb = nullptr;
+
+// ---- the boot clip -------------------------------------------------------
+
+bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
+    const esp_partition_t* part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "assets");
+    if (!part) { printf("boot: no assets partition\n"); return false; }
+
+    AssetHeader hdr{};
+    if (esp_partition_read(part, 0, &hdr, sizeof hdr) != ESP_OK ||
+        memcmp(hdr.magic, "MX5B", 4) != 0) {
+        printf("boot: no clip in assets (magic mismatch) -- skipping splash\n");
+        return false;
     }
-}
-
-// Fill the whole disc. `from_r2` lets the annulus variant skip the core.
-void fill(int from_r2) {
-    for (int y = 0; y < H; ++y) {
-        int dy = y - CY;
-        int dy2 = dy * dy;
-        uint16_t* row = g_fb + y * W;
-        for (int x = 0; x < W; ++x) {
-            int dx = x - CX;
-            int r2 = dx * dx + dy2;
-            if (r2 < from_r2) continue;
-            int idx = r2 >> kShift;
-            row[x] = (idx < kLutN) ? g_lut[idx] : 0;
-        }
+    if (hdr.w != W || hdr.h != H) {
+        printf("boot: clip is %ux%u, panel is %dx%d -- skipping\n", hdr.w, hdr.h, W, H);
+        return false;
     }
-}
+    const size_t frame_bytes = static_cast<size_t>(hdr.w) * hdr.h * 2;
+    printf("boot: %u frames %ux%u @%u fps\n", hdr.frames, hdr.w, hdr.h, hdr.fps);
 
-struct Result {
-    const char* name;
-    float fps;
-    float gen_ms;      // mean time generating pixels
-    float frame_ms;    // mean total time including flush
-    int   regens;
-};
+    lv_obj_t* canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(canvas, g_fb, W, H, LV_COLOR_FORMAT_RGB565);
+    lv_obj_center(canvas);
 
-// A realistic sweep: 800 -> 7000 rpm over 4 s is a hard pull, and the colour
-// moves fastest there, so this is the worst case rather than an average one.
-float rpm_at(int64_t t_us) {
-    float phase = fmodf(t_us / 1e6f, 8.0f);
-    float u = phase < 4.0f ? phase / 4.0f : (8.0f - phase) / 4.0f;
-    return 800.0f + u * (7000.0f - 800.0f);
-}
-
-Result measure(const char* name, lv_display_t* disp, lv_obj_t* canvas,
-               int mode, float rpm_red, int seconds) {
     int64_t t0 = esp_timer_get_time();
-    int64_t deadline = t0 + seconds * 1000000LL;
-    int frames = 0, regens = 0;
-    int64_t gen_us = 0;
-    int last_bucket = -1;
-    while (esp_timer_get_time() < deadline) {
-        int64_t now = esp_timer_get_time();
-        float rpm = rpm_at(now - t0);
-
-        bool regen = true;
-        if (mode == 1) {                         // bucketed: 100 rpm steps
-            int bucket = static_cast<int>(rpm / 500.0f);
-            regen = (bucket != last_bucket);
-            last_bucket = bucket;
-        } else if (mode == 3) {                  // flush-only ceiling
-            regen = false;
+    int shown = 0, last = -1;
+    for (;;) {
+        int64_t elapsed = esp_timer_get_time() - t0;
+        if (elapsed >= kBootUs) break;
+        // Which frame *should* be on screen at this instant.
+        int idx = static_cast<int>(elapsed * hdr.frames / kBootUs);
+        if (idx >= hdr.frames) idx = hdr.frames - 1;
+        if (idx != last) {
+            esp_partition_read(part, sizeof(AssetHeader) + static_cast<size_t>(idx) * frame_bytes,
+                               g_fb, frame_bytes);
+            lv_obj_invalidate(canvas);
+            lv_refr_now(disp);
+            last = idx;
+            ++shown;
         }
-
-        if (regen) {
-            int64_t g0 = esp_timer_get_time();
-            build_lut(backdrop_alpha(rpm, rpm_red));
-            fill(mode == 2 ? g_annulus_r2 : 0);
-            gen_us += esp_timer_get_time() - g0;
-            ++regens;
-        }
-        lv_obj_invalidate(canvas);
-        lv_refr_now(disp);
-        ++frames;
     }
-    float elapsed = (esp_timer_get_time() - t0) / 1e6f;
-    Result r{};
-    r.name = name;
-    r.fps = frames / elapsed;
-    r.gen_ms = regens ? (gen_us / 1000.0f) / regens : 0.0f;
-    r.frame_ms = (elapsed * 1000.0f) / frames;
-    r.regens = static_cast<int>(regens / elapsed);
-    return r;
+    printf("boot: showed %d of %u frames in %.2f s\n", shown, hdr.frames,
+           (esp_timer_get_time() - t0) / 1e6);
+
+    // FADING: dip to black. The clip ends on a lit car filling the screen, and
+    // cutting straight from that to a dial would read as a glitch rather than a
+    // hand-off (section 14).
+    lv_obj_delete(canvas);
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_invalidate(scr);
+    lv_refr_now(disp);
+    int64_t f0 = esp_timer_get_time();
+    while (esp_timer_get_time() - f0 < kFadeUs) vTaskDelay(pdMS_TO_TICKS(20));
+    return true;
+}
+
+// ---- the engine-vitals home view (section 6, view 2) ---------------------
+
+lv_obj_t* g_arc   = nullptr;
+lv_obj_t* g_value = nullptr;
+lv_obj_t* g_state = nullptr;
+
+void build_gauge(lv_obj_t* scr, const gauge::Identity& id) {
+    g_arc = lv_arc_create(scr);
+    lv_obj_set_size(g_arc, 430, 430);
+    lv_obj_center(g_arc);
+    lv_arc_set_bg_angles(g_arc, 135, 45);
+    lv_arc_set_range(g_arc, 40, 110);
+    lv_arc_set_value(g_arc, 40);
+    lv_obj_remove_style(g_arc, nullptr, LV_PART_KNOB);
+    lv_obj_remove_flag(g_arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(g_arc, 16, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(g_arc, 16, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(g_arc, lv_color_hex(0x202020), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(g_arc, lv_color_hex(0xFF9500), LV_PART_INDICATOR);
+
+    lv_obj_t* caption = lv_label_create(scr);
+    lv_label_set_text(caption, "COOLANT");
+    lv_obj_set_style_text_color(caption, lv_color_hex(0x808080), 0);
+    lv_obj_set_style_text_font(caption, &lv_font_montserrat_20, 0);
+    lv_obj_align(caption, LV_ALIGN_CENTER, 0, -86);
+
+    g_value = lv_label_create(scr);
+    lv_label_set_text(g_value, "--");
+    lv_obj_set_style_text_color(g_value, lv_color_white(), 0);
+    lv_obj_set_style_text_font(g_value, &lv_font_montserrat_48, 0);
+    lv_obj_align(g_value, LV_ALIGN_CENTER, 0, -18);
+
+    g_state = lv_label_create(scr);
+    lv_label_set_text(g_state, "");
+    lv_obj_set_style_text_font(g_state, &lv_font_montserrat_28, 0);
+    lv_obj_align(g_state, LV_ALIGN_CENTER, 0, 40);
+
+    lv_obj_t* banner = lv_label_create(scr);
+    lv_label_set_text(banner, id.label.c_str());
+    lv_obj_set_style_text_color(banner, lv_color_hex(0x606060), 0);
+    lv_obj_set_style_text_font(banner, &lv_font_montserrat_20, 0);
+    lv_obj_align(banner, LV_ALIGN_CENTER, 0, 120);
+}
+
+void render(const gauge::VehicleState& st) {
+    auto coolant = st.get("coolant");
+    if (!coolant) { lv_label_set_text(g_value, "--"); lv_label_set_text(g_state, ""); return; }
+    int c = static_cast<int>(*coolant);
+    lv_label_set_text_fmt(g_value, "%d\xC2\xB0", c);
+    lv_arc_set_value(g_arc, c);
+    const char* word; uint32_t colour;
+    if (c < 60)      { word = "COLD";    colour = 0x4FA3FF; }
+    else if (c < 85) { word = "WARMING"; colour = 0xFFC24A; }
+    else             { word = "READY";   colour = 0x5BD97A; }
+    lv_label_set_text(g_state, word);
+    lv_obj_set_style_text_color(g_state, lv_color_hex(colour), 0);
 }
 
 }  // namespace
 
 extern "C" void app_main(void) {
-    printf("\n=== section 11 backdrop cost at %dx%d ===\n", W, H);
-    printf("frame buffer: %d bytes RGB565\n", W * H * 2);
-
+    printf("\n=== mx5-gauge %s: boot splash + home view ===\n", gauge::core_version());
     g_fb = static_cast<uint16_t*>(heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM));
-    if (!g_fb) { printf("FATAL: no PSRAM for the framebuffer\n"); return; }
-    float core = kCoreRadius * R;
-    g_annulus_r2 = static_cast<int>(core * core);
+    if (!g_fb) { printf("FATAL: no PSRAM\n"); return; }
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
-    printf("redline from profile: %.0f rpm\n", id.rpm_red);
-
     lv_display_t* disp = bsp_display_start();
     bsp_display_backlight_on();
 
     bsp_display_lock(0);
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-
-    // First, with NO canvas in the tree: a solid-colour full-screen refresh.
-    // This is the true panel+LVGL floor. If it is far below the canvas figure,
-    // the canvas blit is the bottleneck rather than the QSPI transfer.
-    Result solid{};
-    {
-        int64_t t0 = esp_timer_get_time();
-        int frames = 0;
-        while (esp_timer_get_time() - t0 < 5000000LL) {
-            lv_obj_set_style_bg_color(scr, lv_color_hex((frames & 1) ? 0x080000 : 0x000008), 0);
-            lv_obj_invalidate(scr);
-            lv_refr_now(disp);
-            ++frames;
-        }
-        float el = (esp_timer_get_time() - t0) / 1e6f;
-        solid.name = "solid fill, no canvas";
-        solid.fps = frames / el;
-        solid.frame_ms = (el * 1000.0f) / frames;
-    }
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-
-    lv_obj_t* canvas = lv_canvas_create(scr);
-    lv_canvas_set_buffer(canvas, g_fb, W, H, LV_COLOR_FORMAT_RGB565);
-    lv_obj_center(canvas);
-    memset(g_fb, 0, W * H * 2);
-
-    Result res[4];
-    res[0] = measure("flush only (ceiling)", disp, canvas, 3, id.rpm_red, 5);
-    res[1] = measure("naive: full regen",    disp, canvas, 0, id.rpm_red, 5);
-    res[2] = measure("bucketed 500 rpm",     disp, canvas, 1, id.rpm_red, 5);
-    res[3] = measure("annulus only",         disp, canvas, 2, id.rpm_red, 5);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    play_boot_clip(disp, scr);
+    // Instruments are withheld, not covered: they are created only now.
+    build_gauge(scr, id);
     bsp_display_unlock();
 
-    printf("\n%-22s %8s %10s %10s %8s\n", "strategy", "fps", "gen ms", "frame ms", "regen/s");
-    printf("%-22s %8.1f %10.2f %10.2f %8d\n", solid.name, solid.fps, 0.0f, solid.frame_ms, 0);
-    for (auto& r : res) {
-        printf("%-22s %8.1f %10.2f %10.2f %8d\n", r.name, r.fps, r.gen_ms, r.frame_ms, r.regens);
+    gauge::VehicleState st;
+    double c = 45.0;
+    bool up = true;
+    for (;;) {
+        st.set("coolant", c);
+        bsp_display_lock(0);
+        render(st);
+        bsp_display_unlock();
+        if (up) { c += 0.5; if (c >= 96.0) up = false; }
+        else    { c -= 0.5; if (c <= 45.0) up = true; }
+        vTaskDelay(pdMS_TO_TICKS(60));
     }
-    printf("=== end ===\n");
-
-    // Leave the numbers on screen too.
-    bsp_display_lock(0);
-    lv_obj_delete(canvas);
-    lv_obj_t* t = lv_label_create(scr);
-    lv_label_set_text(t, "BACKDROP COST");
-    lv_obj_set_style_text_color(t, lv_color_hex(0xFF9500), 0);
-    lv_obj_set_style_text_font(t, &lv_font_montserrat_28, 0);
-    lv_obj_align(t, LV_ALIGN_CENTER, 0, -150);
-    for (int i = 0; i < 4; ++i) {
-        char b[80];
-        snprintf(b, sizeof b, "%.0f fps  %.1fms  %s", res[i].fps, res[i].gen_ms, res[i].name);
-        lv_obj_t* l = lv_label_create(scr);
-        lv_label_set_text(l, b);
-        lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
-        lv_obj_set_width(l, 380);
-        lv_obj_align(l, LV_ALIGN_CENTER, 0, -70 + i * 46);
-    }
-    bsp_display_unlock();
-
-    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }

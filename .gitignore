@@ -11,3 +11,12 @@ logs/
 # there are real drives. With captures/ empty, `--replay` falls back to the
 # newest drive in logs/.
 captures/*
+
+# firmware dumps pulled off the ESP32 — large binaries, and they carry
+# whatever NVS secrets (wifi creds, pairing keys) were on the device
+backups/
+
+# firmware build artefacts
+firmware/build/
+firmware/sdkconfig
+firmware/test/host/build/

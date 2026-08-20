@@ -1196,6 +1196,29 @@ PORT=$(ls /dev/cu.usbmodem* | head -1)
 
 **The working loop is:** build -> flash -> replug -> passive read.
 
+### Task 13 results (touch + IMU, 2026-08-21)
+
+- **I2C devices on the shared bus**: `0x18 0x34 0x40 0x5A 0x6B` (codecs, power
+  management, IMU). `BSP_CAPS_IMU` is 0, so the IMU is driven by
+  `firmware/main/imu.c`, a ~100-line QMI8658 driver over `bsp_i2c_get_handle()`.
+- **QMI8658 at 0x6B**, `WHO_AM_I = 0x05`.
+- **Accel scaling validated against gravity**: +/-8g, 4096 LSB/g gives
+  |a| = 1.044 g at rest. 4.4% high, which is a ~0.01 g error at the 2.5 m/s^2
+  harsh threshold - negligible, but recorded rather than assumed.
+- **Z is normal to the screen** (+1.04 g flat, screen up). X and Y are in-plane.
+- **CST9217 reports its own resolution as 466x466**, a third independent
+  confirmation after the BSP header and the unclipped full-rim arc.
+- **Touch mapping verified visually**: a dot tracks the finger with no mirroring
+  or axis swap.
+
+**Which in-plane axis is longitudinal cannot be answered by the board.** X and Y
+both lie in the plane of the screen; which one points down the car is a property
+of the *mounting*, not the hardware, and rotating the gauge 90 degrees swaps
+them. So the driving score must not hardcode an axis. Preferred fix: learn it -
+gravity at rest gives "down", and the first hard straight-line accel/brake event
+identifies longitudinal. Settle this with B3, since B3 already owns the question
+of what "harsh" means.
+
 ### Confirmed on hardware
 
 - **PSRAM is octal**: `esp_psram: SPI SRAM memory test OK`, 8388608 bytes.

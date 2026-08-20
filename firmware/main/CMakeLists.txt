@@ -1,3 +1,3 @@
-idf_component_register(SRCS "main.cpp"
+idf_component_register(SRCS "main.cpp" "imu.c"
                        INCLUDE_DIRS "."
-                       REQUIRES gauge_core)
+                       REQUIRES gauge_core driver esp_driver_i2c)

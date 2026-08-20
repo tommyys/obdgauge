@@ -36,6 +36,15 @@ void check(const char* name, const T& got, const T& want) {
     printf("%-46s %s  (%s)\n", name, ok ? "ok  " : "FAIL", show(got).c_str());
 }
 
+// Tolerance comparison, mirroring near() in tests/test_metrics.py.
+inline void near(const char* name, const std::optional<double>& got, double want,
+                 double tol = 0.51) {
+    bool ok = got.has_value() && (*got - want <= tol) && (want - *got <= tol);
+    if (!ok) failures().push_back(std::string(name) + ": got " + show(got) +
+                                  " want ~" + show(want));
+    printf("%-56s %s  (%s)\n", name, ok ? "ok  " : "FAIL", show(got).c_str());
+}
+
 inline int check_report() {
     printf("\n");
     if (failures().empty()) { printf("all tests passed\n"); return 0; }

@@ -15,6 +15,8 @@ $(BUILD):
 $(BUILD)/%: %.cpp $(CORE_SRC) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -I. -I$(CORE_DIR) $< $(CORE_SRC) -o $@
 
+replay_check: $(BUILD)/replay_check
+
 test: $(addprefix $(BUILD)/,$(TESTS))
 	@fail=0; for t in $^; do echo "=== $${t##*/} ==="; ./$$t || fail=1; echo; done; \
 	 if [ $$fail -eq 0 ]; then echo "ALL SUITES PASSED"; else echo "SUITE FAILURES"; fi; exit $$fail

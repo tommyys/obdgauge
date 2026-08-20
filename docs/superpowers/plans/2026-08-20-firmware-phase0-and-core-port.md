@@ -47,7 +47,7 @@ Tasks 1–9 run entirely on the Mac. They need no board, no toolchain, and nothi
 - Consumes: nothing
 - Produces: `check(name, got, want)` returning void and recording failures; `check_report()` returning `int` (0 = all passed, non-zero = failure count) for use as a `main` return value.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `firmware/test/host/check.h`:
 
@@ -127,12 +127,12 @@ endforeach()
 
 Note `file(GLOB ...)` may match nothing on this first task; add a placeholder-free guard by creating the component with a real file in Step 3.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `add_library` errors with "no sources given to target gauge_core", because `gauge_core` has no `.cpp` yet.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `firmware/components/gauge_core/version.h`:
 
@@ -155,12 +155,12 @@ idf_component_register(SRCS "version.cpp"
                        INCLUDE_DIRS ".")
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure`
 Expected: PASS — "all tests passed".
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/
@@ -187,7 +187,7 @@ Ports `mx5gauge/pids.py:12-178`. Every assertion below is lifted from `tests/tes
   - `std::optional<double> dec_rpm(const Bytes&)`, `dec_speed`, `dec_percent`, `dec_fuel_trim`, `dec_maf`, `dec_timing`, `dec_fuel_rate`, `dec_control_voltage`, `dec_ref_torque`, `dec_catalyst_temp`, `dec_equiv_ratio`, `dec_o2_voltage`, `dec_fuel_pressure`, `dec_u16` — all `std::optional<double>`
   - `std::optional<int> dec_temp(const Bytes&)` — returns int, matching Python
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `firmware/test/host/test_pid.cpp`:
 
@@ -230,12 +230,12 @@ int main() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'pid.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `firmware/components/gauge_core/pid.h`:
 
@@ -364,12 +364,12 @@ std::optional<double> dec_u8(const Bytes& d) {
 
 **Before writing these bodies, open `mx5gauge/pids.py:12-178` and confirm each divisor and offset against the Python.** The formulas above are transcribed from it, and the Python is authoritative. `dec_fuel_rate`, `dec_control_voltage`, `dec_equiv_ratio` and `dec_catalyst_temp` are the ones whose scaling is easiest to get wrong — the tests above pin all four.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R pid`
 Expected: PASS — 22 checks, "all tests passed".
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/pid.h firmware/components/gauge_core/pid.cpp \
@@ -398,7 +398,7 @@ Ports `mx5gauge/pids.py:281-315` and `:387-395`. The `_hex_bytes` scanner is the
   - `std::optional<Bytes> parse_mode01(const std::string& text, uint8_t pid)`
   - `std::optional<double> parse_voltage(const std::string& text)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `firmware/test/host/test_parse.cpp`:
 
@@ -438,12 +438,12 @@ inline std::string show(const std::vector<uint8_t>& v) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'parse.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `firmware/components/gauge_core/parse.h`:
 
@@ -509,12 +509,12 @@ std::optional<double> parse_voltage(const std::string& text) {
 
 Note `parse_voltage("ELM327")` correctly returns `nullopt`: the scan finds `327` but the next character is end-of-string, not `V`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R parse`
 Expected: PASS — 9 checks.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/parse.* firmware/test/host/test_parse.cpp \
@@ -542,7 +542,7 @@ Ports `mx5gauge/pids.py:246-280` and `:372-386`. `build_poll_cycle` is what make
   - `std::set<uint8_t> parse_supported(const Bytes& data, uint8_t base)`
   - `std::vector<uint8_t> build_poll_cycle(const std::set<uint8_t>& supported, bool log_all = true)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `firmware/test/host/test_poll.cpp`:
 
@@ -590,12 +590,12 @@ int main() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'poll.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Read `mx5gauge/pids.py:246-280` before writing this. `POLL_FAST` is `{0x0C, 0x0D, 0x11, 0x1F}` and `POLL_PRIORITY` is the ordered list at line 248; both must be transcribed exactly, and `PIDS` (line 181) supplies the set of PIDs that are legal to request at all.
 
@@ -640,12 +640,12 @@ std::set<uint8_t> parse_supported(const Bytes& data, uint8_t base) {
 
 `build_poll_cycle` follows the Python at `pids.py:251`: filter `POLL_PRIORITY` (or the full `PIDS` key set when `log_all`) to those in `supported`, then interleave one member of `POLL_FAST` between each slow PID so rpm/speed stay responsive. Transcribe the ordering from the Python rather than inventing one — the test only pins the observable properties, so a different-but-plausible ordering would pass while changing needle behaviour in the car.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R poll`
 Expected: PASS — 14 checks.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/poll.* firmware/test/host/test_poll.cpp \
@@ -675,7 +675,7 @@ Ports `mx5gauge/state.py` (374 lines). This is where §4's "views degrade honest
   - `std::optional<double> VehicleState::get(const std::string& channel) const` — `nullopt` when the channel is absent
   - `bool VehicleState::has(const std::string& channel) const`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Read `state.py`'s `RANGES` table first and transcribe the real bounds; the test below uses coolant as the worked example because §4 cites the 72→95°C warm-up as the channel that matters most.
 
@@ -707,12 +707,12 @@ int main() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'state.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Implement `VehicleState` as a `std::map<std::string, double>` behind `get`/`set`/`has`, plus a static `RANGES` table transcribed from `state.py`. A string-keyed map is chosen deliberately over named struct fields: the poll loop, the recorder and the UI all address channels dynamically by name, exactly as the Python does, and a named-field struct would need a parallel lookup anyway.
 
@@ -740,12 +740,12 @@ class VehicleState {
 
 `set` ignores `nullopt` and out-of-range values, leaving any previous good reading in place — matching the Python, where a failed poll does not blank the display.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R state`
 Expected: PASS — 8 checks.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/state.* firmware/test/host/test_state.cpp \
@@ -774,7 +774,7 @@ Ports `mx5gauge/metrics.py` (271 lines); assertions come from `tests/test_metric
 
 **The tunable defaults above are transcribed from `SPEC.md` §5 "Tunables" and must match `metrics.py` exactly.** They are the numbers B3 will eventually change, so they live in one struct rather than scattered as constants.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Port the existing assertions from `tests/test_metrics.py`. Two properties matter most and must be covered:
 
@@ -805,23 +805,23 @@ int main() {
 
 Add `int harsh_events() const;` to the `Metrics` interface for this test.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'metrics.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Transcribe from `metrics.py`. Keep the accumulators (distance, time, fuel) as running sums updated by `dt_seconds`, and take `dt` from the caller rather than a clock — that is what makes replay-vs-live behave identically and is the direct fix for the phantom-braking bug in §4.
 
 Leave the score formula exactly as the Python has it. **Do not re-tune `harsh_accel` / `harsh_brake` here** — those change in Task 11 against real IMU data, and B3 is still an open decision.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R metrics`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/metrics.* firmware/test/host/test_metrics.cpp \
@@ -851,7 +851,7 @@ Ports `mx5gauge/vehicle.py` (257 lines); assertions from `tests/test_vehicle.py`
   - `DialProfile profile_for(const Identity&)`
   - `bool view_is_fed(int view_number, const std::set<uint8_t>& supported)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Port from `tests/test_vehicle.py`. The two behaviours that must hold:
 
@@ -877,21 +877,21 @@ int main() {
 
 Confirm the exact VIN and expected make against `tests/test_vehicle.py` before writing — use the VIN that file already uses rather than the illustrative one above.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'vehicle.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Transcribe `PROFILES` and the WMI→make table from `vehicle.py`. The model-year character maps via the standard VIN position-10 table, which `vehicle.py` already implements.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R vehicle`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/vehicle.* firmware/test/host/test_vehicle.cpp \
@@ -920,7 +920,7 @@ Ports `mx5gauge/ignition.py` (92 lines); assertions from `tests/test_ignition.py
   - `enum class Ignition { Unknown, Running, Stopped };`
   - `class IgnitionDetector { Ignition update(const VehicleState&, double t_seconds); Ignition state() const; };`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```cpp
 #include "check.h"
@@ -945,21 +945,21 @@ int main() {
 
 Confirm the debounce window against `ignition.py` — the exact dwell before declaring a stop is what stops a stall or a restart being misread, and `tests/test_ignition.py` pins it.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'ignition.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Transcribe the two-signal detection from `ignition.py` and its debounce.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R ignition`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/ignition.* firmware/test/host/test_ignition.cpp \
@@ -988,7 +988,7 @@ Splits `mx5gauge/sources.py` (447 lines) along the seam the spec identifies: pro
   - `struct ITransport { virtual ~ITransport() = default; virtual bool write(const std::string&) = 0; virtual std::string read(int timeout_ms) = 0; };`
   - `class Elm327 { explicit Elm327(ITransport&); bool init(); std::set<uint8_t> discover_supported(); std::optional<Bytes> request(uint8_t pid); std::optional<double> read_voltage(); };`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `firmware/test/host/fake_transport.h`:
 
@@ -1035,21 +1035,21 @@ int main() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build`
 Expected: FAIL — `fatal error: 'elm327.h' file not found`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Transcribe the handshake sequence from `sources.py` exactly — `ATZ`, `ATE0`, and the rest, in the order the Python sends them, with the same waits. §3 warns that cheap clones are flaky; the existing sequence is what has been proven against the vLinker in the car, so the ordering is load-bearing.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd firmware/test/host && cmake -B build . && cmake --build build && ctest --test-dir build --output-on-failure -R elm327`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/components/gauge_core/transport.h firmware/components/gauge_core/elm327.* \
@@ -1074,7 +1074,7 @@ The strongest verification available: both implementations consume the same capt
 - Consumes: everything from Tasks 2–8
 - Produces: a `replay_check` binary taking a CSV path and a reference JSONL path, exiting non-zero on any divergence
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tools/dump_python_states.py` replays a capture through the **Python** and writes one JSON object per sample — the reference:
 
@@ -1109,7 +1109,7 @@ if __name__ == "__main__":
 
 `replay_check.cpp` feeds the same CSV through the C++ core and compares each sample against the reference line, tolerance `1e-6` on doubles and exact on integers, reporting the first divergence with its sample index and channel.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 ```bash
@@ -1118,18 +1118,18 @@ cd firmware/test/host && cmake --build build && ./build/replay_check ../../../lo
 ```
 Expected: FAIL — divergence, or "no such file", before the C++ CSV reader exists.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Implement the CSV reader in `replay_check.cpp` only — **not** in `gauge_core`. The board never reads CSVs (that is Phase 3 SD work), so this stays test-side.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run the Step 2 commands again.
 Expected: PASS — "N samples, 0 divergences".
 
 Run it against **every** capture in `logs/`, not just one. Divergences tend to hide in the unusual samples — dropped channels, engine-off gaps, the fragments under a minute that the backlog notes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add firmware/test/host/replay_check.cpp tools/dump_python_states.py \
@@ -1138,6 +1138,30 @@ git commit -m "firmware: cross-validate C++ core against the Python simulator"
 ```
 
 ---
+
+
+## Execution notes (2026-08-20, branch `firmware-core-port`)
+
+Tasks 1-10 are complete. Four things went differently from the plan:
+
+1. **`make`, not CMake** (see Global Constraints) — `cmake` was not installed.
+2. **Task 8's test sketch was wrong.** The plan guessed ignition was detected
+   from rpm; it is actually detected from `volts` plus PID silence plus
+   `run_time` going backwards. The real semantics were ported, and the
+   real-drive fixture (`tests/fixtures/ignition-edges.csv`) is now a C++ test
+   that reproduces exactly two ignition-offs and two restarts.
+3. **`vehicle.from_capture_header` was not ported** — it reads Car Scanner
+   capture headers, which the board never sees.
+4. **Task 10's reference format is flat text, not JSONL**, so the C++ side
+   needs no JSON parser.
+
+Two tables are machine-extracted from the Python rather than transcribed (the
+56-entry PID table, the 118-entry WMI table and the dial profiles), because
+transcription is exactly where a port of this shape goes wrong.
+
+**Result:** 10 host suites pass; `replay_check` reports **0 divergences across
+42,412 samples** from all three drives in `logs/`. The Python suite still
+passes unchanged.
 
 ## Part B — hardware bring-up (board required)
 
@@ -1446,8 +1470,8 @@ git commit -m "spec: retarget section 3 to the ESP32-S3-Touch-AMOLED-1.75C"
 
 ## Phase 0 exit criteria
 
-- [ ] Host tests pass for every `gauge_core` module (Tasks 2–9)
-- [ ] `replay_check` reports zero divergences across **every** capture in `logs/` (Task 10)
+- [x] Host tests pass for every `gauge_core` module (Tasks 2–9)
+- [x] `replay_check` reports zero divergences across **every** capture in `logs/` (Task 10)
 - [ ] Panel resolution confirmed and recorded in `display_config.h` (Task 12)
 - [ ] Backup restore path exercised end to end (Task 11, Step 5)
 - [ ] Touch, IMU axes, and display all verified on the real board (Tasks 12–13)

@@ -167,28 +167,45 @@ drawing happens. The design therefore uses **partial/dirty-region rendering**
 (LVGL's default) with small internal-SRAM draw buffers, rather than full-screen
 PSRAM framebuffers, wherever LVGL allows it.
 
-### The §11 rpm backdrop is the main performance risk
+### The §11 rpm backdrop — MEASURED 2026-08-21
 
-`SPEC.md` §11 specifies an rpm-reactive radial backdrop, chosen as `glow=rim`
-after side-by-side comparison on the real gauge. On a 240×240 panel a full-screen
-gradient per frame is cheap. At 466×466 it is roughly four times the fill, and
-rpm changes constantly, so the naive implementation dirties the entire screen
-every frame and defeats partial rendering.
+Measured on the real panel, sweeping rpm 800→7000 over 4s (a hard pull, so the
+colour moves at its worst case). Times are per frame, and they are additive:
 
-Mitigation, in order of preference:
+| Cost | ms | What it is |
+|---|---|---|
+| Panel + LVGL floor | **52** | full-screen refresh, nothing drawn, no canvas |
+| Canvas-widget blit | **+33** | redundant 434KB PSRAM→PSRAM copy |
+| Gradient generation | **+34** | computing 217k pixels of vignette |
 
-1. **Quantise rpm into buckets** (e.g. 100rpm steps). The backdrop only redraws
-   when the bucket changes, not every frame. The visual difference is
-   imperceptible at a glance; the saving is large.
-2. **Precompute gradient rings** as a small set of image assets, and cross-fade
-   or index between them rather than generating pixels at runtime.
-3. **Restrict the backdrop to an annulus.** `glow=rim` already keeps the centre
-   pure black — §11's whole rationale — so the dirty region can be the outer ring
-   only, leaving the readouts undisturbed.
+| Strategy | fps |
+|---|---|
+| solid fill, no canvas | 19.3 |
+| flush only, canvas present | 11.7 |
+| naive full regeneration | 8.3 |
+| bucketed at 500 rpm | 10.5 |
+| annulus only | 8.4 |
 
-(3) composes with both (1) and (2), and follows directly from the visual decision
-already made. **Phase 0 measures this** rather than assuming it; the exit
-criterion is a real frame-rate number on the real panel.
+**The governing fact: a full-screen refresh costs ~52ms, about 19fps, before
+anything is drawn.** 30fps full-screen is not available on this pipeline. So:
+
+1. **Partial/dirty-region rendering is mandatory, not an optimisation.** The
+   backdrop must hold still between coarse rpm steps while only the small
+   readout areas redraw. These figures are all worst-case full-screen
+   invalidation; they bound the budget rather than describe the final design.
+2. **Never draw the backdrop through a canvas widget.** That alone costs an
+   extra full-frame copy (+33ms). Use a background style, or draw into LVGL's
+   draw buffer directly.
+3. **Bucket rpm coarsely.** 100rpm buckets gained *nothing* — the sweep crossed
+   ~15 buckets/s against 8.3fps, so every frame crossed one. 500rpm buckets gave
+   +27%. The rule: crossings must be rarer than frames.
+4. **Precompute the gradient** if it is still on the critical path. 34ms of CPU
+   per regeneration is comparable to the entire panel cost.
+
+**Struck: the annulus-only idea.** An earlier draft of this document proposed
+restricting the backdrop to an outer ring since "the centre stays pure black".
+That was wrong: §11 makes the core transparent only to **24% radius**, which is
+~6% of the area, and it measured as a ~2% saving. Do not spend effort on it.
 
 ### The nine views are a reimplementation
 
@@ -343,4 +360,4 @@ iterated against captures without a car.
 2. **B3, the driving-score definition** — yours to decide; does not block.
 3. **Car USB socket: switched or constant?** — physical test at the car; changes
    the BOM, not the code.
-4. **Backdrop mitigation** — which of the three; decided by Phase 0 measurement.
+4. ~~Backdrop mitigation~~ — **answered 2026-08-21**: partial rendering is mandatory (full-screen refresh is ~52ms/19fps); bucket rpm coarsely (500rpm, not 100); never use a canvas widget; the annulus idea is struck as worthless.

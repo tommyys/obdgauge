@@ -1,167 +1,216 @@
-// Phase 0 Task 13: touch and IMU bring-up on the ESP32-S3-Touch-AMOLED-1.75C.
+// Phase 0 Task 13: measure the cost of the SPEC.md section 11 rpm backdrop at
+// 466x466, so Phase 2's view design is built on a number instead of a guess.
 //
-// Everything is reported on the panel as well as over serial, because the
-// serial console on this board is awkward: idf_monitor needs a TTY, and any
-// esptool call re-enters download mode.
-//
-// The IMU axis check is the part that matters. In the simulator "harsh" is a
-// speed-delta proxy -- laggy and coarse (SPEC.md section 4). On the board the
-// QMI8658 replaces it, but only if longitudinal and lateral are the right way
-// round: get them backwards and the driving score is silently wrong, and no
-// host test can catch it. Gravity is the reference.
+// Section 11 defines it precisely: transparent to ~24% radius, ramping to
+// near-opaque red at the rim; f = rpm/rpm_red, tint starting at 22% of redline,
+// raised to the power 1.35. Those constants are reproduced here so the thing
+// being measured is the real backdrop, not an approximation of it.
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include "bsp/esp-bsp.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
-
-#include "imu.h"
-#include "version.h"
+#include "vehicle.h"
 
 namespace {
 
-constexpr int kLine = 30;
+constexpr int   W = BSP_LCD_H_RES;
+constexpr int   H = BSP_LCD_V_RES;
+constexpr int   CX = W / 2;
+constexpr int   CY = H / 2;
+constexpr int   R  = W / 2;
+constexpr float kCoreRadius = 0.24f;   // transparent below this fraction of R
+constexpr float kTintStart  = 0.22f;   // fraction of redline before any tint
+constexpr float kGamma      = 1.35f;
+constexpr int   kShift      = 8;       // r2 >> 8 indexes the LUT
+constexpr int   kLutN       = ((R * R) >> kShift) + 2;
 
-lv_obj_t* g_i2c   = nullptr;
-lv_obj_t* g_imu   = nullptr;
-lv_obj_t* g_acc   = nullptr;
-lv_obj_t* g_grav  = nullptr;
-lv_obj_t* g_touch = nullptr;
-lv_obj_t* g_dot   = nullptr;
+uint16_t* g_fb   = nullptr;            // 466x466 RGB565 canvas in PSRAM
+uint16_t  g_lut[kLutN];
+int       g_annulus_r2 = 0;            // r2 below which nothing is drawn
 
-lv_obj_t* row(lv_obj_t* parent, int index, uint32_t colour, const lv_font_t* font) {
-    lv_obj_t* l = lv_label_create(parent);
-    lv_obj_set_style_text_color(l, lv_color_hex(colour), 0);
-    lv_obj_set_style_text_font(l, font, 0);
-    lv_obj_set_width(l, 330);
-    lv_obj_align(l, LV_ALIGN_CENTER, 0, -110 + index * kLine);
-    lv_label_set_text(l, "");
-    return l;
+// Alpha for a given rpm, exactly as section 11 specifies.
+float backdrop_alpha(float rpm, float rpm_red) {
+    float f = rpm / rpm_red;
+    if (f <= kTintStart) return 0.0f;
+    float x = (f - kTintStart) / (1.0f - kTintStart);
+    if (x > 1.0f) x = 1.0f;
+    return powf(x, kGamma) * 0.92f;    // 0.92 = "near-opaque" at redline
 }
 
-void build_ui() {
-    lv_obj_t* scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+// Rebuild the radius->colour table. This is the only per-rpm work; the inner
+// pixel loop is then a shift and a table lookup.
+void build_lut(float alpha) {
+    for (int i = 0; i < kLutN; ++i) {
+        int   r2 = i << kShift;
+        float r  = sqrtf(static_cast<float>(r2)) / R;
+        float v  = 0.0f;
+        if (r > kCoreRadius && r <= 1.0f) {
+            float t = (r - kCoreRadius) / (1.0f - kCoreRadius);
+            v = alpha * t * t;          // vignette ramps toward the rim
+        }
+        int red = static_cast<int>(v * 31.0f + 0.5f);
+        if (red > 31) red = 31;
+        g_lut[i] = static_cast<uint16_t>(red << 11);   // RGB565, red only
+    }
+}
 
-    lv_obj_t* title = lv_label_create(scr);
-    lv_label_set_text(title, "PHASE 0 BRING-UP");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xFF9500), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -150);
+// Fill the whole disc. `from_r2` lets the annulus variant skip the core.
+void fill(int from_r2) {
+    for (int y = 0; y < H; ++y) {
+        int dy = y - CY;
+        int dy2 = dy * dy;
+        uint16_t* row = g_fb + y * W;
+        for (int x = 0; x < W; ++x) {
+            int dx = x - CX;
+            int r2 = dx * dx + dy2;
+            if (r2 < from_r2) continue;
+            int idx = r2 >> kShift;
+            row[x] = (idx < kLutN) ? g_lut[idx] : 0;
+        }
+    }
+}
 
-    char buf[64];
-    lv_obj_t* panel = row(scr, 0, 0x808080, &lv_font_montserrat_20);
-    snprintf(buf, sizeof buf, "PANEL  %dx%d", BSP_LCD_H_RES, BSP_LCD_V_RES);
-    lv_label_set_text(panel, buf);
+struct Result {
+    const char* name;
+    float fps;
+    float gen_ms;      // mean time generating pixels
+    float frame_ms;    // mean total time including flush
+    int   regens;
+};
 
-    lv_obj_t* ps = row(scr, 1, 0x808080, &lv_font_montserrat_20);
-    snprintf(buf, sizeof buf, "PSRAM  %u KB",
-             (unsigned)(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024));
-    lv_label_set_text(ps, buf);
+// A realistic sweep: 800 -> 7000 rpm over 4 s is a hard pull, and the colour
+// moves fastest there, so this is the worst case rather than an average one.
+float rpm_at(int64_t t_us) {
+    float phase = fmodf(t_us / 1e6f, 8.0f);
+    float u = phase < 4.0f ? phase / 4.0f : (8.0f - phase) / 4.0f;
+    return 800.0f + u * (7000.0f - 800.0f);
+}
 
-    g_i2c   = row(scr, 2, 0x808080, &lv_font_montserrat_20);
-    g_imu   = row(scr, 3, 0x5BD97A, &lv_font_montserrat_20);
-    g_acc   = row(scr, 4, 0xFFFFFF, &lv_font_montserrat_20);
-    g_grav  = row(scr, 5, 0x4FA3FF, &lv_font_montserrat_20);
-    g_touch = row(scr, 6, 0xFFC24A, &lv_font_montserrat_20);
+Result measure(const char* name, lv_display_t* disp, lv_obj_t* canvas,
+               int mode, float rpm_red, int seconds) {
+    int64_t t0 = esp_timer_get_time();
+    int64_t deadline = t0 + seconds * 1000000LL;
+    int frames = 0, regens = 0;
+    int64_t gen_us = 0;
+    int last_bucket = -1;
+    while (esp_timer_get_time() < deadline) {
+        int64_t now = esp_timer_get_time();
+        float rpm = rpm_at(now - t0);
 
-    // A dot that follows your finger: the clearest possible proof that touch
-    // coordinates line up with what is on screen.
-    g_dot = lv_obj_create(scr);
-    lv_obj_set_size(g_dot, 34, 34);
-    lv_obj_set_style_radius(g_dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(g_dot, lv_color_hex(0xFF3B30), 0);
-    lv_obj_set_style_border_width(g_dot, 0, 0);
-    lv_obj_add_flag(g_dot, LV_OBJ_FLAG_HIDDEN);
+        bool regen = true;
+        if (mode == 1) {                         // bucketed: 100 rpm steps
+            int bucket = static_cast<int>(rpm / 500.0f);
+            regen = (bucket != last_bucket);
+            last_bucket = bucket;
+        } else if (mode == 3) {                  // flush-only ceiling
+            regen = false;
+        }
+
+        if (regen) {
+            int64_t g0 = esp_timer_get_time();
+            build_lut(backdrop_alpha(rpm, rpm_red));
+            fill(mode == 2 ? g_annulus_r2 : 0);
+            gen_us += esp_timer_get_time() - g0;
+            ++regens;
+        }
+        lv_obj_invalidate(canvas);
+        lv_refr_now(disp);
+        ++frames;
+    }
+    float elapsed = (esp_timer_get_time() - t0) / 1e6f;
+    Result r{};
+    r.name = name;
+    r.fps = frames / elapsed;
+    r.gen_ms = regens ? (gen_us / 1000.0f) / regens : 0.0f;
+    r.frame_ms = (elapsed * 1000.0f) / frames;
+    r.regens = static_cast<int>(regens / elapsed);
+    return r;
 }
 
 }  // namespace
 
 extern "C" void app_main(void) {
-    printf("\n=== mx5-gauge Task 13 bring-up (core %s) ===\n", gauge::core_version());
+    printf("\n=== section 11 backdrop cost at %dx%d ===\n", W, H);
+    printf("frame buffer: %d bytes RGB565\n", W * H * 2);
 
-    ESP_ERROR_CHECK(bsp_i2c_init());
-    uint8_t addrs[16];
-    int n_addr = imu_i2c_scan(addrs, sizeof addrs);
-    char scan[80] = "I2C    ";
-    for (int i = 0; i < n_addr; ++i) {
-        char one[8];
-        snprintf(one, sizeof one, "%02X ", addrs[i]);
-        strncat(scan, one, sizeof scan - strlen(scan) - 1);
-    }
-    if (n_addr == 0) strncat(scan, "none!", sizeof scan - strlen(scan) - 1);
-    printf("%s\n", scan);
+    g_fb = static_cast<uint16_t*>(heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM));
+    if (!g_fb) { printf("FATAL: no PSRAM for the framebuffer\n"); return; }
+    float core = kCoreRadius * R;
+    g_annulus_r2 = static_cast<int>(core * core);
 
-    bool imu_ok = imu_init();
-    printf("IMU: %s", imu_ok ? "QMI8658 " : "not found\n");
-    if (imu_ok) printf("@ 0x%02X whoami=0x%02X\n", imu_address(), imu_whoami());
+    auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
+    printf("redline from profile: %.0f rpm\n", id.rpm_red);
 
-    bsp_display_start();
+    lv_display_t* disp = bsp_display_start();
     bsp_display_backlight_on();
-    lv_indev_t* indev = bsp_display_get_input_dev();
 
     bsp_display_lock(0);
-    build_ui();
-    lv_label_set_text(g_i2c, scan);
-    char b[64];
-    if (imu_ok) snprintf(b, sizeof b, "IMU    QMI8658 @0x%02X", imu_address());
-    else        snprintf(b, sizeof b, "IMU    NOT FOUND");
-    lv_label_set_text(g_imu, b);
-    if (!imu_ok) lv_obj_set_style_text_color(g_imu, lv_color_hex(0xFF3B30), 0);
+    lv_obj_t* scr = lv_screen_active();
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+    // First, with NO canvas in the tree: a solid-colour full-screen refresh.
+    // This is the true panel+LVGL floor. If it is far below the canvas figure,
+    // the canvas blit is the bottleneck rather than the QSPI transfer.
+    Result solid{};
+    {
+        int64_t t0 = esp_timer_get_time();
+        int frames = 0;
+        while (esp_timer_get_time() - t0 < 5000000LL) {
+            lv_obj_set_style_bg_color(scr, lv_color_hex((frames & 1) ? 0x080000 : 0x000008), 0);
+            lv_obj_invalidate(scr);
+            lv_refr_now(disp);
+            ++frames;
+        }
+        float el = (esp_timer_get_time() - t0) / 1e6f;
+        solid.name = "solid fill, no canvas";
+        solid.fps = frames / el;
+        solid.frame_ms = (el * 1000.0f) / frames;
+    }
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
+    lv_obj_t* canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(canvas, g_fb, W, H, LV_COLOR_FORMAT_RGB565);
+    lv_obj_center(canvas);
+    memset(g_fb, 0, W * H * 2);
+
+    Result res[4];
+    res[0] = measure("flush only (ceiling)", disp, canvas, 3, id.rpm_red, 5);
+    res[1] = measure("naive: full regen",    disp, canvas, 0, id.rpm_red, 5);
+    res[2] = measure("bucketed 500 rpm",     disp, canvas, 1, id.rpm_red, 5);
+    res[3] = measure("annulus only",         disp, canvas, 2, id.rpm_red, 5);
     bsp_display_unlock();
 
-    int touches = 0;
-    int last_x = -1, last_y = -1;
-    int tick = 0;
-    for (;;) {
-        imu_sample_t s{};
-        bool got = imu_ok && imu_read(&s);
-
-        char acc[64], grav[64], tch[64];
-        if (got) {
-            snprintf(acc, sizeof acc, "ACC  %+.2f %+.2f %+.2f g", s.ax, s.ay, s.az);
-            // Name the axis gravity is on, and roughly how the board is held.
-            float ax = s.ax < 0 ? -s.ax : s.ax;
-            float ay = s.ay < 0 ? -s.ay : s.ay;
-            float az = s.az < 0 ? -s.az : s.az;
-            const char* axis = (az >= ax && az >= ay) ? "Z" : (ay >= ax ? "Y" : "X");
-            float mag = (az >= ax && az >= ay) ? s.az : (ay >= ax ? s.ay : s.ax);
-            snprintf(grav, sizeof grav, "GRAV   %s %+.2f g", axis, mag);
-        } else {
-            snprintf(acc, sizeof acc, "ACC    --");
-            snprintf(grav, sizeof grav, "GRAV   --");
-        }
-
-        bsp_display_lock(0);
-        lv_point_t p{};
-        bool pressed = false;
-        if (indev) {
-            pressed = lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
-            lv_indev_get_point(indev, &p);
-        }
-        if (pressed) {
-            if (last_x < 0) ++touches;
-            last_x = p.x;
-            last_y = p.y;
-            lv_obj_clear_flag(g_dot, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_pos(g_dot, p.x - 17, p.y - 17);
-        } else {
-            last_x = -1;
-            lv_obj_add_flag(g_dot, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (pressed) snprintf(tch, sizeof tch, "TOUCH  %d,%d  (n=%d)", (int)p.x, (int)p.y, touches);
-        else         snprintf(tch, sizeof tch, "TOUCH  --      (n=%d)", touches);
-
-        lv_label_set_text(g_acc, acc);
-        lv_label_set_text(g_grav, grav);
-        lv_label_set_text(g_touch, tch);
-        bsp_display_unlock();
-
-        // Reprint periodically: the console cannot be attached at boot here.
-        if (++tick % 40 == 0) printf("%s | %s | %s\n", acc, grav, tch);
-        vTaskDelay(pdMS_TO_TICKS(50));
+    printf("\n%-22s %8s %10s %10s %8s\n", "strategy", "fps", "gen ms", "frame ms", "regen/s");
+    printf("%-22s %8.1f %10.2f %10.2f %8d\n", solid.name, solid.fps, 0.0f, solid.frame_ms, 0);
+    for (auto& r : res) {
+        printf("%-22s %8.1f %10.2f %10.2f %8d\n", r.name, r.fps, r.gen_ms, r.frame_ms, r.regens);
     }
+    printf("=== end ===\n");
+
+    // Leave the numbers on screen too.
+    bsp_display_lock(0);
+    lv_obj_delete(canvas);
+    lv_obj_t* t = lv_label_create(scr);
+    lv_label_set_text(t, "BACKDROP COST");
+    lv_obj_set_style_text_color(t, lv_color_hex(0xFF9500), 0);
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_28, 0);
+    lv_obj_align(t, LV_ALIGN_CENTER, 0, -150);
+    for (int i = 0; i < 4; ++i) {
+        char b[80];
+        snprintf(b, sizeof b, "%.0f fps  %.1fms  %s", res[i].fps, res[i].gen_ms, res[i].name);
+        lv_obj_t* l = lv_label_create(scr);
+        lv_label_set_text(l, b);
+        lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
+        lv_obj_set_width(l, 380);
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, -70 + i * 46);
+    }
+    bsp_display_unlock();
+
+    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }

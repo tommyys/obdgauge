@@ -19,3 +19,7 @@ CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# The backdrop benchmark deliberately spins without yielding; the idle-task
+# watchdog otherwise fires once per measurement window and pollutes the timings.
+CONFIG_ESP_TASK_WDT_INIT=n

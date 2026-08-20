@@ -31,6 +31,11 @@ const PidInfo* pid_info(uint8_t pid);
 // Decode a mode-01 payload into its channel key and value.
 std::optional<Reading> decode(uint8_t pid, const Bytes& data);
 
+// Channel keys the car can supply, from its supported-PID set. PIDs we
+// cannot decode are ignored - the car offering one does us no good if we
+// cannot read it.
+std::set<std::string> keys_for(const std::set<uint8_t>& supported);
+
 // Bit 7 of byte 0 means base+1; bit 0 of byte 3 means base+32.
 std::set<uint8_t> parse_supported(const Bytes& data, uint8_t base);
 

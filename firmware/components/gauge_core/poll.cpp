@@ -109,6 +109,15 @@ std::optional<Reading> decode(uint8_t pid, const Bytes& data) {
     return Reading{info->key, *v};
 }
 
+std::set<std::string> keys_for(const std::set<uint8_t>& supported) {
+    std::set<std::string> out;
+    for (uint8_t pid : supported) {
+        const PidInfo* info = pid_info(pid);
+        if (info) out.insert(info->key);
+    }
+    return out;
+}
+
 std::set<uint8_t> parse_supported(const Bytes& data, uint8_t base) {
     std::set<uint8_t> out;
     if (data.size() < 4) return out;

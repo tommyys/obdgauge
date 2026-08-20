@@ -13,6 +13,12 @@ Bytes hex_bytes(const std::string& text);
 // multi-line/multi-ECU replies by scanning for `41 <pid>` anywhere.
 std::optional<Bytes> parse_mode01(const std::string& text, uint8_t pid);
 
+// Parse a mode-09 (vehicle info) reply, returning its payload bytes.
+// Answers are multi-frame: the VIN arrives as several `49 02 <n>` lines.
+// Frame counters and ISO-TP padding are dropped here - any byte below 0x20
+// cannot be part of a printable field.
+std::optional<Bytes> parse_mode09(const std::string& text, uint8_t pid);
+
 // "13.8V" -> 13.8 (the ATRV reply), else nullopt.
 std::optional<double> parse_voltage(const std::string& text);
 

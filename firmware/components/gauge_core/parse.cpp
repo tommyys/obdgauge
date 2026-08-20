@@ -29,6 +29,21 @@ std::optional<Bytes> parse_mode01(const std::string& text, uint8_t pid) {
     return std::nullopt;
 }
 
+std::optional<Bytes> parse_mode09(const std::string& text, uint8_t pid) {
+    Bytes b = hex_bytes(text);
+    Bytes out;
+    size_t i = 0, n = b.size();
+    bool seen_header = false;
+    while (i + 1 < n) {
+        if (b[i] == 0x49 && b[i + 1] == pid) { seen_header = true; i += 2; continue; }
+        if (seen_header && b[i] >= 0x20) out.push_back(b[i]);
+        ++i;
+    }
+    if (seen_header && i < n && b[i] >= 0x20) out.push_back(b[i]);
+    if (!seen_header) return std::nullopt;
+    return out;
+}
+
 std::optional<double> parse_voltage(const std::string& text) {
     size_t i = 0;
     while (i < text.size() && !(text[i] >= '0' && text[i] <= '9')) ++i;

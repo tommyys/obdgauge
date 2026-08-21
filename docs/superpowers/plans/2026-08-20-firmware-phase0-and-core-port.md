@@ -1234,6 +1234,33 @@ of what "harsh" means.
   animating, driven by `gauge_core` with the plausibility gate in the path.
   Tasks 12's display half is done; touch and IMU (Task 13) are not.
 
+## Known gaps when picking this up (2026-08-21)
+
+Two things are working but not finished. Neither is a mystery; both have a
+diagnosis already.
+
+1. **The boot splash runs at ~6.5 fps.** It shows 17 of 31 frames in 2.62s.
+   Duration is correct (playback is time-paced, so it drops frames rather than
+   stretching), but it looks choppy. **Cause is measured, not suspected:** the
+   frames go through an LVGL canvas widget, which costs +33ms per frame on top
+   of the 52ms panel floor, plus the flash read. **Fix:** draw straight to the
+   panel with `esp_lcd_panel_draw_bitmap()` instead of through LVGL. That needs
+   the panel handle from `bsp_display_new()` before `bsp_display_start()`, so it
+   is a small restructure of the splash phase rather than a tweak. Expect 2-3x.
+   The stored clip is already 12 fps, so no re-encode is needed.
+   Also worth knowing: at 12.8MB the clip is over half a sane asset budget.
+   The frames are mostly black, so a cheap RLE or delta encode would pay well
+   if the animation ever grows.
+
+2. **The C++ core is one feature behind the simulator.** Tommy's
+   `Summarise a finished drive by its peaks` commit added per-field peaks to
+   `state.py`; they are not in `gauge_core`. `verify_port.sh` still reports
+   PORT VERIFIED, because the new fields sit outside the channels and the 25
+   derived values it compares. So "verified" currently means *the things it
+   compares still agree*, not *the firmware does everything the simulator does*.
+   Fix it either way -- port the peaks, or add them to the script's not-covered
+   list -- so the gap shows in the output rather than only in git history.
+
 ## Part B — hardware bring-up (board required)
 
 Tasks 11–14 need the board. **Before the first flash, verify the backup:**

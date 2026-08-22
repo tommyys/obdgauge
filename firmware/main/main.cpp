@@ -192,8 +192,10 @@ extern "C" void app_main(void) {
             last_fps_log = esp_timer_get_time();
             uint32_t fps = 0;
             if (esp_lv_adapter_get_fps(disp, &fps) == ESP_OK) {
-                printf("ui: %u fps, view %s, gestures %d\n", (unsigned)fps,
-                       gauge_ui::current_view_name(), gauge_ui::gesture_count());
+                printf("ui: %u fps, view %s, gest %d, press %d, rel %d\n",
+                       (unsigned)fps, gauge_ui::current_view_name(),
+                       gauge_ui::gesture_count(), gauge_ui::press_count(),
+                       gauge_ui::release_count());
                 bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();

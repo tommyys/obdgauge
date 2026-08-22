@@ -9,6 +9,9 @@ namespace {
 
 // 135 positions across a 270-degree sweep: one step is ~2 degrees.
 constexpr int kDialSteps = 135;
+// One swipe cannot reasonably produce two intended gestures inside this
+// window, and LVGL repeats the event every input read (~16ms).
+constexpr uint32_t kGestureDebounceMs = 400;
 constexpr int kSwipePx = 55;      // shorter than this is a tap, not a swipe
 
 // Views switch instantly rather than sliding. A slide moves the whole
@@ -45,7 +48,10 @@ int  g_dot_spacing = 18;
 bool g_was_pressed = false;
 int  g_press_x = 0;
 bool g_swipe_done = false;
-int  g_gestures = 0;
+int      g_gestures = 0;
+uint32_t g_last_gesture_ms = 0;
+int      g_presses = 0;
+int      g_releases = 0;
 
 int screen_w() { return lv_obj_get_width(g_parent); }
 
@@ -143,16 +149,24 @@ void gesture_cb(lv_event_t* e) {
     lv_dir_t dir = lv_indev_get_gesture_dir(indev);
     if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) return;
 
-    // LVGL keeps sending LV_EVENT_GESTURE for as long as the gesture is active
-    // -- once per input read. Without this call one swipe fired roughly eight
-    // events and advanced eight views, which with eight views lands you back
-    // where you started: the UI looked stuck rather than erratic. This is the
-    // documented way to say "I have handled this gesture, ignore the rest of
-    // the press".
-    lv_indev_wait_release(indev);
+    // LVGL repeats LV_EVENT_GESTURE for as long as the gesture is active, once
+    // per input read, so one swipe would otherwise advance many views.
+    //
+    // lv_indev_wait_release() is the documented remedy but is unusable here:
+    // it suppresses input until a RELEASE is observed, and with the CST9217 in
+    // IRQ mode a release is not reliably reported, so the indev latched after
+    // the very first gesture and never accepted another -- one gesture in 75
+    // seconds of swiping.
+    //
+    // A time debounce needs no release at all: take the first gesture, ignore
+    // the repeats that follow it.
+    uint32_t now = lv_tick_get();
+    if (g_last_gesture_ms && (now - g_last_gesture_ms) < kGestureDebounceMs) return;
+    g_last_gesture_ms = now;
 
-    if (dir == LV_DIR_LEFT) switch_to((g_cur + 1) % g_count);
-    else                    switch_to((g_cur - 1 + g_count) % g_count);
+    int target = (dir == LV_DIR_LEFT) ? (g_cur + 1) % g_count
+                                      : (g_cur - 1 + g_count) % g_count;
+    switch_to(target);
     ++g_gestures;
 }
 
@@ -166,12 +180,18 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     for (int i = 0; i < g_count; ++i) g_objs.push_back(build_view(g_specs[i]));
     for (int i = 0; i < g_count; ++i) {
         place(i, 0);
-        // Gestures land on whichever object was pressed; bubbling sends them to
-        // the parent so one handler serves every view.
+        // Presses must NOT land on a view root. switch_to() hides the current
+        // view, and hiding the object LVGL is tracking as the active press
+        // target leaves the input device wedged -- exactly one gesture was ever
+        // delivered, then nothing, however the handler was written. Making the
+        // roots non-clickable puts the press on the screen, which never hides.
+        lv_obj_remove_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_GESTURE_BUBBLE);
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_event_cb(parent, gesture_cb, LV_EVENT_GESTURE, nullptr);
+    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_presses; },  LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_releases; }, LV_EVENT_RELEASED, nullptr);
     g_cur = 0;
 
     // Page indicator. The content cut is instant because a full-screen change
@@ -284,6 +304,8 @@ void set_fps(uint32_t fps) {
 }
 
 int gesture_count() { return g_gestures; }
+int press_count() { return g_presses; }
+int release_count() { return g_releases; }
 
 int view_count() { return g_count; }
 int current_view() { return g_cur; }

@@ -30,6 +30,8 @@ void update(const Model& m);
 // swipe could begin and end between two polls and never be seen, which is why
 // switching worked only sometimes.
 int gesture_count();
+int press_count();
+int release_count();
 
 // Dev readout appended to the banner, so the frame rate is visible on the
 // device rather than only in a log. Pass 0 to hide it.

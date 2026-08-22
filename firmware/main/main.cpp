@@ -116,7 +116,7 @@ extern "C" void app_main(void) {
     lv_display_t* disp = bsp_display_start();
     bsp_display_backlight_on();
 
-    bsp_display_lock(0);
+    bsp_display_lock(-1);
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -179,7 +179,7 @@ extern "C" void app_main(void) {
             else          { synth -= 0.5; if (synth <= 45.0) synth_up = true; }
         }
 
-        bsp_display_lock(0);
+        bsp_display_lock(-1);   // -1 is wait-forever; 0 would be a try-lock
         gauge_ui::handle_touch(indev);
         gauge_ui::Model model{st, trip, score, id};
         gauge_ui::update(model);
@@ -190,7 +190,7 @@ extern "C" void app_main(void) {
             uint32_t fps = 0;
             if (esp_lv_adapter_get_fps(disp, &fps) == ESP_OK) {
                 printf("ui: %u fps, view %s\n", (unsigned)fps, gauge_ui::current_view_name());
-                bsp_display_lock(0);
+                bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();
             }

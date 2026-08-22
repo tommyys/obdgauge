@@ -37,8 +37,10 @@ std::vector<ViewObjs> g_objs;
 lv_obj_t* g_parent = nullptr;
 lv_obj_t* g_banner = nullptr;
 char g_banner_base[40] = {0};
+bool g_dials_on = true;
 bool g_was_pressed = false;
 int  g_press_x = 0;
+bool g_swipe_done = false;
 
 int screen_w() { return lv_obj_get_width(g_parent); }
 
@@ -106,8 +108,13 @@ int signed_distance(int from, int to, int n) {
 
 void switch_to(int target) {
     if (target == g_cur || target < 0 || target >= g_count) return;
-    place(g_cur, screen_w());        // park the old view off-screen
-    place(target, 0);
+    // Every view sits at (0,0); only visibility changes. Moving objects instead
+    // invalidated the full screen TWICE per switch -- once for the outgoing
+    // view's old area, once for the incoming view's -- which at the measured
+    // ~52 ms full-frame cost is ~104 ms of dead time on every swipe. A view
+    // change has to repaint the whole screen once; it must not pay for it twice.
+    lv_obj_add_flag(g_objs[static_cast<size_t>(g_cur)].root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g_objs[static_cast<size_t>(target)].root, LV_OBJ_FLAG_HIDDEN);
     g_cur = target;
 }
 
@@ -119,7 +126,10 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     g_objs.clear();
     g_objs.reserve(static_cast<size_t>(g_count));
     for (int i = 0; i < g_count; ++i) g_objs.push_back(build_view(g_specs[i]));
-    for (int i = 0; i < g_count; ++i) place(i, i == 0 ? 0 : screen_w());
+    for (int i = 0; i < g_count; ++i) {
+        place(i, 0);
+        if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
+    }
     g_cur = 0;
 
     // The make/model banner persists across views (SPEC.md section 10), so it
@@ -175,7 +185,7 @@ void update(const Model& m) {
                 lv_arc_set_range(v.arc, 0, steps);
                 lv_arc_set_value(v.arc, q);
             }
-            lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+            if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else {
             // No reading: hide the dial rather than draw it pinned at zero.
             lv_obj_add_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
@@ -195,12 +205,26 @@ void handle_touch(lv_indev_t* indev) {
 
     if (pressed && !g_was_pressed) {
         g_press_x = p.x;
-    } else if (!pressed && g_was_pressed) {
+        g_swipe_done = false;
+    } else if (pressed && !g_swipe_done) {
+        // Fire on threshold crossing rather than on release: waiting for the
+        // finger to lift added the entire duration of the swipe to the latency,
+        // which is most of what "the sliding lags" was.
         int dx = p.x - g_press_x;
-        if (dx <= -kSwipePx)      switch_to((g_cur + 1) % g_count);
-        else if (dx >= kSwipePx)  switch_to((g_cur - 1 + g_count) % g_count);
+        if (dx <= -kSwipePx)      { switch_to((g_cur + 1) % g_count); g_swipe_done = true; }
+        else if (dx >= kSwipePx)  { switch_to((g_cur - 1 + g_count) % g_count); g_swipe_done = true; }
     }
     g_was_pressed = pressed;
+}
+
+void set_dial_enabled(bool on) {
+    if (g_dials_on == on) return;
+    g_dials_on = on;
+    for (auto& v : g_objs) {
+        if (!v.arc) continue;
+        if (on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+        else    lv_obj_add_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void set_fps(uint32_t fps) {

@@ -32,6 +32,10 @@ void handle_touch(lv_indev_t* indev);
 // device rather than only in a log. Pass 0 to hide it.
 void set_fps(uint32_t fps);
 
+// Diagnostic: hide every rim dial. The arc is 434px across, so it invalidates
+// nearly the whole screen whenever it moves -- this isolates that cost.
+void set_dial_enabled(bool on);
+
 int view_count();
 int current_view();
 const char* current_view_name();

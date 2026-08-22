@@ -187,7 +187,8 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_event_cb(parent, gesture_cb, LV_EVENT_GESTURE, nullptr);
-    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_presses; }, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_presses; slide_prepare(); },
+                        LV_EVENT_PRESSED, nullptr);
     lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_releases; }, LV_EVENT_RELEASED, nullptr);
     g_cur = 0;
 

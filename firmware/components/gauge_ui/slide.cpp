@@ -29,6 +29,13 @@ constexpr int kSlideMs = 240;
 // so the largest size that happens to work today would fail under a more
 // fragmented heap. 50 rows is what the adapter's own flush path uses on every
 // frame, so it is proven on this hardware and leaves the margin alone.
+//
+// Cache-line alignment was tried and made no difference: 48-row bands (44736 B,
+// a multiple of 64, so aligned in both length and start) measured identically to
+// 50-row bands -- 5 frames, 17 fps, 38 ms of blit. So the SPI driver is not
+// bouncing misaligned bands through internal RAM; the cost is the ~1.6 ms of
+// per-band round-trip, ten times a frame. Left at 50, the value the adapter's
+// own flush path uses on every frame.
 constexpr int kBlitRows = 50;
 
 // The make/model banner and the page dots belong to the carousel frame, not to
@@ -38,6 +45,20 @@ constexpr int kBlitRows = 50;
 // covers the banner (centre +178) and the dots (centre +205) on a 466 panel.
 constexpr int kStaticTop = 396;
 constexpr int kStaticBot = 452;
+
+// Only these rows actually move, and only they are composed and sent each
+// frame. Everything outside is painted ONCE at the start of the slide:
+//
+//   rows 0-16    above the dial arc (434 px centred, so it spans 16..450);
+//                black in every view, so nothing to animate
+//   rows 396-466 the banner and page dots, which belong to the carousel frame
+//                and must not travel, plus the black sliver below the arc
+//
+// That is 18% of the panel removed from both the memcpy and the transfer at no
+// visual cost. It is not more because the arc is nearly as tall as the screen:
+// skipping further would make the top of the ring snap instead of slide.
+constexpr int kMoveTop = 16;
+constexpr int kMoveBot = 396;
 
 lv_obj_t* g_screen = nullptr;
 int g_w = 0;
@@ -49,7 +70,10 @@ size_t g_bytes = 0;
 lv_draw_buf_t g_from_db{};
 lv_draw_buf_t g_to_db{};
 bool g_ready = false;
-char g_note[200] = "slide: not run yet";
+bool g_prepared = false;      // g_from already holds the on-screen view
+uint32_t g_prepared_ms = 0;
+int64_t g_prep_us = 0;
+char g_note[320] = "slide: not run yet";
 
 // A cheap fingerprint of half a buffer: how many pixels are non-black, and an
 // XOR of the data. Two buffers that look the same on screen have the same pair;
@@ -108,13 +132,38 @@ bool slide_init(lv_obj_t* screen) {
     return true;
 }
 
+// Called the moment a finger lands. The outgoing view is whatever is on screen
+// now, so its snapshot can be taken here -- while the finger is still travelling
+// towards the swipe threshold -- instead of after the gesture fires. That is
+// half the dead time before the slide starts moving, and it costs nothing at
+// rest because nothing in this UI responds to a tap.
+void slide_prepare() {
+    if (!g_ready) return;
+    const int64_t t0 = esp_timer_get_time();
+    if (lv_snapshot_take_to_draw_buf(g_screen, LV_COLOR_FORMAT_RGB565, &g_from_db) != LV_RESULT_OK)
+        return;
+    lv_draw_sw_rgb565_swap(g_from, static_cast<uint32_t>(g_w) * g_h);
+    g_prep_us = esp_timer_get_time() - t0;
+    g_prepared = true;
+    g_prepared_ms = lv_tick_get();
+}
+
 bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     if (!g_ready || dir == 0) { flip(ctx); return false; }
     lv_display_t* disp = lv_obj_get_display(g_screen);
 
     const int64_t t_snap = esp_timer_get_time();
-    const bool got_from =
-        lv_snapshot_take_to_draw_buf(g_screen, LV_COLOR_FORMAT_RGB565, &g_from_db) == LV_RESULT_OK;
+    // Reuse the press-time snapshot, but only while it is fresh: a stale one
+    // would make the outgoing view jump to old readings just as it starts to
+    // move, which is more jarring than the delay it saves.
+    bool got_from = g_prepared && (lv_tick_get() - g_prepared_ms) < 1200;
+    int64_t prep_us = got_from ? g_prep_us : 0;
+    if (!got_from) {
+        got_from = lv_snapshot_take_to_draw_buf(
+                       g_screen, LV_COLOR_FORMAT_RGB565, &g_from_db) == LV_RESULT_OK;
+        if (got_from) lv_draw_sw_rgb565_swap(g_from, static_cast<uint32_t>(g_w) * g_h);
+    }
+    g_prepared = false;
     flip(ctx);
     const bool got_to =
         lv_snapshot_take_to_draw_buf(g_screen, LV_COLOR_FORMAT_RGB565, &g_to_db) == LV_RESULT_OK;
@@ -125,8 +174,7 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // panel with every pixel's bytes reversed. Swapping the two SNAPSHOTS once
     // each, rather than the composed frame every time, keeps the per-frame path
     // a pure memcpy: the cost is paid twice per slide instead of twice per frame.
-    if (got_from) lv_draw_sw_rgb565_swap(g_from, static_cast<uint32_t>(g_w) * g_h);
-    if (got_to)   lv_draw_sw_rgb565_swap(g_to, static_cast<uint32_t>(g_w) * g_h);
+    if (got_to) lv_draw_sw_rgb565_swap(g_to, static_cast<uint32_t>(g_w) * g_h);
     const int64_t snap_us = esp_timer_get_time() - t_snap;
     if (!got_from || !got_to) {
         printf("slide: snapshot failed (%d/%d) -- view cut instead\n", got_from, got_to);
@@ -149,10 +197,21 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
         return false;
     }
 
+    // The rows that never move, painted once. From the DESTINATION snapshot, so
+    // the page indicator has already stepped when the slide starts moving.
+    {
+        esp_err_t e1 = esp_lv_adapter_dummy_draw_blit(disp, 0, 0, g_w, kMoveTop, g_to, true);
+        esp_err_t e2 = esp_lv_adapter_dummy_draw_blit(
+            disp, 0, kMoveBot, g_w, g_h,
+            g_to + static_cast<size_t>(kMoveBot) * g_w, true);
+        if (e1 != ESP_OK || e2 != ESP_OK) printf("slide: fixed rows failed\n");
+    }
+
     // Paced by the wall clock, not by frame index: a slide that cannot keep up
     // must drop frames rather than run long. The travel eases out, so the view
     // arrives rather than stopping dead.
     int frames = 0;
+    int64_t compose_us = 0, sync_us = 0, blit_us = 0;
     esp_err_t blit_err = ESP_OK;
     esp_err_t sync_err = ESP_OK;
     const int64_t t0 = esp_timer_get_time();
@@ -165,8 +224,13 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
         int off = static_cast<int>(eased * g_w + 0.5);
         if (off < 1) off = 1;
         if (off > g_w) off = g_w;
-        gauge::slide_compose(g_compose, g_from, g_to, g_w, g_h, off, dir,
-                             kStaticTop, kStaticBot);
+        const int64_t c0 = esp_timer_get_time();
+        const size_t skip = static_cast<size_t>(kMoveTop) * g_w;
+        gauge::slide_compose(g_compose + skip, g_from + skip, g_to + skip,
+                             g_w, kMoveBot - kMoveTop, off, dir,
+                             0, 0);   // no static band inside the moving rows
+        const int64_t c1 = esp_timer_get_time();
+        compose_us += c1 - c0;
         // The compose buffer lives in PSRAM and was just written by the CPU
         // through a write-back cache; the panel's DMA reads PSRAM directly and
         // sees whatever has actually been written back. The adapter does this
@@ -175,16 +239,21 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
         // straight to esp_lcd_panel_draw_bitmap. Without this the frame is
         // part new pixels and part stale cache lines, which on the panel is
         // bands of garbage and bands that never move.
-        esp_err_t serr = esp_cache_msync(g_compose, g_bytes,
+        esp_err_t serr = esp_cache_msync(
+                        g_compose + static_cast<size_t>(kMoveTop) * g_w,
+                        static_cast<size_t>(kMoveBot - kMoveTop) * g_w * 2,
                         ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
         if (serr != ESP_OK && !sync_err) sync_err = serr;
-        for (int y = 0; y < g_h; y += kBlitRows) {
-            const int hh = (y + kBlitRows <= g_h) ? kBlitRows : (g_h - y);
+        const int64_t c2 = esp_timer_get_time();
+        sync_us += c2 - c1;
+        for (int y = kMoveTop; y < kMoveBot; y += kBlitRows) {
+            const int hh = (y + kBlitRows <= kMoveBot) ? kBlitRows : (kMoveBot - y);
             esp_err_t berr = esp_lv_adapter_dummy_draw_blit(
                 disp, 0, y, g_w, y + hh,
                 g_compose + static_cast<size_t>(y) * g_w, true);
             if (berr != ESP_OK && !blit_err) blit_err = berr;
         }
+        blit_us += esp_timer_get_time() - c2;
         ++frames;
     }
     const int64_t anim_us = esp_timer_get_time() - t0;
@@ -197,10 +266,14 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // swipe was losing this every time, which is why the same question kept
     // having to be asked again. main() repeats it on every status line.
     snprintf(g_note, sizeof g_note,
-             "slide: snap %lldms %dfr %lldms (%.0ffps) sync=%s blit=%s "
+             "slide: snap %lldms(prep %lldms) %dfr %lldms (%.0ffps) per-frame comp %lldms "
+             "sync %lldms blit %lldms | %s %s "
              "from[t %d/%04x b %d/%04x] to[t %d/%04x b %d/%04x]",
-             snap_us / 1000, frames, anim_us / 1000,
+             snap_us / 1000, prep_us / 1000, frames, anim_us / 1000,
              frames * 1e6 / static_cast<double>(anim_us ? anim_us : 1),
+             frames ? compose_us / frames / 1000 : 0,
+             frames ? sync_us / frames / 1000 : 0,
+             frames ? blit_us / frames / 1000 : 0,
              esp_err_to_name(sync_err), esp_err_to_name(blit_err),
              fnz_t, fx_t, fnz_b, fx_b, tnz_t, tx_t, tnz_b, tx_b);
     printf("%s\n", g_note);

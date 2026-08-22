@@ -1709,3 +1709,29 @@ reading it.
 Diagnostics are **latched** (`gauge_ui::slide_note()`) and reprinted on every
 status line. Printing them only at the swipe meant every serial capture that
 opened a moment late lost them, and the same question had to be asked again.
+
+### Slide performance: what was tried, measured, and kept (2026-08-22)
+
+| Change | Result | Kept |
+|---|---|---|
+| 48-row bands, cache-line aligned | Identical: 5 fr, 17 fps, 38 ms blit | No — theory refuted, reverted to 50 |
+| Move only rows 16–396 | 5→6 fr, 17→21 fps, comp 20→17 ms, blit 38→30 ms | Yes |
+| Snapshot outgoing view at press | Post-gesture delay 142–181 ms → 46–89 ms, no swipes missed | Yes |
+
+The alignment result matters beyond itself: because aligning the bands changed
+nothing, the SPI driver is **not** bouncing them through internal RAM, so the
+earlier bounce-buffer explanation for the 217 KB `ESP_ERR_NO_MEM` ceiling is
+wrong and the real limit is still unexplained. Do not pick a band size larger
+than 50 on the strength of that reasoning.
+
+`sync` measures 0 ms, which confirms `esp_cache_msync` is a no-op for this
+memory — independent evidence that the cache fix (bug 3 above) fixed nothing.
+
+**Remaining floor, and it is a design floor, not a bug.** A push-slide has to
+have both views rendered before it can start, and each `lv_snapshot` is a full
+screen render (~50–90 ms) during which nothing moves. Taking one at press time
+splits that dead time either side of the gesture but does not remove it; the
+user still reports a stutter before motion. Removing it means giving up the
+push: reveal the incoming view under a growing clip instead, which needs no
+snapshot at all and could use LVGL's normal flush path, at the cost of the
+outgoing view no longer moving. Not done — the current behaviour was accepted.

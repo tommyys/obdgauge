@@ -30,6 +30,10 @@ bool slide_ready();
 // the animation played.
 bool slide_run(int dir, void (*flip)(void* ctx), void* ctx);
 
+// Call when a finger lands: snapshots the on-screen view early, so the slide
+// does not have to render it after the gesture fires.
+void slide_prepare();
+
 // The last slide's timings and buffer fingerprints, latched so a serial capture
 // that misses the swipe itself can still read them.
 const char* slide_note();

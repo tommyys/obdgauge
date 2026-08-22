@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include "carousel.h"
 #include "views.h"
 
 namespace gauge_ui {
@@ -107,16 +108,6 @@ ViewObjs build_view(const ViewSpec& spec) {
 
 void place(int index, int x) { lv_obj_set_pos(g_objs[index].root, x, 0); }
 
-// Section 6: each view is placed at its shortest signed distance from the
-// current one, so the last-to-first step is one slide rather than a rewind of
-// the whole strip.
-int signed_distance(int from, int to, int n) {
-    int d = to - from;
-    while (d >  n / 2) d -= n;
-    while (d < -n / 2) d += n;
-    return d;
-}
-
 void switch_to(int target) {
     if (target == g_cur || target < 0 || target >= g_count) return;
     // Every view sits at (0,0); only visibility changes. Moving objects instead
@@ -164,16 +155,25 @@ void gesture_cb(lv_event_t* e) {
     if (g_last_gesture_ms && (now - g_last_gesture_ms) < kGestureDebounceMs) return;
     g_last_gesture_ms = now;
 
-    int target = (dir == LV_DIR_LEFT) ? (g_cur + 1) % g_count
-                                      : (g_cur - 1 + g_count) % g_count;
+    // gauge::ring_index is host-tested (test_carousel.cpp), so the wrap is not
+    // something to wonder about from the board.
+    int target = gauge::ring_index(g_cur, g_count, dir == LV_DIR_LEFT ? +1 : -1);
+    int before = g_cur;
     switch_to(target);
     ++g_gestures;
+    (void)before;
 }
 
 }  // namespace
 
 void init(lv_obj_t* parent, const gauge::Identity& id) {
     g_parent = parent;
+    // Presses land here now that the view roots are non-clickable, and LVGL
+    // screens are scrollable by default. When LVGL decides a drag is a scroll it
+    // suppresses the gesture -- which is why 21 touches produced only 4
+    // gestures. Nothing here scrolls, so take the flag off.
+    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(parent, LV_DIR_NONE);
     g_specs = view_table(&g_count);
     g_objs.clear();
     g_objs.reserve(static_cast<size_t>(g_count));
@@ -190,7 +190,7 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_event_cb(parent, gesture_cb, LV_EVENT_GESTURE, nullptr);
-    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_presses; },  LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_presses; }, LV_EVENT_PRESSED, nullptr);
     lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_releases; }, LV_EVENT_RELEASED, nullptr);
     g_cur = 0;
 

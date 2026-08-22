@@ -1234,6 +1234,52 @@ of what "harsh" means.
   animating, driven by `gauge_core` with the plausibility gate in the path.
   Tasks 12's display half is done; touch and IMU (Task 13) are not.
 
+## Milestone 2026-08-22: eight views, swiping, replay on device
+
+The simulator's live feature set now runs on the board:
+
+- **Replay on device.** `tools/build_drive_asset.py` compiles `logs/*.csv` into
+  a 0.49MB binary library (3 drives, 35 channels, 42412 records) in a `drives`
+  partition; `gauge_core/replay` is pure and host-tested. Playback is 4x with
+  the metrics fed the capture's own timeline.
+- **Peaks ported**, so `verify_port.sh` compares 29 derived fields and no
+  longer reports parity it was not checking.
+- **Eight of section 6's nine views**, as a table rather than eight layouts.
+  Drives is deliberately absent: it browses recorded drives and nothing on the
+  board records yet.
+- **Swiping**, with the wrap host-tested in `test_carousel.cpp`.
+- **Page indicator** animates instead of the view sliding.
+
+### The input bug, and what it cost
+
+Seven attempts. Worth reading before touching LVGL input again:
+
+| Attempt | Outcome |
+|---|---|
+| Poll `lv_indev_get_state()` from the app loop at 30Hz | Real bug (missed fast flicks), not the main one |
+| `lv_indev_wait_release()` | No effect; measured |
+| Z-order (ELECTRICAL drawn last, on top) | Disproved: visibility bitmask never had >1 bit |
+| 400ms gesture debounce | Real bug (LVGL repeats GESTURE every input read), not the wedge |
+| View roots non-clickable | Real bug (`switch_to` hid the active press target), and it **moved** the problem |
+| Host-test the wrap | Disproved "no infinite scrolling": ring maths was always correct |
+| **Screen `LV_OBJ_FLAG_SCROLLABLE`** | **The cause.** With presses landing on the screen, LVGL claimed each drag as a scroll and suppressed the gesture |
+
+**The lesson: instrument the boundary before proposing a fix.** Counting
+presses, releases and gestures separately is what finally distinguished "input
+is dead" from "input is fine but gestures are suppressed" -- and that one
+capture was worth more than four of the guesses above. Note also that making
+the view roots non-clickable *caused* the final bug by moving presses onto the
+one object whose scroll flag was still set.
+
+### Display ceiling (measured, not assumed)
+
+The CO5300 runs at 40MHz QSPI: ~22ms to move a 434KB frame, ~30ms of render on
+top, so **~52ms and ~19fps for any full-screen change**. Double buffering would
+overlap those but the adapter permits only tear-avoid NONE or TE_SYNC on a SPI
+panel -- DOUBLE_PARTIAL boot-loops. So full-screen slide transitions are not
+available on this hardware at any quality, which is why the page indicator
+animates and the view content cuts.
+
 ## Known gaps when picking this up (2026-08-21)
 
 Two things are working but not finished. Neither is a mystery; both have a

@@ -130,6 +130,7 @@ extern "C" void app_main(void) {
     gauge_ui::init(scr, id);
     bsp_display_unlock();
     esp_lv_adapter_fps_stats_enable(disp, true);
+    lv_indev_t* indev = bsp_display_get_input_dev();
     int64_t last_fps_log = esp_timer_get_time();
     printf("ui: %d views, starting on %s\n",
            gauge_ui::view_count(), gauge_ui::current_view_name());
@@ -192,10 +193,20 @@ extern "C" void app_main(void) {
             last_fps_log = esp_timer_get_time();
             uint32_t fps = 0;
             if (esp_lv_adapter_get_fps(disp, &fps) == ESP_OK) {
-                printf("ui: %u fps, view %s, gest %d, press %d, rel %d\n",
+                // Print the indev's own state too. If it reads PRESSED with no
+                // finger on the glass, the input device is wedged below LVGL's
+                // event layer, which is a different bug from a wrap problem.
+                const char* st_s = "?";
+                lv_point_t pt{};
+                if (indev) {
+                    st_s = (lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED)
+                               ? "PRESSED" : "released";
+                    lv_indev_get_point(indev, &pt);
+                }
+                printf("ui: %u fps, view %s, gest %d, press %d, rel %d, indev %s @%d,%d\n",
                        (unsigned)fps, gauge_ui::current_view_name(),
                        gauge_ui::gesture_count(), gauge_ui::press_count(),
-                       gauge_ui::release_count());
+                       gauge_ui::release_count(), st_s, (int)pt.x, (int)pt.y);
                 bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();

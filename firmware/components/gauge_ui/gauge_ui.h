@@ -29,6 +29,8 @@ void update(const Model& m);
 // Polling the indev from the app loop missed fast flicks: at ~30Hz a quick
 // swipe could begin and end between two polls and never be seen, which is why
 // switching worked only sometimes.
+const char* slide_note();
+bool slide_selftest(int hold_ms);
 int gesture_count();
 int press_count();
 int release_count();

@@ -1631,3 +1631,81 @@ git commit -m "spec: retarget section 3 to the ESP32-S3-Touch-AMOLED-1.75C"
 Once Task 13 reports its numbers, the Phase 1–2 plan gets written against measurements instead of guesses.
 
 Also untouched, per the spec: SD logging, Wi-Fi sync, GPS, shift LEDs, enclosure, the permanent 12V install, and the board's audio hardware.
+
+## Milestone: the carousel slides (2026-08-22)
+
+Views now slide instead of cutting. The slide never re-renders: each view is
+snapshotted once into PSRAM (`lv_snapshot`), and every frame is a memcpy of two
+rectangles plus a direct blit past LVGL via `esp_lv_adapter_dummy_draw_blit()`.
+The pixel arithmetic lives in `gauge_core/frame_slide.h` and is host-tested
+(`test_frame_slide.cpp`, the 14th suite) — both directions, both endpoints,
+mid-slide alignment, every-pixel-written at all offsets, the static band, and
+clamping. Two mutations (flipped direction, one pixel shaved) fail 2 and 4
+checks respectively, so the test bites.
+
+The banner and page dots are held stationary by taking rows 396–452 from the
+destination snapshot: a page indicator that slides off screen tells you nothing.
+The instant cut survives as the fallback when the buffers do not fit — a slide
+must never be the reason a view is stuck. Boot's 434 KB clip framebuffer is
+freed and reused, so the three slide buffers cost nothing at peak.
+
+### What `dummy_draw_blit` does NOT do for you
+
+Three separate bugs, all in the gap between the fast path and the adapter's
+normal flush. The flush path quietly does **three** things that the blit path
+does not, and adopting the fast path without auditing what it opts out of cost
+four flash cycles:
+
+| # | Symptom on the panel | Cause | Fix |
+|---|---|---|---|
+| 1 | Top half garbage, bottom frozen | A full-frame blit returns `ESP_ERR_NO_MEM`; the window is set, no data follows | Blit in 50-row bands (`kBlitRows`) |
+| 2 | Whole screen pink | No RGB565 byte swap; the flush path does it guarded on this exact panel interface (`lvgl_bridge_v9.c`) | `lv_draw_sw_rgb565_swap` on each snapshot, once |
+| 3 | (none observed) | No cache writeback before DMA; the flush path calls `display_cache_msync_range` | `esp_cache_msync(..., C2M \| UNALIGNED)` per frame |
+
+Fix 3 is correct on its own merits but fixed nothing observable here. Recorded
+as such rather than left to look like part of the cure.
+
+**The blit's return value was being discarded.** Bug 1 was a total failure of
+every frame that read as a rendering artifact, and a cache-coherency theory got
+a whole flash cycle before anyone checked whether the new call succeeded. Check
+the return value of the call you just introduced, first.
+
+**The transfer ceiling is a heap artefact, not a constant.** `slide_selftest()`
+probes it:
+
+    466 rows (434312 B): ESP_ERR_NO_MEM
+    233 rows (217156 B): ESP_ERR_NO_MEM
+    156 rows (145392 B): ESP_OK, and every smaller size
+
+The boundary is the size of a bounce buffer the SPI driver can allocate from
+internal RAM, so the largest size that works today fails under a fragmented
+heap. 50 rows is what the adapter's own flush path uses every frame.
+
+`slide_selftest()` stays in the tree, uncalled. It answered two questions no
+serial log could — the transfer limit, and the byte order, the latter by
+painting RED/GREEN/BLUE/WHITE bands and having a human report BLUE/RED/GREEN/
+WHITE. Panel transfer limits will come up again with the §11 backdrop.
+
+### Measured, and short of the estimate
+
+    slide: snap 133-174ms  5fr 289ms (17fps)  sync=ESP_OK blit=ESP_OK
+
+The design was pitched at ~45 fps with a ~60 ms snapshot pause, from the panel's
+raw bandwidth (434 KB over QSPI at 40 MHz × 4 lanes ≈ 22 ms). **The real figures
+are 17 fps and a 105–174 ms pause** — ~58 ms per frame, and the 240 ms slide
+overruns to 290 ms. The estimate assumed one full-frame transfer at bus speed;
+the reality is ten banded transfers each waiting for its own completion, plus a
+snapshot that renders into PSRAM far slower than allowed for.
+
+Open lead, not yet measured: each 50-row band is 46,600 B, which is not a
+multiple of 64, so both the length and every band start after the first are
+misaligned — likely forcing the SPI driver to bounce each band through internal
+RAM. **48-row bands** (44,736 B) would be 64-aligned in both length and start
+for 9 of the 10 bands. Pipelining the bands (wait only on the last) is the other
+obvious win but carries a real race: an earlier band's completion notification
+can satisfy the last band's wait, releasing the buffer while a transfer is still
+reading it.
+
+Diagnostics are **latched** (`gauge_ui::slide_note()`) and reprinted on every
+status line. Printing them only at the swipe meant every serial capture that
+opened a moment late lost them, and the same question had to be asked again.

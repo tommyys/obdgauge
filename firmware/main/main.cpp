@@ -126,9 +126,20 @@ extern "C" void app_main(void) {
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     play_boot_clip(disp, scr);
+    // The clip's 434 KB framebuffer is dead the moment the splash ends, and the
+    // carousel slide wants three buffers of exactly that size. Hand it back
+    // before the UI asks.
+    heap_caps_free(g_fb);
+    g_fb = nullptr;
     // Instruments are withheld, not covered: they are created only now.
     gauge_ui::init(scr, id);
     bsp_display_unlock();
+    // gauge_ui::slide_selftest() pushes a known pattern through the blit path.
+    // It established two things that no log could: a full-frame blit returns
+    // ESP_ERR_NO_MEM (see kBlitRows), and the panel wants RGB565 byte-swapped
+    // -- the bands came back BLUE RED GREEN WHITE. Not called on a normal boot,
+    // but kept, because it answers questions the serial log cannot.
+
     esp_lv_adapter_fps_stats_enable(disp, true);
     lv_indev_t* indev = bsp_display_get_input_dev();
     int64_t last_fps_log = esp_timer_get_time();
@@ -207,6 +218,9 @@ extern "C" void app_main(void) {
                        (unsigned)fps, gauge_ui::current_view_name(),
                        gauge_ui::gesture_count(), gauge_ui::press_count(),
                        gauge_ui::release_count(), st_s, (int)pt.x, (int)pt.y);
+                // Repeated rather than printed once at the swipe: a serial
+                // capture that opens after the swipe was losing it every time.
+                printf("     %s\n", gauge_ui::slide_note());
                 bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();

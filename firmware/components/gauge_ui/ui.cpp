@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 #include "carousel.h"
+#include "slide.h"
 #include "views.h"
 
 namespace gauge_ui {
@@ -13,15 +14,14 @@ constexpr int kDialSteps = 135;
 // One swipe cannot reasonably produce two intended gestures inside this
 // window, and LVGL repeats the event every input read (~16ms).
 constexpr uint32_t kGestureDebounceMs = 400;
-constexpr int kSwipePx = 55;      // shorter than this is a tap, not a swipe
 
-// Views switch instantly rather than sliding. A slide moves the whole
-// 466x466 view, which dirties the entire screen; at the measured ~52 ms
-// full-screen refresh a 220 ms slide is about four frames and reads as a
-// stutter rather than motion. An instant cut is honest about the hardware
-// and, on a gauge you glance at, arguably better anyway. Section 6's
-// shortest-signed-distance rule is kept below because it still decides which
-// view you land on when wrapping.
+// Views slide, but not by moving LVGL objects. Moving two live 466x466 views
+// makes LVGL re-render both of them through a 466x50 partial buffer on every
+// frame -- about 52 ms each, so a 240 ms slide was four frames of judder, which
+// is why this used to be an instant cut. slide.h renders each view once into a
+// buffer and then blits composed frames straight past LVGL, so the per-frame
+// cost is the panel's own ~22 ms and the motion is real. The instant cut
+// survives as the fallback for when the buffers do not fit.
 
 struct ViewObjs {
     lv_obj_t* root   = nullptr;
@@ -46,9 +46,6 @@ char g_banner_base[40] = {0};
 bool g_dials_on = true;
 int  g_dot_x0 = 0;
 int  g_dot_spacing = 18;
-bool g_was_pressed = false;
-int  g_press_x = 0;
-bool g_swipe_done = false;
 int      g_gestures = 0;
 uint32_t g_last_gesture_ms = 0;
 int      g_presses = 0;
@@ -108,29 +105,30 @@ ViewObjs build_view(const ViewSpec& spec) {
 
 void place(int index, int x) { lv_obj_set_pos(g_objs[index].root, x, 0); }
 
-void switch_to(int target) {
-    if (target == g_cur || target < 0 || target >= g_count) return;
-    // Every view sits at (0,0); only visibility changes. Moving objects instead
-    // invalidated the full screen TWICE per switch -- once for the outgoing
-    // view's old area, once for the incoming view's -- which at the measured
-    // ~52 ms full-frame cost is ~104 ms of dead time on every swipe. A view
-    // change has to repaint the whole screen once; it must not pay for it twice.
-    lv_obj_add_flag(g_objs[static_cast<size_t>(g_cur)].root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(g_objs[static_cast<size_t>(target)].root, LV_OBJ_FLAG_HIDDEN);
-    g_cur = target;
+int g_flip_target = 0;
 
-    if (g_dot_active) {
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, g_dot_active);
-        lv_anim_set_values(&a, lv_obj_get_x(g_dot_active),
-                           lv_obj_get_x(g_dots[0]) + target * g_dot_spacing - 3);
-        lv_anim_set_duration(&a, 180);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-        lv_anim_set_exec_cb(&a, [](void* obj, int32_t x) {
-            lv_obj_set_x(static_cast<lv_obj_t*>(obj), x); });
-        lv_anim_start(&a);
-    }
+// Makes the target view the visible one. Every view sits at (0,0) and only
+// visibility changes -- moving the objects instead invalidated the full screen
+// TWICE per switch, once for the outgoing view's old area and once for the
+// incoming view's, which is ~104 ms of dead time at the measured ~52 ms
+// full-frame cost. A view change has to repaint the screen once; not twice.
+void flip_now(void*) {
+    lv_obj_add_flag(g_objs[static_cast<size_t>(g_cur)].root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g_objs[static_cast<size_t>(g_flip_target)].root, LV_OBJ_FLAG_HIDDEN);
+    g_cur = g_flip_target;
+    // The dot moves in the same breath so that the destination snapshot -- and
+    // so the sliding frame -- already shows the right page. It needs no
+    // animation of its own now that the view itself is the motion cue.
+    if (g_dot_active) lv_obj_set_x(g_dot_active, g_dot_x0 + g_cur * g_dot_spacing - 3);
+}
+
+void switch_to(int target, int dir) {
+    if (target == g_cur || target < 0 || target >= g_count) return;
+    g_flip_target = target;
+    // slide_run always performs the flip, so there is exactly one path that
+    // changes the view whether or not the animation is available.
+    if (slide_ready()) slide_run(dir, flip_now, nullptr);
+    else               flip_now(nullptr);
 }
 
 void gesture_cb(lv_event_t* e) {
@@ -157,11 +155,10 @@ void gesture_cb(lv_event_t* e) {
 
     // gauge::ring_index is host-tested (test_carousel.cpp), so the wrap is not
     // something to wonder about from the board.
-    int target = gauge::ring_index(g_cur, g_count, dir == LV_DIR_LEFT ? +1 : -1);
-    int before = g_cur;
-    switch_to(target);
+    const int step = (dir == LV_DIR_LEFT) ? +1 : -1;
+    int target = gauge::ring_index(g_cur, g_count, step);
+    switch_to(target, step);
     ++g_gestures;
-    (void)before;
 }
 
 }  // namespace
@@ -217,7 +214,8 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_obj_set_style_bg_color(g_dot_active, lv_color_hex(0xFF9500), 0);
     lv_obj_set_style_bg_opa(g_dot_active, LV_OPA_COVER, 0);
     lv_obj_align(g_dot_active, LV_ALIGN_CENTER, x0, 205);
-    g_dot_x0 = x0;
+    lv_obj_update_layout(parent);
+    g_dot_x0 = lv_obj_get_x(g_dots[0]);
     g_dot_spacing = spacing;
 
     // The make/model banner persists across views (SPEC.md section 10), so it
@@ -228,6 +226,10 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     snprintf(g_banner_base, sizeof g_banner_base, "%s", id.label.c_str());
     lv_label_set_text(g_banner, g_banner_base);
     lv_obj_align(g_banner, LV_ALIGN_CENTER, 0, 178);
+
+    // Last, because it measures the screen and wants the PSRAM the boot clip
+    // has just given back.
+    slide_init(parent);
 }
 
 void set_text_if_changed(lv_obj_t* label, const std::string& text) {

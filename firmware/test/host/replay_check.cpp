@@ -175,6 +175,10 @@ int main(int argc, char** argv) {
             {"rejected", fmt(static_cast<double>(st.rejected()))},
             {"peak_rpm", fmt(st.peak_rpm())},
             {"peak_kw", fmt(st.peak_kw())},
+            {"peak_speed", fmt(st.peak("speed"))},
+            {"peak_coolant", fmt(st.peak("coolant"))},
+            {"peak_intake", fmt(st.peak("intake"))},
+            {"peak_catalyst", fmt(st.peak("catalyst"))},
         };
 
         divergences += compare(got_ch, parse_fields(halves[0]), "chan", samples, key, &shown);
@@ -184,6 +188,6 @@ int main(int argc, char** argv) {
     fclose(cap);
     fclose(ref);
     printf("%s: %ld samples, %ld channels, %ld derived fields, %ld divergences\n",
-           argv[1], samples, channels_seen, 25L, divergences);
+           argv[1], samples, channels_seen, 29L, divergences);
     return divergences == 0 ? 0 : 1;
 }

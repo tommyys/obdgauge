@@ -67,6 +67,10 @@ def main(path):
                 ('rejected', g.rejected),
                 ('peak_rpm', g.peak_rpm),
                 ('peak_kw', g.peak_kw),
+                ('peak_speed', g.peaks.get('speed')),
+                ('peak_coolant', g.peaks.get('coolant')),
+                ('peak_intake', g.peaks.get('intake')),
+                ('peak_catalyst', g.peaks.get('catalyst')),
             ))
             out.write(channels + '\t' + derived + '\n')
 

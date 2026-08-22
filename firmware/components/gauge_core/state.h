@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace gauge {
 
@@ -20,9 +21,19 @@ class VehicleState {
     std::optional<double> get(const std::string& key) const;
     bool has(const std::string& key) const;
 
-    int    rejected() const { return rejected_; }
-    double peak_rpm() const { return peak_rpm_; }
-    double peak_kw()  const { return peak_kw_; }
+    int rejected() const { return rejected_; }
+
+    // Highest rpm this drive, or 0.0 before any rev is seen. Zero rather than
+    // absent because the tacho and the score footer draw it unconditionally.
+    double peak_rpm() const;
+    double peak_kw() const { return peak_kw_; }
+
+    // High-water mark for a summary field ("rpm", "speed", "coolant",
+    // "intake", "catalyst"), or absent when the channel never arrived -- which
+    // is the honest answer for a car that never reported it. A bold 0 would
+    // lie where '--' tells the truth.
+    std::optional<double> peak(const std::string& field) const;
+    const std::map<std::string, double>& peaks() const { return peaks_; }
 
     const std::map<std::string, double>& values() const { return values_; }
 
@@ -30,8 +41,8 @@ class VehicleState {
     void derive();
 
     std::map<std::string, double> values_;
+    std::map<std::string, double> peaks_;
     int    rejected_ = 0;
-    double peak_rpm_ = 0.0;
     double peak_kw_  = 0.0;
 };
 

@@ -66,6 +66,20 @@ const std::map<std::string, std::pair<double, double>>& ranges() {
     return r;
 }
 
+// The catalyst temperature can arrive on any of several channels depending on
+// which banks and sensors the car reports. A peak takes the hottest of
+// whichever turned up: the drive only got as hot as it got, whatever bank
+// happened to measure it.
+const std::map<std::string, std::string>& peak_fields() {
+    static const std::map<std::string, std::string> f = {
+        {"rpm", "rpm"}, {"speed", "speed"}, {"coolant", "coolant"},
+        {"intake", "intake"},
+        {"catalyst", "catalyst"}, {"cat_b1s1", "catalyst"}, {"cat_b2s1", "catalyst"},
+        {"cat_b1s2", "catalyst"}, {"cat_b2s2", "catalyst"},
+    };
+    return f;
+}
+
 }  // namespace
 
 bool plausible(const std::string& key, double value) {
@@ -79,8 +93,26 @@ bool plausible(const std::string& key, double value) {
 void VehicleState::set(const std::string& key, double value) {
     if (!plausible(key, value)) { ++rejected_; return; }
     values_[key] = value;
-    if (key == "rpm" && value > peak_rpm_) peak_rpm_ = value;
+    // High-water marks, deliberately below the plausibility gate: a peak is
+    // the most memorable number on the summary card, and one bad frame would
+    // otherwise pin it there for the whole drive.
+    auto it = peak_fields().find(key);
+    if (it != peak_fields().end()) {
+        auto cur = peaks_.find(it->second);
+        if (cur == peaks_.end() || value > cur->second) peaks_[it->second] = value;
+    }
     derive();
+}
+
+double VehicleState::peak_rpm() const {
+    auto it = peaks_.find("rpm");
+    return it == peaks_.end() ? 0.0 : it->second;
+}
+
+std::optional<double> VehicleState::peak(const std::string& field) const {
+    auto it = peaks_.find(field);
+    if (it == peaks_.end()) return std::nullopt;
+    return it->second;
 }
 
 void VehicleState::derive() {

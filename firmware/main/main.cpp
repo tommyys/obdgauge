@@ -50,73 +50,6 @@ struct AssetHeader {
 
 uint16_t* g_fb = nullptr;
 
-// ---- where does the frame's read time go? --------------------------------
-//
-// Temporary. The splash's cost is dominated by the flash read (68 ms for a
-// 434 KB frame, 6.4 MB/s, against DIO-at-80MHz's ~20 MB/s theoretical). The
-// suspicion is the destination: flash and PSRAM share SPI0 on this chip, so a
-// flash->PSRAM read crosses one bus twice. If reading the same bytes into
-// internal RAM is materially faster, the fix is to stream bands through
-// internal RAM instead of assembling whole frames in PSRAM.
-void bench_flash_read(const esp_partition_t* part, size_t frame_bytes) {
-    constexpr size_t kBand = 466 * 50 * 2;   // one blit band, 46.6 KB
-    void* iram = heap_caps_malloc(kBand, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!iram) { printf("bench: no internal RAM for %u B\n", (unsigned)kBand); return; }
-
-    const int bands = static_cast<int>(frame_bytes / kBand);
-    int64_t t0 = esp_timer_get_time();
-    for (int i = 0; i < bands; ++i)
-        esp_partition_read(part, sizeof(AssetHeader) + i * kBand, iram, kBand);
-    int64_t iram_us = esp_timer_get_time() - t0;
-
-    t0 = esp_timer_get_time();
-    esp_partition_read(part, sizeof(AssetHeader), g_fb, frame_bytes);
-    int64_t psram_us = esp_timer_get_time() - t0;
-
-    printf("bench: %d x %u B -> internal RAM: %lld us (%.1f MB/s)\n",
-           bands, (unsigned)kBand, iram_us,
-           bands * kBand / (iram_us / 1e6) / 1e6);
-    printf("bench: 1 x %u B -> PSRAM:        %lld us (%.1f MB/s)\n",
-           (unsigned)frame_bytes, psram_us, frame_bytes / (psram_us / 1e6) / 1e6);
-    heap_caps_free(iram);
-
-    // Same bytes, but through the flash cache instead of esp_flash_read.
-    // Two frames on purpose: frame 0 sits at 4 MB of flash, frame 30 at 17 MB,
-    // and drive_source.c records that this MMU maps only the first 16 MB --
-    // "mmap there reports success and then reads nothing". A checksum against
-    // esp_partition_read is the only way to catch that silently.
-    const void* map = nullptr;
-    esp_partition_mmap_handle_t mh{};
-    esp_err_t merr = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &mh);
-    if (merr != ESP_OK) {
-        // The whole 16 MB may not fit the vaddr space; try just the clip.
-        merr = esp_partition_mmap(part, 0, sizeof(AssetHeader) + 31 * frame_bytes,
-                                  ESP_PARTITION_MMAP_DATA, &map, &mh);
-        printf("bench: full-partition mmap failed, clip-only mmap: %s\n", esp_err_to_name(merr));
-    }
-    if (merr != ESP_OK) { printf("bench: mmap unavailable: %s\n", esp_err_to_name(merr)); return; }
-
-    for (int f : {0, 30}) {
-        const uint8_t* src = static_cast<const uint8_t*>(map) + sizeof(AssetHeader)
-                             + static_cast<size_t>(f) * frame_bytes;
-        int64_t m0 = esp_timer_get_time();
-        memcpy(g_fb, src, frame_bytes);
-        int64_t map_us = esp_timer_get_time() - m0;
-        uint32_t sum_map = 0;
-        for (size_t i = 0; i < frame_bytes / 2; i += 64) sum_map += g_fb[i];
-        // Same frame the slow way, as ground truth.
-        esp_partition_read(part, sizeof(AssetHeader) + static_cast<size_t>(f) * frame_bytes,
-                           g_fb, frame_bytes);
-        uint32_t sum_read = 0;
-        for (size_t i = 0; i < frame_bytes / 2; i += 64) sum_read += g_fb[i];
-        printf("bench: frame %2d @flash 0x%x mmap+memcpy %lld us (%.1f MB/s) sum %08x vs read %08x %s\n",
-               f, (unsigned)(part->address + sizeof(AssetHeader) + f * frame_bytes),
-               map_us, frame_bytes / (map_us / 1e6) / 1e6, (unsigned)sum_map, (unsigned)sum_read,
-               sum_map == sum_read ? "OK" : "*** MISMATCH ***");
-    }
-    esp_partition_munmap(mh);
-}
-
 // ---- the boot clip -------------------------------------------------------
 
 bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
@@ -136,13 +69,13 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
     }
     const size_t frame_bytes = static_cast<size_t>(hdr.w) * hdr.h * 2;
     printf("boot: %u frames %ux%u @%u fps\n", hdr.frames, hdr.w, hdr.h, hdr.fps);
-    bench_flash_read(part, frame_bytes);
 
     // Straight to the panel, past LVGL. An lv_canvas here cost 154 ms a frame
     // -- a full LVGL redraw of a full-screen PSRAM image, every frame -- so the
     // splash showed 17 of 31 frames, at an uneven 6.5 fps. The carousel slide
-    // was already pushing full-width frames at 47 ms through
-    // esp_lv_adapter_dummy_draw_blit; this is that same path.
+    // was already pushing full-width frames through
+    // esp_lv_adapter_dummy_draw_blit; this is that same path, and it now costs
+    // 19 ms a frame.
     if (!gauge_ui::direct_draw_begin(disp)) {
         printf("boot: direct draw unavailable -- skipping splash\n");
         return false;
@@ -211,8 +144,10 @@ extern "C" void app_main(void) {
     // Single-buffered, because that is all this panel offers: the adapter only
     // permits tear-avoid NONE or TE_SYNC on a SPI interface, so the double and
     // triple buffering that would overlap render with DMA is unavailable.
-    // A full-screen change therefore costs ~52ms (~22ms of 40MHz QSPI transfer
-    // plus ~30ms of render), which is the hard ~19fps ceiling.
+    // A full-screen change therefore costs the transfer plus a full render.
+    // The transfer is 19 ms measured (466x466x2 over QSPI at the 80 MHz this
+    // project's vendored BSP sets); the render is the larger half and is what
+    // holds the live views to the 10-22 fps the log reports.
     lv_display_t* disp = bsp_display_start();
     bsp_display_backlight_on();
 

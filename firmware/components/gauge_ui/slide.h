@@ -6,8 +6,9 @@
 // re-renders both views through a 466x50 partial buffer, ten bands at a time.
 // A 240 ms slide is then four frames and reads as a stutter.
 //
-// The panel itself is far quicker than that: 466*466*2 bytes over QSPI at
-// 40 MHz on four lanes is about 22 ms. So the slide renders each view exactly
+// The panel itself is far quicker than that: 466*466*2 bytes over QSPI at the
+// 80 MHz this project's vendored BSP sets is 19 ms measured, cache sync
+// included (it was 37 ms at the BSP's stock 40 MHz). So the slide renders each view exactly
 // ONCE into a buffer (lv_snapshot), then every frame is a memcpy of two
 // rectangles plus a direct blit past LVGL (esp_lv_adapter_dummy_draw_blit,
 // which unlike the framebuffer API works with tear-avoid NONE -- the only mode

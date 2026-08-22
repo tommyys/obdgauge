@@ -20,8 +20,8 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 
-# The backdrop benchmark deliberately spins without yielding; the idle-task
-# watchdog otherwise fires once per measurement window and pollutes the timings.
+# play_boot_clip() paces itself off the wall clock and never yields for the
+# 2.5 s the splash lasts, so the idle-task watchdog would fire every boot.
 CONFIG_ESP_TASK_WDT_INIT=n
 
 # Real FPS from the display pipeline, so frame-rate questions are answered with
@@ -43,8 +43,8 @@ CONFIG_LV_USE_SNAPSHOT=y
 # Measured on the board 2026-08-22: the 434 KB-per-frame flash read went
 # 68ms -> 47ms (esp_partition_read) and 42ms -> 29ms (mmap+memcpy). The byte
 # swap barely moved (13ms -> 12ms) -- it is PSRAM-bandwidth bound, not CPU
-# bound -- and the blit 37ms -> 32ms is limited by the BSP's hardcoded 40 MHz
-# panel QSPI clock, not by anything here.
+# bound. The blit went 37ms -> 32ms here and then to 19ms once the vendored BSP
+# raised the panel QSPI clock to 80 MHz, which is the change that mattered.
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # QIO doubles the flash data lines. IDF still writes "dio" into the image

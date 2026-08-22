@@ -43,4 +43,32 @@ const char* slide_note();
 // LVGL rendered.
 bool slide_selftest(int hold_ms);
 
+// ---- the same blit path, for anything that owns its own pixels -------------
+//
+// The boot clip needs exactly what a slide frame needs -- a full-screen RGB565
+// buffer on the panel as fast as this hardware allows -- and none of what LVGL
+// offers. Playing it through an lv_canvas cost 154 ms a frame and dropped 14 of
+// 31 frames; this path costs what a slide frame costs. Exposed here rather than
+// reimplemented in main.cpp because the band size, the cache sync and the byte
+// order are three separate lessons that took a panel to learn, and there should
+// be one copy of each.
+//
+// begin() takes the panel away from LVGL; end() gives it back and triggers the
+// full refresh that lands the real widgets. Call begin ONCE around a whole
+// animation, never per frame: end() forces an LVGL redraw.
+bool direct_draw_begin(lv_display_t* disp);
+void direct_draw_end(lv_display_t* disp);
+
+// Pushes one full-width frame to the panel. `frame` is w*h RGB565 as LVGL and
+// ffmpeg produce it (little endian) and is BYTE-SWAPPED IN PLACE, so a buffer
+// shown twice must be re-read rather than re-blitted. It must live in DMA-
+// reachable memory -- PSRAM is fine, flash-mapped memory is not.
+//
+// The optional out_* pointers accumulate microseconds, so a caller can report
+// where a frame's time actually went instead of guessing.
+bool direct_draw_frame(lv_display_t* disp, uint16_t* frame, int w, int h,
+                       int64_t* out_swap_us = nullptr,
+                       int64_t* out_sync_us = nullptr,
+                       int64_t* out_blit_us = nullptr);
+
 }  // namespace gauge_ui

@@ -27,6 +27,7 @@
 #include "vehicle.h"
 #include "drive_source.h"
 #include "gauge_ui.h"
+#include "slide.h"
 #include "esp_lv_adapter.h"
 #include "version.h"
 
@@ -49,6 +50,73 @@ struct AssetHeader {
 
 uint16_t* g_fb = nullptr;
 
+// ---- where does the frame's read time go? --------------------------------
+//
+// Temporary. The splash's cost is dominated by the flash read (68 ms for a
+// 434 KB frame, 6.4 MB/s, against DIO-at-80MHz's ~20 MB/s theoretical). The
+// suspicion is the destination: flash and PSRAM share SPI0 on this chip, so a
+// flash->PSRAM read crosses one bus twice. If reading the same bytes into
+// internal RAM is materially faster, the fix is to stream bands through
+// internal RAM instead of assembling whole frames in PSRAM.
+void bench_flash_read(const esp_partition_t* part, size_t frame_bytes) {
+    constexpr size_t kBand = 466 * 50 * 2;   // one blit band, 46.6 KB
+    void* iram = heap_caps_malloc(kBand, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!iram) { printf("bench: no internal RAM for %u B\n", (unsigned)kBand); return; }
+
+    const int bands = static_cast<int>(frame_bytes / kBand);
+    int64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < bands; ++i)
+        esp_partition_read(part, sizeof(AssetHeader) + i * kBand, iram, kBand);
+    int64_t iram_us = esp_timer_get_time() - t0;
+
+    t0 = esp_timer_get_time();
+    esp_partition_read(part, sizeof(AssetHeader), g_fb, frame_bytes);
+    int64_t psram_us = esp_timer_get_time() - t0;
+
+    printf("bench: %d x %u B -> internal RAM: %lld us (%.1f MB/s)\n",
+           bands, (unsigned)kBand, iram_us,
+           bands * kBand / (iram_us / 1e6) / 1e6);
+    printf("bench: 1 x %u B -> PSRAM:        %lld us (%.1f MB/s)\n",
+           (unsigned)frame_bytes, psram_us, frame_bytes / (psram_us / 1e6) / 1e6);
+    heap_caps_free(iram);
+
+    // Same bytes, but through the flash cache instead of esp_flash_read.
+    // Two frames on purpose: frame 0 sits at 4 MB of flash, frame 30 at 17 MB,
+    // and drive_source.c records that this MMU maps only the first 16 MB --
+    // "mmap there reports success and then reads nothing". A checksum against
+    // esp_partition_read is the only way to catch that silently.
+    const void* map = nullptr;
+    esp_partition_mmap_handle_t mh{};
+    esp_err_t merr = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &mh);
+    if (merr != ESP_OK) {
+        // The whole 16 MB may not fit the vaddr space; try just the clip.
+        merr = esp_partition_mmap(part, 0, sizeof(AssetHeader) + 31 * frame_bytes,
+                                  ESP_PARTITION_MMAP_DATA, &map, &mh);
+        printf("bench: full-partition mmap failed, clip-only mmap: %s\n", esp_err_to_name(merr));
+    }
+    if (merr != ESP_OK) { printf("bench: mmap unavailable: %s\n", esp_err_to_name(merr)); return; }
+
+    for (int f : {0, 30}) {
+        const uint8_t* src = static_cast<const uint8_t*>(map) + sizeof(AssetHeader)
+                             + static_cast<size_t>(f) * frame_bytes;
+        int64_t m0 = esp_timer_get_time();
+        memcpy(g_fb, src, frame_bytes);
+        int64_t map_us = esp_timer_get_time() - m0;
+        uint32_t sum_map = 0;
+        for (size_t i = 0; i < frame_bytes / 2; i += 64) sum_map += g_fb[i];
+        // Same frame the slow way, as ground truth.
+        esp_partition_read(part, sizeof(AssetHeader) + static_cast<size_t>(f) * frame_bytes,
+                           g_fb, frame_bytes);
+        uint32_t sum_read = 0;
+        for (size_t i = 0; i < frame_bytes / 2; i += 64) sum_read += g_fb[i];
+        printf("bench: frame %2d @flash 0x%x mmap+memcpy %lld us (%.1f MB/s) sum %08x vs read %08x %s\n",
+               f, (unsigned)(part->address + sizeof(AssetHeader) + f * frame_bytes),
+               map_us, frame_bytes / (map_us / 1e6) / 1e6, (unsigned)sum_map, (unsigned)sum_read,
+               sum_map == sum_read ? "OK" : "*** MISMATCH ***");
+    }
+    esp_partition_munmap(mh);
+}
+
 // ---- the boot clip -------------------------------------------------------
 
 bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
@@ -68,13 +136,22 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
     }
     const size_t frame_bytes = static_cast<size_t>(hdr.w) * hdr.h * 2;
     printf("boot: %u frames %ux%u @%u fps\n", hdr.frames, hdr.w, hdr.h, hdr.fps);
+    bench_flash_read(part, frame_bytes);
 
-    lv_obj_t* canvas = lv_canvas_create(scr);
-    lv_canvas_set_buffer(canvas, g_fb, W, H, LV_COLOR_FORMAT_RGB565);
-    lv_obj_center(canvas);
+    // Straight to the panel, past LVGL. An lv_canvas here cost 154 ms a frame
+    // -- a full LVGL redraw of a full-screen PSRAM image, every frame -- so the
+    // splash showed 17 of 31 frames, at an uneven 6.5 fps. The carousel slide
+    // was already pushing full-width frames at 47 ms through
+    // esp_lv_adapter_dummy_draw_blit; this is that same path.
+    if (!gauge_ui::direct_draw_begin(disp)) {
+        printf("boot: direct draw unavailable -- skipping splash\n");
+        return false;
+    }
 
     int64_t t0 = esp_timer_get_time();
     int shown = 0, last = -1;
+    int64_t read_us = 0, swap_us = 0, sync_us = 0, blit_us = 0;
+    bool ok = true;
     for (;;) {
         int64_t elapsed = esp_timer_get_time() - t0;
         if (elapsed >= kBootUs) break;
@@ -82,21 +159,36 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
         int idx = static_cast<int>(elapsed * hdr.frames / kBootUs);
         if (idx >= hdr.frames) idx = hdr.frames - 1;
         if (idx != last) {
+            const int64_t r0 = esp_timer_get_time();
             esp_partition_read(part, sizeof(AssetHeader) + static_cast<size_t>(idx) * frame_bytes,
                                g_fb, frame_bytes);
-            lv_obj_invalidate(canvas);
-            lv_refr_now(disp);
+            read_us += esp_timer_get_time() - r0;
+            // Swaps g_fb in place, which is why every frame is re-read from
+            // flash rather than any of them being re-blitted.
+            if (!gauge_ui::direct_draw_frame(disp, g_fb, W, H,
+                                            &swap_us, &sync_us, &blit_us))
+                ok = false;
             last = idx;
             ++shown;
         }
     }
-    printf("boot: showed %d of %u frames in %.2f s\n", shown, hdr.frames,
-           (esp_timer_get_time() - t0) / 1e6);
+    const int64_t total_us = esp_timer_get_time() - t0;
+    // Per-stage, because "the splash is choppy" was answerable only by knowing
+    // which of the four stages owns the frame time. Whatever the next attempt
+    // to speed this up is, this line is what tells it whether it worked.
+    printf("boot: showed %d of %u frames in %.2f s (%.1f fps)%s\n", shown, hdr.frames,
+           total_us / 1e6, shown * 1e6 / static_cast<double>(total_us ? total_us : 1),
+           ok ? "" : " -- BLIT OR SYNC FAILED");
+    if (shown)
+        printf("boot: per frame read %lldms swap %lldms sync %lldms blit %lldms\n",
+               read_us / shown / 1000, swap_us / shown / 1000,
+               sync_us / shown / 1000, blit_us / shown / 1000);
 
     // FADING: dip to black. The clip ends on a lit car filling the screen, and
     // cutting straight from that to a dial would read as a glitch rather than a
-    // hand-off (section 14).
-    lv_obj_delete(canvas);
+    // hand-off (section 14). Handing the panel back triggers a full LVGL
+    // refresh, which is what actually paints the black.
+    gauge_ui::direct_draw_end(disp);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_invalidate(scr);
     lv_refr_now(disp);
@@ -109,7 +201,10 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
 
 extern "C" void app_main(void) {
     printf("\n=== mx5-gauge %s: boot splash + home view ===\n", gauge::core_version());
-    g_fb = static_cast<uint16_t*>(heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM));
+    // 64-byte aligned because the frame is cache-synced before the panel's DMA
+    // reads it, exactly as the slide's buffers are.
+    g_fb = static_cast<uint16_t*>(
+        heap_caps_aligned_alloc(64, W * H * 2, MALLOC_CAP_SPIRAM));
     if (!g_fb) { printf("FATAL: no PSRAM\n"); return; }
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");

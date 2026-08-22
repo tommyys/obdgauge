@@ -96,6 +96,20 @@ uint16_t* alloc_frame(size_t bytes) {
         heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM));
 }
 
+// Rows [y0,y1) of a full-width frame, in kBlitRows bands because one blit of
+// the whole thing returns ESP_ERR_NO_MEM (see kBlitRows above).
+esp_err_t blit_bands(lv_display_t* disp, const uint16_t* frame, int w,
+                     int y0, int y1) {
+    esp_err_t first = ESP_OK;
+    for (int y = y0; y < y1; y += kBlitRows) {
+        const int hh = (y + kBlitRows <= y1) ? kBlitRows : (y1 - y);
+        esp_err_t e = esp_lv_adapter_dummy_draw_blit(
+            disp, 0, y, w, y + hh, frame + static_cast<size_t>(y) * w, true);
+        if (e != ESP_OK && first == ESP_OK) first = e;
+    }
+    return first;
+}
+
 }  // namespace
 
 bool slide_ready() { return g_ready; }
@@ -281,6 +295,36 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
 }
 
 const char* slide_note() { return g_note; }
+
+bool direct_draw_begin(lv_display_t* disp) {
+    return esp_lv_adapter_set_dummy_draw(disp, true) == ESP_OK;
+}
+
+void direct_draw_end(lv_display_t* disp) {
+    esp_lv_adapter_set_dummy_draw(disp, false);
+}
+
+bool direct_draw_frame(lv_display_t* disp, uint16_t* frame, int w, int h,
+                       int64_t* out_swap_us, int64_t* out_sync_us,
+                       int64_t* out_blit_us) {
+    const int64_t t0 = esp_timer_get_time();
+    // The panel takes RGB565 big-endian and this path bypasses the adapter's
+    // flush, which is where the swap would otherwise happen (see slide_run).
+    lv_draw_sw_rgb565_swap(frame, static_cast<uint32_t>(w) * h);
+    const int64_t t1 = esp_timer_get_time();
+    // The CPU just wrote this through a write-back cache; the panel's DMA reads
+    // PSRAM directly and would otherwise see stale lines (see slide_run).
+    esp_err_t serr = esp_cache_msync(frame, static_cast<size_t>(w) * h * 2,
+                                     ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                                     ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    const int64_t t2 = esp_timer_get_time();
+    esp_err_t berr = blit_bands(disp, frame, w, 0, h);
+    const int64_t t3 = esp_timer_get_time();
+    if (out_swap_us) *out_swap_us += t1 - t0;
+    if (out_sync_us) *out_sync_us += t2 - t1;
+    if (out_blit_us) *out_blit_us += t3 - t2;
+    return serr == ESP_OK && berr == ESP_OK;
+}
 
 bool slide_selftest(int hold_ms) {
     if (!g_ready) return false;

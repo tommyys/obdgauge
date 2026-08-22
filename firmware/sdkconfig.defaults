@@ -23,3 +23,7 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 # The backdrop benchmark deliberately spins without yielding; the idle-task
 # watchdog otherwise fires once per measurement window and pollutes the timings.
 CONFIG_ESP_TASK_WDT_INIT=n
+
+# Real FPS from the display pipeline, so frame-rate questions are answered with
+# a number rather than an opinion. Costs <2us per frame.
+CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS=y

@@ -28,6 +28,10 @@ void update(const Model& m);
 // Feed touch state so swipes can move between views. Lock held.
 void handle_touch(lv_indev_t* indev);
 
+// Dev readout appended to the banner, so the frame rate is visible on the
+// device rather than only in a log. Pass 0 to hide it.
+void set_fps(uint32_t fps);
+
 int view_count();
 int current_view();
 const char* current_view_name();

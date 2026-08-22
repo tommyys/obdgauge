@@ -7,8 +7,17 @@
 namespace gauge_ui {
 namespace {
 
+// 135 positions across a 270-degree sweep: one step is ~2 degrees.
+constexpr int kDialSteps = 135;
 constexpr int kSwipePx = 55;      // shorter than this is a tap, not a swipe
-constexpr int kSlideMs = 220;
+
+// Views switch instantly rather than sliding. A slide moves the whole
+// 466x466 view, which dirties the entire screen; at the measured ~52 ms
+// full-screen refresh a 220 ms slide is about four frames and reads as a
+// stutter rather than motion. An instant cut is honest about the hardware
+// and, on a gauge you glance at, arguably better anyway. Section 6's
+// shortest-signed-distance rule is kept below because it still decides which
+// view you land on when wrapping.
 
 struct ViewObjs {
     lv_obj_t* root   = nullptr;
@@ -27,13 +36,11 @@ int g_cur = 0;
 std::vector<ViewObjs> g_objs;
 lv_obj_t* g_parent = nullptr;
 lv_obj_t* g_banner = nullptr;
+char g_banner_base[40] = {0};
 bool g_was_pressed = false;
 int  g_press_x = 0;
-bool g_sliding = false;
 
 int screen_w() { return lv_obj_get_width(g_parent); }
-
-void slide_done(lv_anim_t*) { g_sliding = false; }
 
 lv_obj_t* mk_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour,
                    lv_align_t align, int dx, int dy) {
@@ -97,35 +104,10 @@ int signed_distance(int from, int to, int n) {
     return d;
 }
 
-void animate_to(int target) {
-    if (g_sliding || target == g_cur) return;
-    int n = g_count;
-    int dir = signed_distance(g_cur, target, n) > 0 ? 1 : -1;
-    int w = screen_w();
-
-    place(target, dir * w);
-    lv_obj_clear_flag(g_objs[target].root, LV_OBJ_FLAG_HIDDEN);
-
-    g_sliding = true;
-    lv_anim_t out;
-    lv_anim_init(&out);
-    lv_anim_set_var(&out, g_objs[g_cur].root);
-    lv_anim_set_values(&out, 0, -dir * w);
-    lv_anim_set_duration(&out, kSlideMs);
-    lv_anim_set_exec_cb(&out, [](void* obj, int32_t x) {
-        lv_obj_set_pos(static_cast<lv_obj_t*>(obj), x, 0); });
-    lv_anim_start(&out);
-
-    lv_anim_t in;
-    lv_anim_init(&in);
-    lv_anim_set_var(&in, g_objs[target].root);
-    lv_anim_set_values(&in, dir * w, 0);
-    lv_anim_set_duration(&in, kSlideMs);
-    lv_anim_set_exec_cb(&in, [](void* obj, int32_t x) {
-        lv_obj_set_pos(static_cast<lv_obj_t*>(obj), x, 0); });
-    lv_anim_set_completed_cb(&in, slide_done);
-    lv_anim_start(&in);
-
+void switch_to(int target) {
+    if (target == g_cur || target < 0 || target >= g_count) return;
+    place(g_cur, screen_w());        // park the old view off-screen
+    place(target, 0);
     g_cur = target;
 }
 
@@ -145,8 +127,15 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     g_banner = lv_label_create(parent);
     lv_obj_set_style_text_font(g_banner, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(g_banner, lv_color_hex(0x585858), 0);
-    lv_label_set_text(g_banner, id.label.c_str());
+    snprintf(g_banner_base, sizeof g_banner_base, "%s", id.label.c_str());
+    lv_label_set_text(g_banner, g_banner_base);
     lv_obj_align(g_banner, LV_ALIGN_CENTER, 0, 178);
+}
+
+void set_text_if_changed(lv_obj_t* label, const std::string& text) {
+    const char* cur = lv_label_get_text(label);
+    if (cur && text == cur) return;
+    lv_label_set_text(label, text.c_str());
 }
 
 void update(const Model& m) {
@@ -154,13 +143,15 @@ void update(const Model& m) {
     const ViewSpec& s = g_specs[g_cur];
     ViewObjs& v = g_objs[static_cast<size_t>(g_cur)];
 
-    lv_label_set_text(v.hero, s.hero(m).c_str());
+    set_text_if_changed(v.hero, s.hero(m));
 
     if (s.state_word) {
         uint32_t colour = 0x808080;
         std::string w = s.state_word(m, &colour);
-        lv_label_set_text(v.word, w.c_str());
-        lv_obj_set_style_text_color(v.word, lv_color_hex(colour), 0);
+        if (w != lv_label_get_text(v.word)) {
+            lv_label_set_text(v.word, w.c_str());
+            lv_obj_set_style_text_color(v.word, lv_color_hex(colour), 0);
+        }
     }
 
     if (v.arc && s.dial.value) {
@@ -169,8 +160,20 @@ void update(const Model& m) {
             int lo = static_cast<int>(s.dial.lo(m));
             int hi = static_cast<int>(s.dial.hi(m));
             if (hi > lo) {
-                lv_arc_set_range(v.arc, lo, hi);
-                lv_arc_set_value(v.arc, static_cast<int>(val));
+                // The dial is 434 px across, so ANY change to its value
+                // invalidates almost the whole screen -- which is why the UI sat
+                // at the ~19 fps full-screen ceiling while rpm moved every
+                // sample. Quantise to kDialSteps positions (~2 degrees of a
+                // 270-degree sweep): visually identical, and most frames now
+                // leave the dial alone and redraw only the small text areas.
+                // Same lesson as the section 11 backdrop: the win is in not
+                // touching big objects, not in drawing them faster.
+                int steps = kDialSteps;
+                int q = static_cast<int>((val - lo) / (hi - lo) * steps + 0.5);
+                if (q < 0) q = 0;
+                if (q > steps) q = steps;
+                lv_arc_set_range(v.arc, 0, steps);
+                lv_arc_set_value(v.arc, q);
             }
             lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -180,7 +183,7 @@ void update(const Model& m) {
     }
 
     for (int i = 0; i < 4 && s.rows[i].label; ++i) {
-        lv_label_set_text(v.rvalue[i], s.rows[i].value(m).c_str());
+        set_text_if_changed(v.rvalue[i], s.rows[i].value(m));
     }
 }
 
@@ -194,10 +197,18 @@ void handle_touch(lv_indev_t* indev) {
         g_press_x = p.x;
     } else if (!pressed && g_was_pressed) {
         int dx = p.x - g_press_x;
-        if (dx <= -kSwipePx)      animate_to((g_cur + 1) % g_count);
-        else if (dx >= kSwipePx)  animate_to((g_cur - 1 + g_count) % g_count);
+        if (dx <= -kSwipePx)      switch_to((g_cur + 1) % g_count);
+        else if (dx >= kSwipePx)  switch_to((g_cur - 1 + g_count) % g_count);
     }
     g_was_pressed = pressed;
+}
+
+void set_fps(uint32_t fps) {
+    if (!g_banner) return;
+    char b[64];
+    if (fps) snprintf(b, sizeof b, "%s  %u fps", g_banner_base, (unsigned)fps);
+    else     snprintf(b, sizeof b, "%s", g_banner_base);
+    set_text_if_changed(g_banner, b);
 }
 
 int view_count() { return g_count; }

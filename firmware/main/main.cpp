@@ -27,6 +27,7 @@
 #include "vehicle.h"
 #include "drive_source.h"
 #include "gauge_ui.h"
+#include "esp_lv_adapter.h"
 #include "version.h"
 
 namespace {
@@ -124,6 +125,8 @@ extern "C" void app_main(void) {
     gauge_ui::init(scr, id);
     bsp_display_unlock();
     lv_indev_t* indev = bsp_display_get_input_dev();
+    esp_lv_adapter_fps_stats_enable(disp, true);
+    int64_t last_fps_log = esp_timer_get_time();
     printf("ui: %d views, starting on %s\n",
            gauge_ui::view_count(), gauge_ui::current_view_name());
 
@@ -181,6 +184,17 @@ extern "C" void app_main(void) {
         gauge_ui::Model model{st, trip, score, id};
         gauge_ui::update(model);
         bsp_display_unlock();
-        vTaskDelay(pdMS_TO_TICKS(50));
+
+        if (esp_timer_get_time() - last_fps_log > 2000000) {
+            last_fps_log = esp_timer_get_time();
+            uint32_t fps = 0;
+            if (esp_lv_adapter_get_fps(disp, &fps) == ESP_OK) {
+                printf("ui: %u fps, view %s\n", (unsigned)fps, gauge_ui::current_view_name());
+                bsp_display_lock(0);
+                gauge_ui::set_fps(fps);
+                bsp_display_unlock();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(33));
     }
 }

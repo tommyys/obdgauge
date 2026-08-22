@@ -58,3 +58,7 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_LV_DEF_REFR_PERIOD=15
 CONFIG_LV_OS_FREERTOS=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+
+# The tacho's dial numbering. 13px in the simulator's 260-unit drawing is 23px
+# here, and 24 is the nearest size LVGL ships.
+CONFIG_LV_FONT_MONTSERRAT_24=y

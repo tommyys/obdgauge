@@ -42,6 +42,7 @@ const ViewSpec* view_table(int* count) {
         // confirmation the link is working (SPEC.md section 4).
         {
             "TACHO",
+            true,
             [](const Model& m) { return chan(m, "rpm", "%.0f"); },
             "RPM",
             nullptr,
@@ -63,6 +64,7 @@ const ViewSpec* view_table(int* count) {
         // car does not report oil temperature.
         {
             "ENGINE",
+            false,
             [](const Model& m) { return chan(m, "coolant", "%.0f"); },
             "\xC2\xB0" "C",
             [](const Model& m, uint32_t* colour) -> std::string {
@@ -86,6 +88,7 @@ const ViewSpec* view_table(int* count) {
         // uses; the score keeps working in L/100km where its band is tuned.
         {
             "ECONOMY",
+            false,
             [](const Model& m) {
                 return num(gauge::km_per_l(gauge::instant_econ(m.st.get("speed"),
                                                                m.st.get("fuel_rate"))),
@@ -107,6 +110,7 @@ const ViewSpec* view_table(int* count) {
         // the coach word is shown alongside rather than the number alone.
         {
             "SCORE",
+            false,
             [](const Model& m) { return num(m.score.total(), "%.0f"); },
             "/100",
             [](const Model& m, uint32_t* colour) -> std::string {
@@ -130,6 +134,7 @@ const ViewSpec* view_table(int* count) {
         // 5 --- Trip.
         {
             "TRIP",
+            false,
             [](const Model& m) {
                 char b[24]; snprintf(b, sizeof b, "%.1f", m.trip.dist_km); return std::string(b); },
             "KM",
@@ -153,6 +158,7 @@ const ViewSpec* view_table(int* count) {
         // x rpm, so the firmware and the simulator agree to the last digit.
         {
             "POWER",
+            false,
             [](const Model& m) { return chan(m, "power_kw", "%.0f"); },
             "KW",
             nullptr,
@@ -172,6 +178,7 @@ const ViewSpec* view_table(int* count) {
         // capture it returned 2 distinct values in 375 samples (section 6).
         {
             "THERMALS",
+            false,
             [](const Model& m) { return chan(m, "coolant", "%.0f"); },
             "\xC2\xB0" "C",
             nullptr,
@@ -191,6 +198,7 @@ const ViewSpec* view_table(int* count) {
         // 8 --- Electrical.
         {
             "ELECTRICAL",
+            false,
             [](const Model& m) { return num(volts(m), "%.1f"); },
             "VOLTS",
             [](const Model& m, uint32_t* colour) -> std::string {

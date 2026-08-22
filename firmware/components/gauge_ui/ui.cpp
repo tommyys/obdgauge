@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 #include "carousel.h"
+#include "face.h"
 #include "slide.h"
 #include "views.h"
 
@@ -32,6 +33,7 @@ struct ViewObjs {
     lv_obj_t* arc    = nullptr;
     lv_obj_t* rlabel[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* rvalue[4] = {nullptr, nullptr, nullptr, nullptr};
+    Face face;                 // only the tacho fills this in
 };
 
 const ViewSpec* g_specs = nullptr;
@@ -39,6 +41,7 @@ int g_count = 0;
 int g_cur = 0;
 std::vector<ViewObjs> g_objs;
 lv_obj_t* g_parent = nullptr;
+gauge::Identity g_id;
 lv_obj_t* g_banner = nullptr;
 lv_obj_t* g_dots[16] = {nullptr};
 lv_obj_t* g_dot_active = nullptr;
@@ -72,6 +75,10 @@ ViewObjs build_view(const ViewSpec& spec) {
     lv_obj_set_style_bg_opa(v.root, LV_OPA_COVER, 0);
     lv_obj_remove_flag(v.root, LV_OBJ_FLAG_SCROLLABLE);
 
+    // The track and the redline go on before the value arc, because the value
+    // arc has to cover them as it fills.
+    if (spec.dial_face) face_build_under(v.root, g_id);
+
     if (spec.dial.value) {
         v.arc = lv_arc_create(v.root);
         lv_obj_set_size(v.arc, 434, 434);
@@ -81,9 +88,25 @@ ViewObjs build_view(const ViewSpec& spec) {
         lv_obj_remove_flag(v.arc, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_arc_width(v.arc, 14, LV_PART_MAIN);
         lv_obj_set_style_arc_width(v.arc, 14, LV_PART_INDICATOR);
-        lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
-        lv_obj_set_style_arc_color(v.arc, lv_color_hex(0xFF9500), LV_PART_INDICATOR);
+        if (spec.dial_face) {
+            // Not a fill but a shutter. face_build_under() has laid the heat
+            // band all the way round; this arc covers the part the engine has
+            // not reached, and REVERSE makes it retreat from the value to the
+            // end of the sweep as rpm climbs. Its length is the only thing on
+            // the rim that changes, and lv_arc invalidates just the sector that
+            // moved -- which is the whole reason the heat can live out here.
+            lv_arc_set_mode(v.arc, LV_ARC_MODE_REVERSE);
+            lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
+            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x23262E), LV_PART_INDICATOR);
+        } else {
+            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0xFF9500), LV_PART_INDICATOR);
+        }
     }
+
+    // Ticks, numbering and the needle go over the value arc, matching the
+    // order the simulator draws them in.
+    if (spec.dial_face) v.face = face_build_over(v.root, g_id);
 
     v.title = mk_label(v.root, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, -142);
     lv_label_set_text(v.title, spec.title);
@@ -171,6 +194,11 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     // gestures. Nothing here scrolls, so take the flag off.
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(parent, LV_DIR_NONE);
+    // The dial face is built from the car's own scale, so the profile has to be
+    // known before any view is.
+    g_id = id;
+    lv_obj_set_style_bg_color(parent, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
     g_specs = view_table(&g_count);
     g_objs.clear();
     g_objs.reserve(static_cast<size_t>(g_count));
@@ -274,14 +302,30 @@ void update(const Model& m) {
                 if (q < 0) q = 0;
                 if (q > steps) q = steps;
                 lv_arc_set_range(v.arc, 0, steps);
-                lv_arc_set_value(v.arc, q);
+                // The shutter runs backwards on purpose. LVGL's REVERSE mode
+                // maps the value from the END of the sweep to the start -- at
+                // the minimum it covers nothing, at the maximum it covers
+                // everything -- so feeding it rpm directly left the rim fully
+                // hot at idle and going dark as the engine picked up, with the
+                // needle sweeping the other way. Inverting here puts the edge
+                // of the shutter exactly under the needle.
+                lv_arc_set_value(v.arc, s.dial_face ? steps - q : q);
             }
+            if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+        } else if (s.dial_face) {
+            // The shutter is not a reading, it is the absence of one: closed
+            // over the whole band, so a car that is not reporting rpm shows a
+            // cold dial rather than a dial pinned at the redline. Closed is the
+            // MAXIMUM here, for the inversion described above.
+            lv_arc_set_value(v.arc, kDialSteps);
             if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else {
             // No reading: hide the dial rather than draw it pinned at zero.
             lv_obj_add_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         }
     }
+
+    if (s.dial_face) face_update(v.face, m);
 
     for (int i = 0; i < 4 && s.rows[i].label; ++i) {
         set_text_if_changed(v.rvalue[i], s.rows[i].value(m));

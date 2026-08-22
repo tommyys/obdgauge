@@ -22,6 +22,10 @@ struct Dial {
 
 struct ViewSpec {
     const char* title;
+    // A full dial face -- ticks, numbering, a redline segment, a needle. Only
+    // the tacho has one: rpm is read by needle position at a glance, where
+    // every other view is read as a number and a bare progress arc is enough.
+    bool dial_face;
     std::string (*hero)(const Model&);     // "--" when the channel is absent
     const char* hero_unit;
     // Colour + word under the hero, e.g. COLD/WARMING/READY. Empty = nothing.

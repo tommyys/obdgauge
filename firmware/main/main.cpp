@@ -113,6 +113,11 @@ extern "C" void app_main(void) {
     if (!g_fb) { printf("FATAL: no PSRAM\n"); return; }
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
+    // Single-buffered, because that is all this panel offers: the adapter only
+    // permits tear-avoid NONE or TE_SYNC on a SPI interface, so the double and
+    // triple buffering that would overlap render with DMA is unavailable.
+    // A full-screen change therefore costs ~52ms (~22ms of 40MHz QSPI transfer
+    // plus ~30ms of render), which is the hard ~19fps ceiling.
     lv_display_t* disp = bsp_display_start();
     bsp_display_backlight_on();
 

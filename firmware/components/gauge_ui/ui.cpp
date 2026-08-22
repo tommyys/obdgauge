@@ -36,8 +36,12 @@ int g_cur = 0;
 std::vector<ViewObjs> g_objs;
 lv_obj_t* g_parent = nullptr;
 lv_obj_t* g_banner = nullptr;
+lv_obj_t* g_dots[16] = {nullptr};
+lv_obj_t* g_dot_active = nullptr;
 char g_banner_base[40] = {0};
 bool g_dials_on = true;
+int  g_dot_x0 = 0;
+int  g_dot_spacing = 18;
 bool g_was_pressed = false;
 int  g_press_x = 0;
 bool g_swipe_done = false;
@@ -116,6 +120,19 @@ void switch_to(int target) {
     lv_obj_add_flag(g_objs[static_cast<size_t>(g_cur)].root, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_objs[static_cast<size_t>(target)].root, LV_OBJ_FLAG_HIDDEN);
     g_cur = target;
+
+    if (g_dot_active) {
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, g_dot_active);
+        lv_anim_set_values(&a, lv_obj_get_x(g_dot_active),
+                           lv_obj_get_x(g_dots[0]) + target * g_dot_spacing - 3);
+        lv_anim_set_duration(&a, 180);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_set_exec_cb(&a, [](void* obj, int32_t x) {
+            lv_obj_set_x(static_cast<lv_obj_t*>(obj), x); });
+        lv_anim_start(&a);
+    }
 }
 
 }  // namespace
@@ -131,6 +148,32 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
     g_cur = 0;
+
+    // Page indicator. The content cut is instant because a full-screen change
+    // costs ~52ms on this single-buffered panel, so a sliding view would be
+    // about four frames of judder. Instead the *indicator* animates: a 12px dot
+    // moving 18px dirties almost nothing, so it is genuinely smooth and still
+    // tells you which way you moved and where you are in the ring.
+    const int spacing = 18;
+    const int x0 = -(g_count - 1) * spacing / 2;
+    for (int i = 0; i < g_count && i < 16; ++i) {
+        g_dots[i] = lv_obj_create(parent);
+        lv_obj_remove_style_all(g_dots[i]);
+        lv_obj_set_size(g_dots[i], 6, 6);
+        lv_obj_set_style_radius(g_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(g_dots[i], lv_color_hex(0x3A3A3A), 0);
+        lv_obj_set_style_bg_opa(g_dots[i], LV_OPA_COVER, 0);
+        lv_obj_align(g_dots[i], LV_ALIGN_CENTER, x0 + i * spacing, 205);
+    }
+    g_dot_active = lv_obj_create(parent);
+    lv_obj_remove_style_all(g_dot_active);
+    lv_obj_set_size(g_dot_active, 12, 12);
+    lv_obj_set_style_radius(g_dot_active, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(g_dot_active, lv_color_hex(0xFF9500), 0);
+    lv_obj_set_style_bg_opa(g_dot_active, LV_OPA_COVER, 0);
+    lv_obj_align(g_dot_active, LV_ALIGN_CENTER, x0, 205);
+    g_dot_x0 = x0;
+    g_dot_spacing = spacing;
 
     // The make/model banner persists across views (SPEC.md section 10), so it
     // lives on the parent rather than inside any one view.

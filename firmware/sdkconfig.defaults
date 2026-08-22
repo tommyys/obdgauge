@@ -27,3 +27,7 @@ CONFIG_ESP_TASK_WDT_INIT=n
 # Real FPS from the display pipeline, so frame-rate questions are answered with
 # a number rather than an opinion. Costs <2us per frame.
 CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS=y
+
+# LVGL will not refresh more often than this, so the default 33ms pinned the UI
+# at 30fps regardless of how cheap frames became.
+CONFIG_LV_DEF_REFR_PERIOD=16

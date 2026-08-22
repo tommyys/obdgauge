@@ -21,8 +21,11 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 
+#include "metrics.h"
+#include "replay.h"
 #include "state.h"
 #include "vehicle.h"
+#include "drive_source.h"
 #include "version.h"
 
 namespace {
@@ -104,7 +107,8 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
 
 lv_obj_t* g_arc   = nullptr;
 lv_obj_t* g_value = nullptr;
-lv_obj_t* g_state = nullptr;
+lv_obj_t* g_state  = nullptr;
+lv_obj_t* g_footer = nullptr;
 
 void build_gauge(lv_obj_t* scr, const gauge::Identity& id) {
     g_arc = lv_arc_create(scr);
@@ -136,6 +140,12 @@ void build_gauge(lv_obj_t* scr, const gauge::Identity& id) {
     lv_label_set_text(g_state, "");
     lv_obj_set_style_text_font(g_state, &lv_font_montserrat_28, 0);
     lv_obj_align(g_state, LV_ALIGN_CENTER, 0, 40);
+
+    g_footer = lv_label_create(scr);
+    lv_label_set_text(g_footer, "");
+    lv_obj_set_style_text_color(g_footer, lv_color_hex(0x4A4A4A), 0);
+    lv_obj_set_style_text_font(g_footer, &lv_font_montserrat_20, 0);
+    lv_obj_align(g_footer, LV_ALIGN_CENTER, 0, 152);
 
     lv_obj_t* banner = lv_label_create(scr);
     lv_label_set_text(banner, id.label.c_str());
@@ -178,16 +188,69 @@ extern "C" void app_main(void) {
     build_gauge(scr, id);
     bsp_display_unlock();
 
+    // Replay a real drive out of flash rather than animating a sine wave.
+    // Playback runs at 4x, matching the simulator's --replay default, but the
+    // metrics are fed the capture's OWN timeline: a sped-up replay must not
+    // read as violent acceleration (SPEC.md section 4).
+    constexpr double kSpeed = 4.0;
+
+    size_t lib_len = 0;
+    const uint8_t* lib = drive_library_map(&lib_len);
+    gauge::Replay replay;
+    bool have_replay = lib && replay.open(lib, lib_len);
+    if (have_replay) {
+        printf("replay: %d drives, %d channels, %d records\n",
+               replay.drive_count(), replay.channel_count(), replay.total_records());
+        printf("replay: playing '%s', %.0f s at %.0fx\n",
+               replay.drive_name(0).c_str(), replay.duration_s(), kSpeed);
+    } else {
+        printf("replay: no drive library -- falling back to a synthetic sweep\n");
+    }
+
     gauge::VehicleState st;
-    double c = 45.0;
-    bool up = true;
+    gauge::Trip trip;
+    gauge::DrivingScore score;
+    double synth = 45.0;
+    bool synth_up = true;
+    int64_t t0 = esp_timer_get_time();
+
     for (;;) {
-        st.set("coolant", c);
+        if (have_replay) {
+            double logical = (esp_timer_get_time() - t0) / 1e6 * kSpeed;
+            gauge::ReplaySample smp{};
+            while (replay.next(logical, &smp)) {
+                st.set(replay.channel_name(smp.chan), smp.value);
+                trip.update(smp.t_ms / 1000.0, st.get("speed"), st.get("fuel_rate"));
+                score.update(smp.t_ms / 1000.0, st.get("speed"), st.get("rpm"),
+                             st.get("throttle"), st.get("fuel_rate"));
+            }
+            if (replay.finished()) {          // loop the drive
+                replay.select(replay.selected());
+                st = gauge::VehicleState{};
+                trip = gauge::Trip{};
+                score = gauge::DrivingScore{};
+                t0 = esp_timer_get_time();
+            }
+        } else {
+            st.set("coolant", synth);
+            if (synth_up) { synth += 0.5; if (synth >= 96.0) synth_up = false; }
+            else          { synth -= 0.5; if (synth <= 45.0) synth_up = true; }
+        }
+
+        char foot[64];
+        if (have_replay) {
+            double logical = (esp_timer_get_time() - t0) / 1e6 * kSpeed;
+            snprintf(foot, sizeof foot, "%.0f/%.0f km  %d:%02d",
+                     trip.dist_km, replay.duration_s() / 60.0,
+                     static_cast<int>(logical) / 60, static_cast<int>(logical) % 60);
+        } else {
+            snprintf(foot, sizeof foot, "synthetic");
+        }
+
         bsp_display_lock(0);
         render(st);
+        lv_label_set_text(g_footer, foot);
         bsp_display_unlock();
-        if (up) { c += 0.5; if (c >= 96.0) up = false; }
-        else    { c -= 0.5; if (c <= 45.0) up = true; }
         vTaskDelay(pdMS_TO_TICKS(60));
     }
 }

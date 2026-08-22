@@ -37,3 +37,24 @@ CONFIG_LV_DEF_REFR_PERIOD=16
 # memcpy and a blit per frame instead of re-rendering both views ten bands at a
 # time. Off by default in LVGL.
 CONFIG_LV_USE_SNAPSHOT=y
+
+# Waveshare's own examples for this board (examples/esp-idf/02_lvgl_demo_v9,
+# 04_Immersive_block) build for speed; we were still on the IDF debug defaults.
+# Measured on the board 2026-08-22: the 434 KB-per-frame flash read went
+# 68ms -> 47ms (esp_partition_read) and 42ms -> 29ms (mmap+memcpy). The byte
+# swap barely moved (13ms -> 12ms) -- it is PSRAM-bandwidth bound, not CPU
+# bound -- and the blit 37ms -> 32ms is limited by the BSP's hardcoded 40 MHz
+# panel QSPI clock, not by anything here.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# QIO doubles the flash data lines. IDF still writes "dio" into the image
+# header for QIO (esptool_py/Kconfig.projbuild) and the 2nd-stage bootloader
+# switches at runtime, so the flash command printing --flash_mode dio is
+# expected and not a sign this failed.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+# At the 100 Hz default tick, LV_DEF_REFR_PERIOD=16 rounds to 20ms, so the
+# refresh cadence was uneven regardless of frame cost.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_LV_DEF_REFR_PERIOD=15
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2

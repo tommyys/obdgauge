@@ -129,7 +129,6 @@ extern "C" void app_main(void) {
     // Instruments are withheld, not covered: they are created only now.
     gauge_ui::init(scr, id);
     bsp_display_unlock();
-    lv_indev_t* indev = bsp_display_get_input_dev();
     esp_lv_adapter_fps_stats_enable(disp, true);
     int64_t last_fps_log = esp_timer_get_time();
     printf("ui: %d views, starting on %s\n",
@@ -185,7 +184,6 @@ extern "C" void app_main(void) {
         }
 
         bsp_display_lock(-1);   // -1 is wait-forever; 0 would be a try-lock
-        gauge_ui::handle_touch(indev);
         gauge_ui::Model model{st, trip, score, id};
         gauge_ui::update(model);
         bsp_display_unlock();
@@ -194,7 +192,8 @@ extern "C" void app_main(void) {
             last_fps_log = esp_timer_get_time();
             uint32_t fps = 0;
             if (esp_lv_adapter_get_fps(disp, &fps) == ESP_OK) {
-                printf("ui: %u fps, view %s\n", (unsigned)fps, gauge_ui::current_view_name());
+                printf("ui: %u fps, view %s, gestures %d\n", (unsigned)fps,
+                       gauge_ui::current_view_name(), gauge_ui::gesture_count());
                 bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();

@@ -25,8 +25,11 @@ void init(lv_obj_t* parent, const gauge::Identity& id);
 // Refresh the visible view. Call with the display lock held.
 void update(const Model& m);
 
-// Feed touch state so swipes can move between views. Lock held.
-void handle_touch(lv_indev_t* indev);
+// Swipes are handled by LVGL's own gesture detection, registered in init().
+// Polling the indev from the app loop missed fast flicks: at ~30Hz a quick
+// swipe could begin and end between two polls and never be seen, which is why
+// switching worked only sometimes.
+int gesture_count();
 
 // Dev readout appended to the banner, so the frame rate is visible on the
 // device rather than only in a log. Pass 0 to hide it.

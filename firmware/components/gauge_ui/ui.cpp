@@ -45,6 +45,7 @@ int  g_dot_spacing = 18;
 bool g_was_pressed = false;
 int  g_press_x = 0;
 bool g_swipe_done = false;
+int  g_gestures = 0;
 
 int screen_w() { return lv_obj_get_width(g_parent); }
 
@@ -135,6 +136,26 @@ void switch_to(int target) {
     }
 }
 
+void gesture_cb(lv_event_t* e) {
+    (void)e;
+    lv_indev_t* indev = lv_indev_active();
+    if (!indev) return;
+    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
+    if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) return;
+
+    // LVGL keeps sending LV_EVENT_GESTURE for as long as the gesture is active
+    // -- once per input read. Without this call one swipe fired roughly eight
+    // events and advanced eight views, which with eight views lands you back
+    // where you started: the UI looked stuck rather than erratic. This is the
+    // documented way to say "I have handled this gesture, ignore the rest of
+    // the press".
+    lv_indev_wait_release(indev);
+
+    if (dir == LV_DIR_LEFT) switch_to((g_cur + 1) % g_count);
+    else                    switch_to((g_cur - 1 + g_count) % g_count);
+    ++g_gestures;
+}
+
 }  // namespace
 
 void init(lv_obj_t* parent, const gauge::Identity& id) {
@@ -145,8 +166,12 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     for (int i = 0; i < g_count; ++i) g_objs.push_back(build_view(g_specs[i]));
     for (int i = 0; i < g_count; ++i) {
         place(i, 0);
+        // Gestures land on whichever object was pressed; bubbling sends them to
+        // the parent so one handler serves every view.
+        lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_GESTURE_BUBBLE);
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
+    lv_obj_add_event_cb(parent, gesture_cb, LV_EVENT_GESTURE, nullptr);
     g_cur = 0;
 
     // Page indicator. The content cut is instant because a full-screen change
@@ -240,26 +265,6 @@ void update(const Model& m) {
     }
 }
 
-void handle_touch(lv_indev_t* indev) {
-    if (!indev) return;
-    bool pressed = lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED;
-    lv_point_t p{};
-    lv_indev_get_point(indev, &p);
-
-    if (pressed && !g_was_pressed) {
-        g_press_x = p.x;
-        g_swipe_done = false;
-    } else if (pressed && !g_swipe_done) {
-        // Fire on threshold crossing rather than on release: waiting for the
-        // finger to lift added the entire duration of the swipe to the latency,
-        // which is most of what "the sliding lags" was.
-        int dx = p.x - g_press_x;
-        if (dx <= -kSwipePx)      { switch_to((g_cur + 1) % g_count); g_swipe_done = true; }
-        else if (dx >= kSwipePx)  { switch_to((g_cur - 1 + g_count) % g_count); g_swipe_done = true; }
-    }
-    g_was_pressed = pressed;
-}
-
 void set_dial_enabled(bool on) {
     if (g_dials_on == on) return;
     g_dials_on = on;
@@ -277,6 +282,8 @@ void set_fps(uint32_t fps) {
     else     snprintf(b, sizeof b, "%s", g_banner_base);
     set_text_if_changed(g_banner, b);
 }
+
+int gesture_count() { return g_gestures; }
 
 int view_count() { return g_count; }
 int current_view() { return g_cur; }

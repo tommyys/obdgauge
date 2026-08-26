@@ -6,7 +6,8 @@
 
 namespace gauge_ui {
 
-// A row of small label/value text under the hero number.
+// A row of small label/value text under the hero, or one cell of a grid --
+// which of the two is decided by the view's Layout, not by the row itself.
 struct Row {
     const char* label;
     std::string (*value)(const Model&);
@@ -20,13 +21,44 @@ struct Dial {
     bool (*value)(const Model&, double* out);
 };
 
+// What the view draws to show its reading as a shape rather than a number.
+// Named Instrument, not Face, because face.h already owns Face -- that one is
+// the built objects, this one is the choice between them.
+enum class Instrument {
+    None,        // no dial at all -- ECONOMY, TRIP, THERMALS
+    RimArc,      // plain progress arc on the 434 px rim
+    TachoDial,   // heat band, ticks and numbering per 1000 rpm, needle
+    Engine,      // four fixed temperature zones and a white mark, no fill
+    Power,       // ticks and kW numbering, fill arc, amber peak mark, needle
+    InsetRing,   // a smaller ring inside the text, at kInsetRingPx
+    Bar,         // horizontal gradient bar with a sliding marker
+};
+
+// The score ring is 68% of the simulator's 100-unit view box, which on this
+// 466 px panel is 317. Kept as a name because the number appears twice.
+constexpr int kInsetRingPx = 317;
+
+// How the rows are arranged.
+enum class Layout {
+    Rows,   // small label/value pairs stacked under the hero
+    Grid,   // 2x2 of large value-over-label cells; a 3rd-of-3 spans both columns
+};
+
+// What the view says when the car cannot drive it at all. `needs` is a
+// comma-separated channel list; see gauge::view_available for the rule.
+struct Avail {
+    const char* needs;
+    const char* head;   // "NO RPM"
+    const char* note;   // "this car is not reporting engine speed"
+};
+
 struct ViewSpec {
     const char* title;
-    // A full dial face -- ticks, numbering, a redline segment, a needle. Only
-    // the tacho has one: rpm is read by needle position at a glance, where
-    // every other view is read as a number and a bare progress arc is enough.
-    bool dial_face;
-    std::string (*hero)(const Model&);     // "--" when the channel is absent
+    Instrument face;
+    Layout layout;
+    Avail  avail;
+    std::string (*hero)(const Model&);     // "--" when the channel is absent;
+                                           // null when the view has no hero
     const char* hero_unit;
     // Colour + word under the hero, e.g. COLD/WARMING/READY. Empty = nothing.
     std::string (*state_word)(const Model&, uint32_t* colour);

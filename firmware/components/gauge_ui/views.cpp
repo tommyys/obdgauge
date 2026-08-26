@@ -1,10 +1,15 @@
 // What each view shows. SPEC.md section 6 lists nine; eight are here.
 //
+// Every title, unit, label and message below is the simulator's
+// (mx5gauge/web/index.html), copied rather than reinvented -- the two are meant
+// to be the same gauge on different screens, and a board that renamed ECONOMY
+// or dropped a row would be a second design to keep in step.
+//
 // View 9 (Drives) is deliberately absent rather than present-and-empty: it
 // browses a library of recorded drives, and nothing on the board records yet.
 // Section 4's rule is that a view whose channels are all missing says so
-// outright rather than drawing an empty dial -- and the honest version of that
-// for a whole feature is not to ship the view until it has data.
+// outright -- and the honest version of that for a whole feature is not to ship
+// the view until it has data.
 #include "views.h"
 #include <cstdio>
 #include <string>
@@ -38,11 +43,14 @@ std::optional<double> volts(const Model& m) {
 
 const ViewSpec* view_table(int* count) {
     static const ViewSpec views[] = {
-        // 1 --- Tacho. Returned to the design because live rpm is the clearest
-        // confirmation the link is working (SPEC.md section 4).
+        // 1 --- Tacho. No title: the dial numbering would collide with it, and
+        // a tacho labelled TACHO is redundant when the page dots already say
+        // which view you are on. The simulator makes the same call.
         {
-            "TACHO",
-            true,
+            nullptr,
+            Instrument::TachoDial,
+            Layout::Rows,
+            {"rpm", "NO RPM", "this car is not reporting engine speed"},
             [](const Model& m) { return chan(m, "rpm", "%.0f"); },
             "RPM",
             nullptr,
@@ -61,12 +69,16 @@ const ViewSpec* view_table(int* count) {
             },
         },
         // 2 --- Engine (home). Coolant is the hero, not oil: section 2 says the
-        // car does not report oil temperature.
+        // car does not report oil temperature. The rim carries four fixed
+        // temperature zones, so "in the green" is readable without the number.
         {
             "ENGINE",
-            false,
-            [](const Model& m) { return chan(m, "coolant", "%.0f"); },
-            "\xC2\xB0" "C",
+            Instrument::Engine,
+            Layout::Rows,
+            {"coolant,volts,ctrl_volt,intake", "NO ENGINE DATA",
+             "this car reports neither coolant nor voltage"},
+            [](const Model& m) { return chan(m, "coolant", "%.0f\xC2\xB0"); },
+            "COOLANT \xC2\xB7 \xC2\xB0" "C",
             [](const Model& m, uint32_t* colour) -> std::string {
                 auto c = m.st.get("coolant");
                 if (!c) { *colour = 0x808080; return ""; }
@@ -74,45 +86,49 @@ const ViewSpec* view_table(int* count) {
                 if (*c < 85)  { *colour = 0xFFC24A; return "WARMING"; }
                 *colour = 0x5BD97A; return "READY";
             },
-            { [](const Model&) { return 40.0; }, [](const Model&) { return 110.0; }, nullptr,
-              [](const Model& m, double* o) {
-                  auto v = m.st.get("coolant"); if (!v) return false; *o = *v; return true; } },
+            { nullptr, nullptr, nullptr, nullptr },
             {
-                {"INTAKE", [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
-                {"BATT",   [](const Model& m) { return num(volts(m), "%.1fV"); }},
-                {"LOAD",   [](const Model& m) { return chan(m, "load", "%.0f%%"); }},
+                {"BATT", [](const Model& m) { return num(volts(m), "%.1fv"); }},
+                {"IAT",  [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
+                {nullptr, nullptr},
                 {nullptr, nullptr},
             },
         },
         // 3 --- Fuel economy. Quoted in km/L, which is the unit the display
         // uses; the score keeps working in L/100km where its band is tuned.
         {
-            "ECONOMY",
-            false,
+            "FUEL ECONOMY",
+            Instrument::None,
+            Layout::Rows,
+            {"fuel_rate", "NO FUEL RATE",
+             "this car does not report engine fuel rate over OBD"},
             [](const Model& m) {
                 return num(gauge::km_per_l(gauge::instant_econ(m.st.get("speed"),
                                                                m.st.get("fuel_rate"))),
                            "%.1f");
             },
-            "KM/L",
+            "KM/L \xC2\xB7 NOW",
             nullptr,
             { nullptr, nullptr, nullptr, nullptr },
             {
-                {"TRIP",  [](const Model& m) { return num(m.trip.econ_km_per_l(), "%.1f km/L"); }},
-                {"L/H",   [](const Model& m) { return chan(m, "fuel_rate", "%.1f"); }},
-                {"USED",  [](const Model& m) {
+                {"avg",  [](const Model& m) { return num(m.trip.econ_km_per_l(), "%.1f"); }},
+                {"L/h",  [](const Model& m) { return chan(m, "fuel_rate", "%.1f"); }},
+                {"USED", [](const Model& m) {
                     char b[24]; snprintf(b, sizeof b, "%.2f L", m.trip.fuel_l); return std::string(b); }},
-                {"COST",  [](const Model& m) {
+                {"COST", [](const Model& m) {
                     char b[24]; snprintf(b, sizeof b, "RM %.2f", m.trip.cost_rm()); return std::string(b); }},
             },
         },
         // 4 --- Driving score. The weights are still untuned guesses (B3), so
-        // the coach word is shown alongside rather than the number alone.
+        // the coach word sits in the unit slot rather than the number alone.
         {
-            "SCORE",
-            false,
+            "DRIVING",
+            Instrument::InsetRing,
+            Layout::Rows,
+            {"rpm,speed,throttle", "NO DRIVE DATA",
+             "scoring needs rpm, speed or throttle"},
             [](const Model& m) { return num(m.score.total(), "%.0f"); },
-            "/100",
+            nullptr,
             [](const Model& m, uint32_t* colour) -> std::string {
                 auto t = m.score.total();
                 if (!t)        { *colour = 0x808080; return m.score.coach(); }
@@ -124,17 +140,19 @@ const ViewSpec* view_table(int* count) {
               [](const Model& m, double* o) {
                   auto v = m.score.total(); if (!v) return false; *o = *v; return true; } },
             {
-                {"SMOOTH", [](const Model& m) { return num(m.score.smooth(), "%.0f"); }},
-                {"ECON",   [](const Model& m) { return num(m.score.econ(), "%.0f"); }},
-                {"CALM",   [](const Model& m) { return num(m.score.calm(), "%.0f"); }},
-                {"HARSH",  [](const Model& m) {
-                    char b[16]; snprintf(b, sizeof b, "%d", m.score.harsh); return std::string(b); }},
+                {"sm",   [](const Model& m) { return num(m.score.smooth(), "%.0f"); }},
+                {"eco",  [](const Model& m) { return num(m.score.econ(), "%.0f"); }},
+                {"calm", [](const Model& m) { return num(m.score.calm(), "%.0f"); }},
+                {nullptr, nullptr},
             },
         },
-        // 5 --- Trip.
+        // 5 --- Trip. Four totals in a grid: they are read one at a time when
+        // you glance down, not scanned as a list.
         {
             "TRIP",
-            false,
+            Instrument::None,
+            Layout::Grid,
+            {"speed", "NO SPEED", "this car does not report vehicle speed"},
             [](const Model& m) {
                 char b[24]; snprintf(b, sizeof b, "%.1f", m.trip.dist_km); return std::string(b); },
             "KM",
@@ -145,62 +163,81 @@ const ViewSpec* view_table(int* count) {
                     int s = static_cast<int>(m.trip.elapsed_s);
                     char b[24]; snprintf(b, sizeof b, "%d:%02d", s / 60, s % 60);
                     return std::string(b); }},
-                {"AVG",   [](const Model& m) {
-                    char b[24]; snprintf(b, sizeof b, "%.0f km/h", m.trip.avg_speed_kph());
+                {"AVG KM/H", [](const Model& m) {
+                    char b[24]; snprintf(b, sizeof b, "%.0f", m.trip.avg_speed_kph());
                     return std::string(b); }},
                 {"FUEL",  [](const Model& m) {
                     char b[24]; snprintf(b, sizeof b, "%.2f L", m.trip.fuel_l); return std::string(b); }},
                 {"COST",  [](const Model& m) {
-                    char b[24]; snprintf(b, sizeof b, "RM %.2f", m.trip.cost_rm()); return std::string(b); }},
+                    char b[24]; snprintf(b, sizeof b, "RM%.2f", m.trip.cost_rm()); return std::string(b); }},
             },
         },
         // 6 --- Power. Derived in gauge_core from torque % x reference torque
         // x rpm, so the firmware and the simulator agree to the last digit.
         {
             "POWER",
-            false,
+            Instrument::Power,
+            Layout::Rows,
+            {"act_torque,ref_torque", "NO TORQUE DATA",
+             "power needs actual + reference torque, which this car does not report"},
             [](const Model& m) { return chan(m, "power_kw", "%.0f"); },
-            "KW",
             nullptr,
+            // The unit slot carries the peak, as the simulator does: a number
+            // you are chasing belongs next to the one you are making.
+            [](const Model& m, uint32_t* colour) -> std::string {
+                *colour = 0x9A9A9A;
+                if (!m.st.get("power_kw")) return "no torque data";
+                char b[32];
+                snprintf(b, sizeof b, "kW \xC2\xB7 peak %.0f", m.st.peak_kw());
+                return b;
+            },
             { [](const Model&) { return 0.0; },
               [](const Model& m) { return m.id.power_max; }, nullptr,
               [](const Model& m, double* o) {
                   auto v = m.st.get("power_kw"); if (!v) return false; *o = *v; return true; } },
             {
-                {"PEAK",   [](const Model& m) {
-                    char b[24]; snprintf(b, sizeof b, "%.0f kW", m.st.peak_kw()); return std::string(b); }},
-                {"TORQUE", [](const Model& m) { return chan(m, "act_torque", "%.0f%%"); }},
-                {"REF",    [](const Model& m) { return chan(m, "ref_torque", "%.0f Nm"); }},
-                {"RPM",    [](const Model& m) { return chan(m, "rpm", "%.0f"); }},
+                {"RPM",  [](const Model& m) { return chan(m, "rpm", "%.0f"); }},
+                {"LOAD", [](const Model& m) { return chan(m, "load", "%.0f%%"); }},
+                {nullptr, nullptr},
+                {nullptr, nullptr},
             },
         },
-        // 7 --- Thermals. Fuel rail temperature was dropped: across every
-        // capture it returned 2 distinct values in 375 samples (section 6).
+        // 7 --- Thermals. Three real temperatures and no hero: the view IS the
+        // comparison between them, so promoting one would misrepresent it.
+        // Fuel rail temperature was dropped -- across every capture it returned
+        // 2 distinct values in 375 samples, and there is no standard OBD PID
+        // for rail TEMPERATURE anyway, only pressures (section 6).
         {
             "THERMALS",
-            false,
-            [](const Model& m) { return chan(m, "coolant", "%.0f"); },
-            "\xC2\xB0" "C",
+            Instrument::None,
+            Layout::Grid,
+            {"coolant,intake,cat_b1s1,catalyst", "NO TEMP SENSORS",
+             "this car reports none of the temperature channels"},
             nullptr,
-            { [](const Model&) { return 40.0; }, [](const Model&) { return 110.0; }, nullptr,
-              [](const Model& m, double* o) {
-                  auto v = m.st.get("coolant"); if (!v) return false; *o = *v; return true; } },
+            nullptr,
+            nullptr,
+            { nullptr, nullptr, nullptr, nullptr },
             {
-                {"INTAKE",   [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
-                {"CATALYST", [](const Model& m) {
-                    auto c = m.st.get("cat_b1s1");
-                    if (!c) c = m.st.get("catalyst");
+                {"COOLANT",    [](const Model& m) { return chan(m, "coolant", "%.0f\xC2\xB0"); }},
+                {"INTAKE AIR", [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
+                {"CATALYST",   [](const Model& m) {
+                    auto c = m.st.get("catalyst");
+                    if (!c) c = m.st.get("cat_b1s1");
                     return num(c, "%.0f\xC2\xB0"); }},
-                {"PEAK CAT", [](const Model& m) { return num(m.st.peak("catalyst"), "%.0f\xC2\xB0"); }},
-                {"AMBIENT",  [](const Model& m) { return chan(m, "ambient", "%.0f\xC2\xB0"); }},
+                {nullptr, nullptr},
             },
         },
-        // 8 --- Electrical.
+        // 8 --- Electrical. A bar rather than a rim arc: charging is read as a
+        // position between "flat" and "overcharging", which a line with two
+        // ends says better than a ring that meets itself.
         {
             "ELECTRICAL",
-            false,
+            Instrument::Bar,
+            Layout::Rows,
+            {"ctrl_volt,volts", "NO VOLTAGE",
+             "no control-module voltage from this car or adapter"},
             [](const Model& m) { return num(volts(m), "%.1f"); },
-            "VOLTS",
+            "V",
             [](const Model& m, uint32_t* colour) -> std::string {
                 auto v = volts(m);
                 if (!v)         { *colour = 0x808080; return ""; }
@@ -208,15 +245,8 @@ const ViewSpec* view_table(int* count) {
                 if (*v < 13.0)  { *colour = 0xFFC24A; return "RESTING"; }
                 *colour = 0x5BD97A; return "CHARGING";
             },
-            { [](const Model&) { return 11.0; }, [](const Model&) { return 15.0; }, nullptr,
-              [](const Model& m, double* o) {
-                  auto v = volts(m); if (!v) return false; *o = *v; return true; } },
-            {
-                {"LOAD",  [](const Model& m) { return chan(m, "load", "%.0f%%"); }},
-                {"RPM",   [](const Model& m) { return chan(m, "rpm", "%.0f"); }},
-                {nullptr, nullptr},
-                {nullptr, nullptr},
-            },
+            { nullptr, nullptr, nullptr, nullptr },
+            { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
         },
     };
     *count = static_cast<int>(sizeof views / sizeof views[0]);

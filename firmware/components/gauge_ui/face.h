@@ -24,20 +24,37 @@
 
 namespace gauge_ui {
 
-// A view's needle, and the last position it was drawn at.
+// Which instrument a view wears. Three of the eight views draw a real face;
+// the rest get a plain arc or nothing, which ui.cpp handles on its own.
+enum class FaceKind {
+    Tacho,    // heat band, ticks per 1000 rpm, numbering, needle
+    Engine,   // four fixed temperature zones and a white mark
+    Power,    // ticks and kW numbering, fill arc, amber peak mark, needle
+};
+
+// A view's moving parts, and the last positions they were drawn at. The
+// quantised `_q` fields are what stop a reading that jitters in the last
+// decimal from invalidating the needle's bounding box every single frame.
 struct Face {
+    FaceKind            kind       = FaceKind::Tacho;
     lv_obj_t*           needle     = nullptr;
     lv_point_precise_t* needle_pts = nullptr;
     int                 needle_q   = -1;
     int                 heat       = -1;   // last colour step the needle took
+    // Power only: the amber high-water mark, which moves far more rarely than
+    // the needle and so is tracked separately.
+    lv_obj_t*           peak       = nullptr;
+    lv_point_precise_t* peak_pts   = nullptr;
+    int                 peak_q     = -1;
 };
 
 // The face is built in two halves around the view's own arc, which for a
 // tacho is not a fill but a MASK: under() lays down the heat band, the arc
 // covers the part of it the engine has not reached yet, and over() puts the
-// ticks, numbering and needle on top.
-void face_build_under(lv_obj_t* root, const gauge::Identity& id);
-Face face_build_over(lv_obj_t* root, const gauge::Identity& id);
+// ticks, numbering and needle on top. Engine and Power use the same split for
+// the same reason -- their zones and track have to sit beneath the arc.
+void face_build_under(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
+Face face_build_over(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 void face_update(Face& f, const Model& m);
 
 }  // namespace gauge_ui

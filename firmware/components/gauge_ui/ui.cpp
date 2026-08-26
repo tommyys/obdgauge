@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include "avail.h"
+#include "bar.h"
 #include "carousel.h"
 #include "face.h"
 #include "slide.h"
@@ -33,7 +35,15 @@ struct ViewObjs {
     lv_obj_t* arc    = nullptr;
     lv_obj_t* rlabel[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* rvalue[4] = {nullptr, nullptr, nullptr, nullptr};
-    Face face;                 // only the tacho fills this in
+    Face face;                 // tacho, engine and power fill this in
+    Bar  bar;                  // electrical only
+    bool has_face = false;
+    // The "this car cannot drive this view" screen. Everything else in the
+    // view is hidden behind it rather than left showing dashes.
+    lv_obj_t* na_head = nullptr;
+    lv_obj_t* na_note = nullptr;
+    lv_obj_t* content = nullptr;   // parent of everything the na screen hides
+    bool na_shown = false;
 };
 
 const ViewSpec* g_specs = nullptr;
@@ -75,20 +85,44 @@ ViewObjs build_view(const ViewSpec& spec) {
     lv_obj_set_style_bg_opa(v.root, LV_OPA_COVER, 0);
     lv_obj_remove_flag(v.root, LV_OBJ_FLAG_SCROLLABLE);
 
-    // The track and the redline go on before the value arc, because the value
-    // arc has to cover them as it fills.
-    if (spec.dial_face) face_build_under(v.root, g_id);
+    // Everything the view normally shows hangs off `content`, so the
+    // not-available screen is one flag rather than a walk over a dozen objects.
+    v.content = lv_obj_create(v.root);
+    lv_obj_remove_style_all(v.content);
+    lv_obj_set_size(v.content, screen_w(), screen_w());
+    lv_obj_center(v.content);
+    lv_obj_remove_flag(v.content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* c = v.content;
 
-    if (spec.dial.value) {
-        v.arc = lv_arc_create(v.root);
-        lv_obj_set_size(v.arc, 434, 434);
+    const Instrument face_k = spec.face;
+    const Layout layout_k = spec.layout;
+    const bool tacho = face_k == Instrument::TachoDial;
+    const bool power = face_k == Instrument::Power;
+    v.has_face = tacho || power || face_k == Instrument::Engine;
+
+    // The track, the zones and the heat band go on before the value arc,
+    // because the value arc has to cover them as it fills.
+    if (v.has_face) {
+        face_build_under(c, g_id, tacho ? FaceKind::Tacho
+                                        : power ? FaceKind::Power : FaceKind::Engine);
+    }
+
+    // The engine face reads by mark position over fixed zones, so it has no
+    // fill arc at all; every other dial that has a value gets one.
+    const bool wants_arc = spec.dial.value && face_k != Instrument::Engine;
+    if (wants_arc) {
+        const bool inset = face_k == Instrument::InsetRing;
+        v.arc = lv_arc_create(c);
+        const int d = inset ? kInsetRingPx : 434;
+        lv_obj_set_size(v.arc, d, d);
         lv_obj_center(v.arc);
         lv_arc_set_bg_angles(v.arc, 135, 45);
         lv_obj_remove_style(v.arc, nullptr, LV_PART_KNOB);
         lv_obj_remove_flag(v.arc, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_arc_width(v.arc, 14, LV_PART_MAIN);
-        lv_obj_set_style_arc_width(v.arc, 14, LV_PART_INDICATOR);
-        if (spec.dial_face) {
+        const int w = inset ? 19 : 14;
+        lv_obj_set_style_arc_width(v.arc, w, LV_PART_MAIN);
+        lv_obj_set_style_arc_width(v.arc, w, LV_PART_INDICATOR);
+        if (tacho) {
             // Not a fill but a shutter. face_build_under() has laid the heat
             // band all the way round; this arc covers the part the engine has
             // not reached, and REVERSE makes it retreat from the value to the
@@ -98,30 +132,93 @@ ViewObjs build_view(const ViewSpec& spec) {
             lv_arc_set_mode(v.arc, LV_ARC_MODE_REVERSE);
             lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
             lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x23262E), LV_PART_INDICATOR);
+        } else if (power) {
+            // The face drew the track, so this arc is the fill alone.
+            lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
+            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0xCFE0FF), LV_PART_INDICATOR);
         } else {
             lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
-            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0xFF9500), LV_PART_INDICATOR);
+            // The score ring is recoloured by its own value in update(); the
+            // green here is only what it looks like before the first reading.
+            lv_obj_set_style_arc_color(v.arc, lv_color_hex(inset ? 0x35E06B : 0xFF9500),
+                                       LV_PART_INDICATOR);
         }
     }
 
     // Ticks, numbering and the needle go over the value arc, matching the
     // order the simulator draws them in.
-    if (spec.dial_face) v.face = face_build_over(v.root, g_id);
+    if (v.has_face) {
+        v.face = face_build_over(c, g_id, tacho ? FaceKind::Tacho
+                                                : power ? FaceKind::Power : FaceKind::Engine);
+    }
 
-    v.title = mk_label(v.root, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, -142);
-    lv_label_set_text(v.title, spec.title);
+    // The tacho has no title: the dial numbering would collide with it, and the
+    // page dots already say which view you are on.
+    if (spec.title) {
+        v.title = mk_label(c, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, -142);
+        lv_label_set_text(v.title, spec.title);
+    }
 
-    v.hero = mk_label(v.root, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, -60);
-    v.unit = mk_label(v.root, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, -18);
-    lv_label_set_text(v.unit, spec.hero_unit ? spec.hero_unit : "");
-    v.word = mk_label(v.root, &lv_font_montserrat_28, 0x808080, LV_ALIGN_CENTER, 0, 22);
+    // Thermals has no hero -- the view IS the comparison between its three
+    // temperatures, so promoting one of them would misrepresent it.
+    if (spec.hero) {
+        v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, -60);
+        v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, -18);
+        lv_label_set_text(v.unit, spec.hero_unit ? spec.hero_unit : "");
+    }
 
-    // Rows sit as label/value pairs below the hero, left and right of centre.
-    for (int i = 0; i < 4 && spec.rows[i].label; ++i) {
-        int y = 66 + i * 27;
-        v.rlabel[i] = mk_label(v.root, &lv_font_montserrat_20, 0x606060, LV_ALIGN_CENTER, -78, y);
-        v.rvalue[i] = mk_label(v.root, &lv_font_montserrat_20, 0xD0D0D0, LV_ALIGN_CENTER, 62, y);
-        lv_label_set_text(v.rlabel[i], spec.rows[i].label);
+    // Where the state word sits depends on whether a unit is already there.
+    // Score and Power have no static unit because their word IS the unit line
+    // -- the coach verdict, the peak -- so it moves up into that slot rather
+    // than leaving a gap the width of a line above it.
+    if (spec.state_word) {
+        const int wy = spec.hero_unit ? 22 : -18;
+        const lv_font_t* f = spec.hero_unit ? &lv_font_montserrat_28 : &lv_font_montserrat_20;
+        v.word = mk_label(c, f, 0x808080, LV_ALIGN_CENTER, 0, wy);
+    }
+
+    if (face_k == Instrument::Bar) v.bar = bar_build(c, 34);
+
+    int n = 0;
+    while (n < 4 && spec.rows[n].label) ++n;
+
+    if (layout_k == Layout::Grid) {
+        // Large value over small label, two to a line. A third cell of three
+        // spans both columns, as the simulator's catalyst does: an odd one out
+        // centred reads as a total rather than as a lonely column.
+        const int y0 = spec.hero ? 52 : -34;
+        for (int i = 0; i < n; ++i) {
+            const bool wide = (n == 3 && i == 2);
+            const int x = wide ? 0 : ((i % 2) ? 82 : -82);
+            const int y = y0 + (i / 2) * 76;
+            v.rvalue[i] = mk_label(c, &lv_font_montserrat_28, 0xF0F0F0, LV_ALIGN_CENTER, x, y);
+            v.rlabel[i] = mk_label(c, &lv_font_montserrat_14, 0x707070, LV_ALIGN_CENTER, x, y + 28);
+            lv_label_set_text(v.rlabel[i], spec.rows[i].label);
+        }
+    } else {
+        // Rows sit as label/value pairs below the hero, left and right of centre.
+        for (int i = 0; i < n; ++i) {
+            int y = 66 + i * 27;
+            v.rlabel[i] = mk_label(c, &lv_font_montserrat_20, 0x606060, LV_ALIGN_CENTER, -78, y);
+            v.rvalue[i] = mk_label(c, &lv_font_montserrat_20, 0xD0D0D0, LV_ALIGN_CENTER, 62, y);
+            lv_label_set_text(v.rlabel[i], spec.rows[i].label);
+        }
+    }
+
+    // The not-available screen, built once and hidden. Two lines, because
+    // "NO RPM" alone reads as a fault in the gauge; the second line says it is
+    // the car that is not reporting, which is a different and calmer message.
+    if (spec.avail.head) {
+        v.na_head = mk_label(v.root, &lv_font_montserrat_28, 0xC0C0C0, LV_ALIGN_CENTER, 0, -18);
+        lv_label_set_text(v.na_head, spec.avail.head);
+        v.na_note = mk_label(v.root, &lv_font_montserrat_14, 0x707070, LV_ALIGN_CENTER, 0, 22);
+        lv_label_set_long_mode(v.na_note, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(v.na_note, 300);
+        lv_obj_set_style_text_align(v.na_note, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(v.na_note, spec.avail.note ? spec.avail.note : "");
+        lv_obj_align(v.na_note, LV_ALIGN_CENTER, 0, 22);
+        lv_obj_add_flag(v.na_head, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(v.na_note, LV_OBJ_FLAG_HIDDEN);
     }
     return v;
 }
@@ -272,9 +369,29 @@ void update(const Model& m) {
     const ViewSpec& s = g_specs[g_cur];
     ViewObjs& v = g_objs[static_cast<size_t>(g_cur)];
 
-    set_text_if_changed(v.hero, s.hero(m));
+    // Can this car drive this view at all? The rule is host-tested in
+    // test_avail.cpp; the part that matters here is that it is checked BEFORE
+    // anything is formatted, so an unavailable view costs nothing per frame.
+    if (v.na_head) {
+        const bool want_na = !gauge::view_available(s.avail.needs, m.supported);
+        if (want_na != v.na_shown) {
+            v.na_shown = want_na;
+            if (!want_na) {
+                lv_obj_clear_flag(v.content, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(v.na_head, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(v.na_note, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(v.content, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(v.na_head, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(v.na_note, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (v.na_shown) return;
+    }
 
-    if (s.state_word) {
+    if (v.hero) set_text_if_changed(v.hero, s.hero(m));
+
+    if (s.state_word && v.word) {
         uint32_t colour = 0x808080;
         std::string w = s.state_word(m, &colour);
         if (w != lv_label_get_text(v.word)) {
@@ -285,6 +402,7 @@ void update(const Model& m) {
 
     if (v.arc && s.dial.value) {
         double val = 0.0;
+        const bool tacho = s.face == Instrument::TachoDial;
         if (s.dial.value(m, &val)) {
             int lo = static_cast<int>(s.dial.lo(m));
             int hi = static_cast<int>(s.dial.hi(m));
@@ -309,10 +427,16 @@ void update(const Model& m) {
                 // hot at idle and going dark as the engine picked up, with the
                 // needle sweeping the other way. Inverting here puts the edge
                 // of the shutter exactly under the needle.
-                lv_arc_set_value(v.arc, s.dial_face ? steps - q : q);
+                lv_arc_set_value(v.arc, tacho ? steps - q : q);
+            }
+            // The score ring carries its verdict as colour, the way the
+            // simulator's does: green from 85, amber from 70, red below.
+            if (s.face == Instrument::InsetRing) {
+                const uint32_t col = val >= 85 ? 0x35E06B : val >= 70 ? 0xFFC53D : 0xFF3B30;
+                lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
             }
             if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
-        } else if (s.dial_face) {
+        } else if (tacho) {
             // The shutter is not a reading, it is the absence of one: closed
             // over the whole band, so a car that is not reporting rpm shows a
             // cold dial rather than a dial pinned at the redline. Closed is the
@@ -325,7 +449,13 @@ void update(const Model& m) {
         }
     }
 
-    if (s.dial_face) face_update(v.face, m);
+    if (v.has_face) face_update(v.face, m);
+
+    if (s.face == Instrument::Bar) {
+        auto volts = m.st.get("ctrl_volt");
+        if (!volts) volts = m.st.get("volts");
+        bar_update(v.bar, volts);
+    }
 
     for (int i = 0; i < 4 && s.rows[i].label; ++i) {
         set_text_if_changed(v.rvalue[i], s.rows[i].value(m));
@@ -357,7 +487,11 @@ int release_count() { return g_releases; }
 int view_count() { return g_count; }
 int current_view() { return g_cur; }
 const char* current_view_name() {
-    return (g_cur >= 0 && g_cur < g_count) ? g_specs[g_cur].title : "";
+    if (g_cur < 0 || g_cur >= g_count) return "";
+    // The tacho has no title of its own, so name it for the log rather than
+    // returning an empty string that reads as a bug.
+    const char* t = g_specs[g_cur].title;
+    return t ? t : "TACHO";
 }
 
 }  // namespace gauge_ui

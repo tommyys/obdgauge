@@ -3,6 +3,9 @@
 // gauge_ui may depend on gauge_core; gauge_core may never depend on this. The
 // one rule from the design doc: the pure logic stays compilable on the Mac.
 #pragma once
+#include <set>
+#include <string>
+
 #include "lvgl.h"
 #include "metrics.h"
 #include "state.h"
@@ -17,6 +20,10 @@ struct Model {
     const gauge::Trip&         trip;
     const gauge::DrivingScore& score;
     const gauge::Identity&     id;
+    // The channels this car reports, or nullptr while it is still being
+    // identified. Drives the not-available screens -- see gauge::view_available
+    // for why nullptr must mean "show everything" rather than "show nothing".
+    const std::set<std::string>* supported = nullptr;
 };
 
 // Build the carousel under `parent`. Call with the display lock held.

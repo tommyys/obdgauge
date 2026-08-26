@@ -20,9 +20,19 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 
-# play_boot_clip() paces itself off the wall clock and never yields for the
-# 2.5 s the splash lasts, so the idle-task watchdog would fire every boot.
-CONFIG_ESP_TASK_WDT_INIT=n
+# On, and set to PANIC, because the failure this firmware actually hits is a
+# hang rather than a crash: LVGL's allocator spins forever when its pool runs
+# out (see CONFIG_LV_MEM_SIZE_KILOBYTES below), and the board then goes silent
+# and needs a physical replug with nothing to show for it. With the watchdog on
+# the same hang prints a backtrace naming the spinning function instead, which
+# is what found that bug after a day of bisecting binaries.
+#
+# It was off because play_boot_clip() paces itself off the wall clock and never
+# yields for the 2.5 s the splash lasts, so the idle task would trip the 5 s
+# default every boot. 10 s clears the splash with room to spare.
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_PANIC=y
 
 # Real FPS from the display pipeline, so frame-rate questions are answered with
 # a number rather than an opinion. Costs <2us per frame.
@@ -62,3 +72,12 @@ CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
 # The tacho's dial numbering. 13px in the simulator's 260-unit drawing is 23px
 # here, and 24 is the nearest size LVGL ships.
 CONFIG_LV_FONT_MONTSERRAT_24=y
+
+# LVGL allocates its objects AND its temporary render buffers from one fixed
+# pool, and the builtin allocator's failure path is an assert that spins
+# forever -- so an over-full pool does not degrade, it hangs the draw task with
+# no message. The eight views' objects left ~19 KB free at 64 KB, and a
+# full-screen lv_snapshot (which the carousel slide takes) needs more than that
+# for its arc masks: the tacho's heat band alone is 54 arcs, each allocating a
+# radius mask, across two draw-unit threads. That is what hung every swipe.
+CONFIG_LV_MEM_SIZE_KILOBYTES=128

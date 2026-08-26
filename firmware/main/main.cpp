@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
+#include <string>
 #include "bsp/esp-bsp.h"
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
@@ -195,6 +197,23 @@ extern "C" void app_main(void) {
         printf("replay: no drive library -- falling back to a synthetic sweep\n");
     }
 
+    // Which channels this drive actually carries. The views use it to decide
+    // whether they have anything to show at all -- a car that never reports
+    // fuel rate gets "NO FUEL RATE" on the economy view rather than a screen of
+    // dashes (SPEC.md section 4). Built once: the drive's channel table is
+    // fixed for the whole file.
+    //
+    // Left as a null pointer when there is no replay, which the views read as
+    // "not identified yet" and so show everything. That is the right answer for
+    // the synthetic sweep below, which is a bench signal rather than a car.
+    std::set<std::string> channels;
+    if (have_replay) {
+        for (int i = 0; i < replay.channel_count(); ++i)
+            channels.insert(replay.channel_name(static_cast<uint16_t>(i)));
+        printf("replay: %d channels available to the views\n", (int)channels.size());
+    }
+    const std::set<std::string>* supported = have_replay ? &channels : nullptr;
+
     gauge::VehicleState st;
     gauge::Trip trip;
     gauge::DrivingScore score;
@@ -226,7 +245,7 @@ extern "C" void app_main(void) {
         }
 
         bsp_display_lock(-1);   // -1 is wait-forever; 0 would be a try-lock
-        gauge_ui::Model model{st, trip, score, id};
+        gauge_ui::Model model{st, trip, score, id, supported};
         gauge_ui::update(model);
         bsp_display_unlock();
 
@@ -244,10 +263,23 @@ extern "C" void app_main(void) {
                                ? "PRESSED" : "released";
                     lv_indev_get_point(indev, &pt);
                 }
-                printf("ui: %u fps, view %s, gest %d, press %d, rel %d, indev %s @%d,%d\n",
+                // LVGL's pool is reported because running it out does not
+                // degrade -- it HANGS. Objects and the temporary buffers the
+                // renderer needs come from the same fixed pool, and the builtin
+                // allocator's out-of-memory path is an assert that spins
+                // forever, so the board simply goes silent and needs a replug.
+                // That is what every swipe did when the eight views' objects
+                // left too little for lv_snapshot's arc masks. If this figure
+                // creeps back toward 100%, raise CONFIG_LV_MEM_SIZE_KILOBYTES
+                // before adding more objects.
+                lv_mem_monitor_t mm;
+                lv_mem_monitor(&mm);
+                printf("ui: %u fps, view %s, gest %d, press %d, rel %d, indev %s @%d,%d, "
+                       "lv pool %u%% used (%u free)\n",
                        (unsigned)fps, gauge_ui::current_view_name(),
                        gauge_ui::gesture_count(), gauge_ui::press_count(),
-                       gauge_ui::release_count(), st_s, (int)pt.x, (int)pt.y);
+                       gauge_ui::release_count(), st_s, (int)pt.x, (int)pt.y,
+                       (unsigned)mm.used_pct, (unsigned)mm.free_size);
                 // Repeated rather than printed once at the swipe: a serial
                 // capture that opens after the swipe was losing it every time.
                 printf("     %s\n", gauge_ui::slide_note());

@@ -24,6 +24,26 @@
 
 namespace gauge_ui {
 
+// ---- one rim geometry, shared by every ring on every view ------------------
+// The tacho's heat band, its redline, the engine's temperature zones, the
+// power dial's track and fill, and the driving score's ring are all THE SAME
+// RING at different colours. They are drawn by three different LVGL paths
+// (a custom draw callback, lv_arc backgrounds, an lv_arc indicator), so the
+// numbers have to be stated once here rather than repeated at each call site --
+// they were, and a one-pixel disagreement between two of them put a red line
+// around the whole tacho.
+constexpr int kRimPx     = 434;          // outer diameter on the 466 px panel
+constexpr int kRimWidth  = 14;           // 13/104 of the simulator's drawing
+constexpr int kRimOuterR = kRimPx / 2;   // 217
+
+// The tacho's shutter is the ONE exception, and only by a pixel a side. It
+// hides a bright redline arc directly beneath it, and both are anti-aliased,
+// so at equal size the shutter's part-transparent edge pixels let red show
+// through as a hairline. A pixel of margin swallows that. Any larger and the
+// step in rim thickness at the needle becomes visible.
+constexpr int kRimShutterPx    = kRimPx + 2;
+constexpr int kRimShutterWidth = kRimWidth + 2;
+
 // Which instrument a view wears. Three of the eight views draw a real face;
 // the rest get a plain arc or nothing, which ui.cpp handles on its own.
 enum class FaceKind {

@@ -73,8 +73,10 @@ constexpr uint32_t kRedline   = 0xFF3B30;
 // which at this radius is about sixteen pixels of arc per shade.
 constexpr int kHeatBands = 54;
 constexpr int kBandDeg   = 5;      // kHeatBands * kBandDeg == kSweepDeg
-constexpr int kArcOuterR = 217;    // the 434 px band's outer edge
-constexpr int kArcWidth  = 14;
+// Aliases for the shared rim geometry in face.h, kept because the draw
+// callback below reads better with short names.
+constexpr int kArcOuterR = kRimOuterR;
+constexpr int kArcWidth  = kRimWidth;
 constexpr uint32_t kTick      = 0x7D818B;
 constexpr uint32_t kTickHot   = 0xFF5B52;
 constexpr uint32_t kNumber    = 0xC9CCD4;
@@ -188,14 +190,19 @@ void band_draw_cb(lv_event_t* e) {
     d.width    = kArcWidth;
     d.radius   = kArcOuterR;
     d.opa      = LV_OPA_COVER;
-    // Square ends, butted together. Rounded ones scalloped every join, which
-    // was half of why the old band looked stepped rather than graded.
-    d.rounded  = 0;
-
+    // Square where segments butt together -- rounded joins scalloped every one
+    // of the 52 seams, which was half of why the old band looked stepped rather
+    // than graded. The band's two EXTREMITIES are a different question: every
+    // other ring on every other view is drawn with rounded caps, so a
+    // square-ended tacho was the odd one out. Rounding just the first and last
+    // segment gives the ring the same silhouette without touching the joins;
+    // the rounding each of those two puts on its INNER end is painted over by
+    // the neighbour that overlaps it.
     for (int i = 0; i < g_band_n; ++i) {
+        d.rounded = (i == 0 || i == g_band_n - 1) ? 1 : 0;
         lv_area_t a;
         lv_draw_arc_get_area(cx, cy, d.radius, g_band[i].a0, g_band[i].a1,
-                             d.width, false, &a);
+                             d.width, d.rounded != 0, &a);
         if (!areas_overlap(a, layer->_clip_area)) continue;
         d.color       = lv_color_hex(g_band[i].colour);
         d.start_angle = g_band[i].a0;
@@ -207,13 +214,13 @@ void band_draw_cb(lv_event_t* e) {
 lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa,
                      bool rounded = true) {
     lv_obj_t* arc = lv_arc_create(root);
-    lv_obj_set_size(arc, 434, 434);
+    lv_obj_set_size(arc, kRimPx, kRimPx);
     lv_obj_center(arc);
     lv_obj_remove_style(arc, nullptr, LV_PART_KNOB);
     lv_obj_remove_style(arc, nullptr, LV_PART_INDICATOR);
     lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
     lv_arc_set_bg_angles(arc, a0, a1);
-    lv_obj_set_style_arc_width(arc, 14, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, kRimWidth, LV_PART_MAIN);
     lv_obj_set_style_arc_rounded(arc, rounded, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, lv_color_hex(colour), LV_PART_MAIN);
     lv_obj_set_style_arc_opa(arc, opa, LV_PART_MAIN);
@@ -265,7 +272,7 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
     }
     lv_obj_t* band = lv_obj_create(root);
     lv_obj_remove_style_all(band);
-    lv_obj_set_size(band, 434, 434);
+    lv_obj_set_size(band, kRimPx, kRimPx);
     lv_obj_center(band);
     lv_obj_remove_flag(band, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(band, LV_OBJ_FLAG_SCROLLABLE);
@@ -275,13 +282,15 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
     // top of the dial still reads as a limit and not just as more colour.
     if (id.rpm_red > 0 && id.rpm_max > id.rpm_red) {
         const int a0 = static_cast<int>(std::lround(dial_angle(id.rpm_red, id.rpm_max))) % 360;
-        // Square ends, because a rounded cap is drawn OUTSIDE the angles it is
-        // given and so puts red past both ends of the segment it was asked for.
-        // Worth having, but for the record it was NOT the red bleed reported on
-        // this dial: that was the band's one-pixel centre offset (band_draw_cb)
-        // and the shutter's anti-aliased edge (ui.cpp). Squaring the caps
-        // changed nothing visible.
-        mk_rim_arc(root, a0, 45, kRedline, LV_OPA_COVER, false);
+        // Rounded, so the redline ends in the same shape as the band beneath it
+        // and as every other ring. A rounded cap is drawn OUTSIDE the angles it
+        // is given, by half the arc width -- 7 px, which at radius 210 is very
+        // nearly 2 degrees -- so the start angle is pushed 2 degrees late and
+        // the cap puts it back. Without that the red would reach two degrees
+        // below the redline. At the far end the overshoot is wanted: it lands
+        // exactly where the band's own rounded end lands.
+        constexpr int kCapDeg = 2;
+        mk_rim_arc(root, (a0 + kCapDeg) % 360, 45, kRedline, LV_OPA_COVER, true);
     }
 }
 

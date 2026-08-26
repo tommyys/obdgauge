@@ -30,13 +30,9 @@ enum class Instrument {
     TachoDial,   // heat band, ticks and numbering per 1000 rpm, needle
     Engine,      // four fixed temperature zones and a white mark, no fill
     Power,       // ticks and kW numbering, fill arc, amber peak mark, needle
-    InsetRing,   // a smaller ring inside the text, at kInsetRingPx
+    ScoreRing,   // a rim arc like the tacho's, but coloured by its own value
     Bar,         // horizontal gradient bar with a sliding marker
 };
-
-// The score ring is 68% of the simulator's 100-unit view box, which on this
-// 466 px panel is 317. Kept as a name because the number appears twice.
-constexpr int kInsetRingPx = 317;
 
 // How the rows are arranged.
 enum class Layout {

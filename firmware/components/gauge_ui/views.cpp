@@ -17,6 +17,14 @@
 namespace gauge_ui {
 namespace {
 
+// Non-ASCII in these strings is limited to two characters, and not by taste.
+// LVGL's built-in Montserrat fonts are generated with `-r 0x20-0x7F,0xB0,0x2022`
+// at every size this project uses, so the ONLY characters above ASCII that
+// exist are the degree sign (\xC2\xB0) and the bullet (\xE2\x80\xA2).
+// Anything else renders as an empty box -- which is what the middle dot the
+// simulator separates with (\xC2\xB7, U+00B7) did after "COOLANT". Use the
+// bullet as the separator; adding a glyph means regenerating the fonts.
+//
 // Views degrade honestly: '--' for a channel the car is not reporting, never a
 // plausible-looking zero (SPEC.md section 4).
 std::string dash() { return "--"; }
@@ -78,7 +86,7 @@ const ViewSpec* view_table(int* count) {
             {"coolant,volts,ctrl_volt,intake", "NO ENGINE DATA",
              "this car reports neither coolant nor voltage"},
             [](const Model& m) { return chan(m, "coolant", "%.0f\xC2\xB0"); },
-            "COOLANT \xC2\xB7 \xC2\xB0" "C",
+            "COOLANT \xE2\x80\xA2 \xC2\xB0" "C",
             [](const Model& m, uint32_t* colour) -> std::string {
                 auto c = m.st.get("coolant");
                 if (!c) { *colour = 0x808080; return ""; }
@@ -107,7 +115,7 @@ const ViewSpec* view_table(int* count) {
                                                                m.st.get("fuel_rate"))),
                            "%.1f");
             },
-            "KM/L \xC2\xB7 NOW",
+            "KM/L \xE2\x80\xA2 NOW",
             nullptr,
             { nullptr, nullptr, nullptr, nullptr },
             {
@@ -121,9 +129,12 @@ const ViewSpec* view_table(int* count) {
         },
         // 4 --- Driving score. The weights are still untuned guesses (B3), so
         // the coach word sits in the unit slot rather than the number alone.
+        // The ring is on the rim, where the tacho's is. The simulator insets
+        // it to 68% because it has a whole square viewport to spend; on a round
+        // panel that diameter runs straight through the rows underneath.
         {
             "DRIVING",
-            Instrument::InsetRing,
+            Instrument::ScoreRing,
             Layout::Rows,
             {"rpm,speed,throttle", "NO DRIVE DATA",
              "scoring needs rpm, speed or throttle"},
@@ -188,7 +199,7 @@ const ViewSpec* view_table(int* count) {
                 *colour = 0x9A9A9A;
                 if (!m.st.get("power_kw")) return "no torque data";
                 char b[32];
-                snprintf(b, sizeof b, "kW \xC2\xB7 peak %.0f", m.st.peak_kw());
+                snprintf(b, sizeof b, "kW \xE2\x80\xA2 peak %.0f", m.st.peak_kw());
                 return b;
             },
             { [](const Model&) { return 0.0; },

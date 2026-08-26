@@ -18,6 +18,8 @@ backups/
 
 # firmware build artefacts
 firmware/build/
+# clangd's index, created by the editor when it parses the IDF compile flags
+firmware/.cache/
 firmware/sdkconfig
 firmware/test/host/build/
 

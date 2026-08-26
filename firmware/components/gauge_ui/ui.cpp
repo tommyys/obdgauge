@@ -12,6 +12,30 @@
 namespace gauge_ui {
 namespace {
 
+// ---- where text goes, on every view -----------------------------------
+// One set of bands, so a view built from a grid lands in the same places as one
+// built from rows. They had drifted apart: the grid started higher and ran 18 px
+// lower, which on TRIP put the bottom label almost against the make/model
+// banner while every other view had a clear margin under it.
+constexpr int kTitleY   = -142;  // view name, under the top of the rim
+constexpr int kHeroY    =  -60;  // the one big number
+constexpr int kUnitY    =  -18;  // its unit, directly beneath
+constexpr int kWordY    =   22;  // COLD / READY / the coach verdict
+constexpr int kSubY0    =   66;  // first line of sub-text, Rows layout
+// A grid cell is a value over its own label, so two rows of them stand about
+// 96 px tall against the 62 px of four text lines. Anchoring both layouts at
+// the same TOP therefore finished the grid 50 px lower down the panel. TRIP is
+// raised 40 px, which leaves it the same clear margin above the make/model
+// banner that the rows views have. 48 px was tried first and read as too high.
+constexpr int kGridHeroY = kSubY0 - 40;
+constexpr int kRowStep  =   24;  // Rows: line to line
+constexpr int kCellStep =   52;  // Grid: cell row to cell row
+constexpr int kCellGap  =   24;  // Grid: a cell's value to its own label
+constexpr int kCellX    =   82;  // Grid: column offset from centre
+// A grid with no hero has the whole middle to itself, so its block is centred
+// rather than hung below where the hero would have been.
+constexpr int kGridNoHeroY = -24;
+
 // 135 positions across a 270-degree sweep: one step is ~2 degrees.
 constexpr int kDialSteps = 135;
 // One swipe cannot reasonably produce two intended gestures inside this
@@ -33,6 +57,10 @@ struct ViewObjs {
     lv_obj_t* unit   = nullptr;
     lv_obj_t* word   = nullptr;
     lv_obj_t* arc    = nullptr;
+    // Tacho only: a black arc under the shutter, two pixels wider, that hides
+    // the redline's anti-aliased edges. Invisible on a black face, so it costs
+    // the rim no apparent thickness -- see build_view.
+    lv_obj_t* arc_mask = nullptr;
     lv_obj_t* rlabel[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* rvalue[4] = {nullptr, nullptr, nullptr, nullptr};
     Face face;                 // tacho, engine and power fill this in
@@ -111,21 +139,47 @@ ViewObjs build_view(const ViewSpec& spec) {
     // fill arc at all; every other dial that has a value gets one.
     const bool wants_arc = spec.dial.value && face_k != Instrument::Engine;
     if (wants_arc) {
-        const bool inset = face_k == Instrument::InsetRing;
+        const bool score_ring = face_k == Instrument::ScoreRing;
+
+        // The tacho's shutter has to hide a bright redline arc lying directly
+        // under it. At equal size it cannot: both are anti-aliased, so the
+        // shutter's edge pixels are part-transparent and the red beneath shows
+        // through as a hairline. Making the shutter bigger fixed that but left
+        // the rim visibly thicker where it covered than where the heat band
+        // showed, with a step at the needle.
+        //
+        // So the oversized arc is here instead, and it is BLACK -- the face's
+        // own colour. It hides the redline's edges and shows nothing itself, so
+        // every ring the eye can actually see is kRimPx by kRimWidth. It tracks
+        // the shutter's angle exactly and is created first, so the shutter
+        // draws on top of it.
+        if (tacho) {
+            v.arc_mask = lv_arc_create(c);
+            lv_obj_set_size(v.arc_mask, kRimShutterPx, kRimShutterPx);
+            lv_obj_center(v.arc_mask);
+            lv_arc_set_bg_angles(v.arc_mask, 135, 45);
+            lv_arc_set_mode(v.arc_mask, LV_ARC_MODE_REVERSE);
+            lv_obj_remove_style(v.arc_mask, nullptr, LV_PART_KNOB);
+            lv_obj_remove_flag(v.arc_mask, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_arc_width(v.arc_mask, kRimShutterWidth, LV_PART_MAIN);
+            lv_obj_set_style_arc_width(v.arc_mask, kRimShutterWidth, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_opa(v.arc_mask, LV_OPA_TRANSP, LV_PART_MAIN);
+            lv_obj_set_style_arc_color(v.arc_mask, lv_color_black(), LV_PART_INDICATOR);
+            // Square, and this one matters: a rounded cap is drawn OUTSIDE the
+            // angle it is given, and this arc is both black and wider than the
+            // shutter, so a rounded end would paint black past the shutter and
+            // over the lit band -- a dark line sitting at the needle.
+            lv_obj_set_style_arc_rounded(v.arc_mask, false, LV_PART_INDICATOR);
+        }
+
         v.arc = lv_arc_create(c);
-        // The tacho's shutter is drawn slightly larger than the band it hides.
-        // Identical geometry is not enough: both arcs are anti-aliased, so the
-        // shutter's edge pixels are only partly opaque and the bright redline
-        // underneath shows through them as a thin red line along the rim. The
-        // shutter is dark on a black face, so oversizing it is free -- nothing
-        // else reaches this far out (the ticks stop at radius 190).
-        const int d = inset ? kInsetRingPx : (tacho ? 438 : 434);
-        lv_obj_set_size(v.arc, d, d);
+        // Every ring on every view is now the same ring; see face.h.
+        lv_obj_set_size(v.arc, kRimPx, kRimPx);
         lv_obj_center(v.arc);
         lv_arc_set_bg_angles(v.arc, 135, 45);
         lv_obj_remove_style(v.arc, nullptr, LV_PART_KNOB);
         lv_obj_remove_flag(v.arc, LV_OBJ_FLAG_CLICKABLE);
-        const int w = inset ? 19 : (tacho ? 18 : 14);
+        const int w = kRimWidth;
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_MAIN);
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_INDICATOR);
         if (tacho) {
@@ -138,6 +192,12 @@ ViewObjs build_view(const ViewSpec& spec) {
             lv_arc_set_mode(v.arc, LV_ARC_MODE_REVERSE);
             lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
             lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x23262E), LV_PART_INDICATOR);
+            // Square for the same reason. The shutter's moving end sits AT the
+            // needle, so a rounded cap there reaches two degrees back over the
+            // band the engine has already lit -- a dark lip travelling with the
+            // needle. The ring's rounded silhouette comes from the band's own
+            // ends (face.cpp), which is where it belongs: those never move.
+            lv_obj_set_style_arc_rounded(v.arc, false, LV_PART_INDICATOR);
         } else if (power) {
             // The face drew the track, so this arc is the fill alone.
             lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
@@ -146,7 +206,7 @@ ViewObjs build_view(const ViewSpec& spec) {
             lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
             // The score ring is recoloured by its own value in update(); the
             // green here is only what it looks like before the first reading.
-            lv_obj_set_style_arc_color(v.arc, lv_color_hex(inset ? 0x35E06B : 0xFF9500),
+            lv_obj_set_style_arc_color(v.arc, lv_color_hex(score_ring ? 0x35E06B : 0xFF9500),
                                        LV_PART_INDICATOR);
         }
     }
@@ -161,7 +221,7 @@ ViewObjs build_view(const ViewSpec& spec) {
     // The tacho has no title: the dial numbering would collide with it, and the
     // page dots already say which view you are on.
     if (spec.title) {
-        v.title = mk_label(c, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, -142);
+        v.title = mk_label(c, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, kTitleY);
         lv_label_set_text(v.title, spec.title);
     }
 
@@ -175,8 +235,8 @@ ViewObjs build_view(const ViewSpec& spec) {
     const int hub_lift = (face_k == Instrument::TachoDial ||
                           face_k == Instrument::Power) ? 24 : 0;
     if (spec.hero) {
-        v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, -60 - hub_lift);
-        v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, -18 - hub_lift);
+        v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, kHeroY - hub_lift);
+        v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, kUnitY - hub_lift);
         lv_label_set_text(v.unit, spec.hero_unit ? spec.hero_unit : "");
     }
 
@@ -185,7 +245,7 @@ ViewObjs build_view(const ViewSpec& spec) {
     // -- the coach verdict, the peak -- so it moves up into that slot rather
     // than leaving a gap the width of a line above it.
     if (spec.state_word) {
-        const int wy = (spec.hero_unit ? 22 : -18) - hub_lift;
+        const int wy = (spec.hero_unit ? kWordY : kUnitY) - hub_lift;
         const lv_font_t* f = spec.hero_unit ? &lv_font_montserrat_28 : &lv_font_montserrat_20;
         v.word = mk_label(c, f, 0x808080, LV_ALIGN_CENTER, 0, wy);
     }
@@ -199,13 +259,14 @@ ViewObjs build_view(const ViewSpec& spec) {
         // Large value over small label, two to a line. A third cell of three
         // spans both columns, as the simulator's catalyst does: an odd one out
         // centred reads as a total rather than as a lonely column.
-        const int y0 = spec.hero ? 52 : -34;
+        const int y0 = spec.hero ? kGridHeroY : kGridNoHeroY;
         for (int i = 0; i < n; ++i) {
             const bool wide = (n == 3 && i == 2);
-            const int x = wide ? 0 : ((i % 2) ? 82 : -82);
-            const int y = y0 + (i / 2) * 76;
+            const int x = wide ? 0 : ((i % 2) ? kCellX : -kCellX);
+            const int y = y0 + (i / 2) * kCellStep;
             v.rvalue[i] = mk_label(c, &lv_font_montserrat_28, 0xF0F0F0, LV_ALIGN_CENTER, x, y);
-            v.rlabel[i] = mk_label(c, &lv_font_montserrat_14, 0x707070, LV_ALIGN_CENTER, x, y + 28);
+            v.rlabel[i] = mk_label(c, &lv_font_montserrat_14, 0x707070, LV_ALIGN_CENTER, x,
+                                   y + kCellGap);
             lv_label_set_text(v.rlabel[i], spec.rows[i].label);
         }
     } else {
@@ -217,7 +278,7 @@ ViewObjs build_view(const ViewSpec& spec) {
         // sweep running bottom-left over the top to bottom-right leaves
         // everything between 45 and 135 degrees free.
         for (int i = 0; i < n; ++i) {
-            int y = 66 + i * 24;
+            int y = kSubY0 + i * kRowStep;
             // Label and value close enough to read as one phrase. At the old
             // +/-78 and 62 the two were 140 px apart, which at 14 px text left
             // them looking like two unrelated columns.
@@ -442,6 +503,7 @@ void update(const Model& m) {
                 if (q < 0) q = 0;
                 if (q > steps) q = steps;
                 lv_arc_set_range(v.arc, 0, steps);
+                if (v.arc_mask) lv_arc_set_range(v.arc_mask, 0, steps);
                 // The shutter runs backwards on purpose. LVGL's REVERSE mode
                 // maps the value from the END of the sweep to the start -- at
                 // the minimum it covers nothing, at the maximum it covers
@@ -450,10 +512,13 @@ void update(const Model& m) {
                 // needle sweeping the other way. Inverting here puts the edge
                 // of the shutter exactly under the needle.
                 lv_arc_set_value(v.arc, tacho ? steps - q : q);
+                // The mask is the shutter's own shape; it must never lag, or
+                // the redline's edge reappears for a frame at the seam.
+                if (v.arc_mask) lv_arc_set_value(v.arc_mask, steps - q);
             }
             // The score ring carries its verdict as colour, the way the
             // simulator's does: green from 85, amber from 70, red below.
-            if (s.face == Instrument::InsetRing) {
+            if (s.face == Instrument::ScoreRing) {
                 const uint32_t col = val >= 85 ? 0x35E06B : val >= 70 ? 0xFFC53D : 0xFF3B30;
                 lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
             }
@@ -464,6 +529,7 @@ void update(const Model& m) {
             // cold dial rather than a dial pinned at the redline. Closed is the
             // MAXIMUM here, for the inversion described above.
             lv_arc_set_value(v.arc, kDialSteps);
+            if (v.arc_mask) lv_arc_set_value(v.arc_mask, kDialSteps);
             if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else {
             // No reading: hide the dial rather than draw it pinned at zero.

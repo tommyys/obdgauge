@@ -1280,32 +1280,35 @@ panel -- DOUBLE_PARTIAL boot-loops. So full-screen slide transitions are not
 available on this hardware at any quality, which is why the page indicator
 animates and the view content cuts.
 
-## Known gaps when picking this up (2026-08-21)
+## Known gaps when picking this up (2026-08-21) — BOTH CLOSED 2026-08-22/23
 
-Two things are working but not finished. Neither is a mystery; both have a
-diagnosis already.
+Kept for the diagnoses, which were right; do not pick this section up as work.
+Verified closed on 2026-08-26 by reading the code and re-running the harness.
 
-1. **The boot splash runs at ~6.5 fps.** It shows 17 of 31 frames in 2.62s.
-   Duration is correct (playback is time-paced, so it drops frames rather than
-   stretching), but it looks choppy. **Cause is measured, not suspected:** the
-   frames go through an LVGL canvas widget, which costs +33ms per frame on top
-   of the 52ms panel floor, plus the flash read. **Fix:** draw straight to the
-   panel with `esp_lcd_panel_draw_bitmap()` instead of through LVGL. That needs
-   the panel handle from `bsp_display_new()` before `bsp_display_start()`, so it
-   is a small restructure of the splash phase rather than a tweak. Expect 2-3x.
-   The stored clip is already 12 fps, so no re-encode is needed.
-   Also worth knowing: at 12.8MB the clip is over half a sane asset budget.
-   The frames are mostly black, so a cheap RLE or delta encode would pay well
-   if the animation ever grows.
+1. **The boot splash ran at ~6.5 fps.** The diagnosis was correct: the LVGL
+   canvas cost the frame time. `play_boot_clip()` in `main/main.cpp` now goes
+   straight to the panel via `gauge_ui::direct_draw_begin/frame/end`, the same
+   banded path the carousel slide uses, and `sdkconfig.defaults` gained -O2 /
+   240 MHz / QIO / 1 kHz tick with the panel QSPI clock raised 40 -> 80 MHz.
+   **All 31 frames now play, at 12.4 fps** (78 ms/frame: 47 read + 12 swap +
+   19 blit). Per-stage numbers in `memory/mx5-gauge-boot-splash-budget.md`.
 
-2. **The C++ core is one feature behind the simulator.** Tommy's
-   `Summarise a finished drive by its peaks` commit added per-field peaks to
-   `state.py`; they are not in `gauge_core`. `verify_port.sh` still reports
-   PORT VERIFIED, because the new fields sit outside the channels and the 25
-   derived values it compares. So "verified" currently means *the things it
-   compares still agree*, not *the firmware does everything the simulator does*.
-   Fix it either way -- port the peaks, or add them to the script's not-covered
-   list -- so the gap shows in the output rather than only in git history.
+   **What is still on the table, and it is the only measured win left:**
+   playback reads each frame with `esp_partition_read` (47 ms); the benched
+   `mmap`+memcpy path costs 29 ms, which would give ~60 ms => ~16 fps. It is
+   not a drop-in: `assets` spans 0x410000-0x1410000 but only the part below the
+   16 MB MMU line (0x1000000) can be mapped, which is ~12.5 MB = 30 of the
+   clip's 31 frames, so the tail frame needs a read fallback. Weigh that
+   against the fact that **24 fps full-screen is unreachable at any frame
+   count** (the flash budget caps it near 28 frames), and that Tommy chose to
+   author a new, cheaper animation rather than optimise this photographic one.
+
+2. **The C++ core was one feature behind the simulator** on per-drive peaks.
+   Closed by commit 607b307: `VehicleState` holds `peaks_` with the catalyst
+   family folded into one field, and `replay_check.cpp` compares `peak_rpm`,
+   `peak_kw`, `peak_speed`, `peak_coolant`, `peak_intake` and `peak_catalyst`
+   on every drive. `verify_port.sh` reports 15 suites and 0 divergences across
+   all three captures, so its "PORT VERIFIED" no longer overstates.
 
 ## Part B — hardware bring-up (board required)
 

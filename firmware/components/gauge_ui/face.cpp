@@ -21,6 +21,13 @@ constexpr double kTickOuterR = kArcR * (93.0 / 104.0);
 constexpr double kTickInnerR = kArcR * (84.0 / 104.0);
 constexpr double kNumR       = kArcR * (71.0 / 104.0);
 constexpr double kNeedleR    = kArcR * (86.0 / 104.0);
+// Where the needle STARTS, which the simulator does not need and this panel
+// does. There the rpm number is 21cqw -- 98 px -- and simply covers the inner
+// half of the needle. LVGL's largest built-in Montserrat is 48 px, so the
+// number here cannot hide anything, and a needle run to the centre crosses the
+// digits instead. Starting it clear of the number's box keeps both readable;
+// the boss at the centre is what still makes it read as a needle.
+constexpr double kNeedleInnerR = 66;
 constexpr double kHubR       = kArcR * ( 7.5 / 104.0);
 
 // ---- engine and power, same 104-unit source drawing ----------------------
@@ -163,8 +170,16 @@ void band_draw_cb(lv_event_t* e) {
     lv_layer_t* layer = lv_event_get_layer(e);
     lv_area_t   coords;
     lv_obj_get_coords(obj, &coords);
-    const int32_t cx = (coords.x1 + coords.x2) / 2;
-    const int32_t cy = (coords.y1 + coords.y2) / 2;
+    // Centre exactly where lv_arc puts one, which is NOT the midpoint of the
+    // coordinates. lv_arc's get_center() uses x1 + min(w,h)/2; the midpoint
+    // (x1 + x2)/2 truncates half a pixel low, because x2 is the last pixel
+    // rather than one past it. For a 434-wide object at x1=16 that is 232 here
+    // against 233 there -- one pixel, but the band is UNDER the shutter and the
+    // redline, so a one-pixel offset uncovers one pixel of band along an edge
+    // for the entire sweep. Where the band is hot that edge is red, which is
+    // the red seen bleeding out of the grey rim.
+    const int32_t cx = coords.x1 + lv_area_get_width(&coords) / 2;
+    const int32_t cy = coords.y1 + lv_area_get_height(&coords) / 2;
 
     lv_draw_arc_dsc_t d;
     lv_draw_arc_dsc_init(&d);
@@ -189,7 +204,8 @@ void band_draw_cb(lv_event_t* e) {
     }
 }
 
-lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa) {
+lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa,
+                     bool rounded = true) {
     lv_obj_t* arc = lv_arc_create(root);
     lv_obj_set_size(arc, 434, 434);
     lv_obj_center(arc);
@@ -198,7 +214,7 @@ lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t o
     lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
     lv_arc_set_bg_angles(arc, a0, a1);
     lv_obj_set_style_arc_width(arc, 14, LV_PART_MAIN);
-    lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(arc, rounded, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, lv_color_hex(colour), LV_PART_MAIN);
     lv_obj_set_style_arc_opa(arc, opa, LV_PART_MAIN);
     return arc;
@@ -235,10 +251,16 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
         g_band[g_band_n].colour = mix(kTrack, hot, h * gauge::kGlowMaxOpa);
         g_band[g_band_n].a0 = static_cast<int16_t>(
             (static_cast<int>(kStartDeg) + i * kBandDeg) % 360);
-        // One degree of overlap onto the next segment. Arcs that merely abut
-        // leave a hairline of background between them the whole way round.
+        // One degree of overlap onto the next segment, because arcs that
+        // merely abut leave a hairline of background between them the whole way
+        // round -- but NOT on the last segment, which has no neighbour to meet.
+        // Overlapping there pushed the band one degree past the end of the
+        // sweep, and the shutter that covers the band only spans the sweep, so
+        // that degree was never covered: a sliver of the hottest, reddest
+        // segment showing past the end of the grey rim at bottom right.
+        const bool last = (i == kHeatBands - 1);
         g_band[g_band_n].a1 = static_cast<int16_t>(
-            (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + 1) % 360);
+            (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + (last ? 0 : 1)) % 360);
         ++g_band_n;
     }
     lv_obj_t* band = lv_obj_create(root);
@@ -253,7 +275,13 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
     // top of the dial still reads as a limit and not just as more colour.
     if (id.rpm_red > 0 && id.rpm_max > id.rpm_red) {
         const int a0 = static_cast<int>(std::lround(dial_angle(id.rpm_red, id.rpm_max))) % 360;
-        mk_rim_arc(root, a0, 45, kRedline, LV_OPA_COVER);
+        // Square ends, because a rounded cap is drawn OUTSIDE the angles it is
+        // given and so puts red past both ends of the segment it was asked for.
+        // Worth having, but for the record it was NOT the red bleed reported on
+        // this dial: that was the band's one-pixel centre offset (band_draw_cb)
+        // and the shutter's anti-aliased edge (ui.cpp). Squaring the caps
+        // changed nothing visible.
+        mk_rim_arc(root, a0, 45, kRedline, LV_OPA_COVER, false);
     }
 }
 
@@ -317,8 +345,7 @@ Face build_over_tacho(lv_obj_t* root, const gauge::Identity& id) {
     lv_obj_set_style_line_width(f.needle, 7, 0);
     lv_obj_set_style_line_rounded(f.needle, true, 0);
     lv_obj_set_style_line_color(f.needle, lv_color_hex(kNeedle), 0);
-    set_line(f.needle, f.needle_pts, {static_cast<lv_value_precise_t>(kCx),
-                                      static_cast<lv_value_precise_t>(kCy)},
+    set_line(f.needle, f.needle_pts, polar(kNeedleInnerR, kStartDeg),
              polar(kNeedleR, kStartDeg));
 
     // The hub last, so the needle's blunt end is covered by it rather than
@@ -465,8 +492,7 @@ void update_tacho(Face& f, const Model& m) {
     if (q > kNeedleSteps) q = kNeedleSteps;
     if (q == f.needle_q) return;
     f.needle_q = q;
-    set_line(f.needle, f.needle_pts,
-             {static_cast<lv_value_precise_t>(kCx), static_cast<lv_value_precise_t>(kCy)},
+    set_line(f.needle, f.needle_pts, polar(kNeedleInnerR, kStartDeg + q),
              polar(kNeedleR, kStartDeg + q));
 }
 

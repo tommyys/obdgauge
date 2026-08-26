@@ -113,13 +113,19 @@ ViewObjs build_view(const ViewSpec& spec) {
     if (wants_arc) {
         const bool inset = face_k == Instrument::InsetRing;
         v.arc = lv_arc_create(c);
-        const int d = inset ? kInsetRingPx : 434;
+        // The tacho's shutter is drawn slightly larger than the band it hides.
+        // Identical geometry is not enough: both arcs are anti-aliased, so the
+        // shutter's edge pixels are only partly opaque and the bright redline
+        // underneath shows through them as a thin red line along the rim. The
+        // shutter is dark on a black face, so oversizing it is free -- nothing
+        // else reaches this far out (the ticks stop at radius 190).
+        const int d = inset ? kInsetRingPx : (tacho ? 438 : 434);
         lv_obj_set_size(v.arc, d, d);
         lv_obj_center(v.arc);
         lv_arc_set_bg_angles(v.arc, 135, 45);
         lv_obj_remove_style(v.arc, nullptr, LV_PART_KNOB);
         lv_obj_remove_flag(v.arc, LV_OBJ_FLAG_CLICKABLE);
-        const int w = inset ? 19 : 14;
+        const int w = inset ? 19 : (tacho ? 18 : 14);
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_MAIN);
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_INDICATOR);
         if (tacho) {
@@ -161,9 +167,16 @@ ViewObjs build_view(const ViewSpec& spec) {
 
     // Thermals has no hero -- the view IS the comparison between its three
     // temperatures, so promoting one of them would misrepresent it.
+    //
+    // Faces with a needle carry a boss at the centre, 30 px across, and the
+    // unit line sat right on it. The simulator never collides because its hero
+    // is 21cqw -- 98 px -- and simply covers the boss; LVGL's largest built-in
+    // Montserrat is 48 px, so here the two have to be moved apart instead.
+    const int hub_lift = (face_k == Instrument::TachoDial ||
+                          face_k == Instrument::Power) ? 24 : 0;
     if (spec.hero) {
-        v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, -60);
-        v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, -18);
+        v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, -60 - hub_lift);
+        v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, -18 - hub_lift);
         lv_label_set_text(v.unit, spec.hero_unit ? spec.hero_unit : "");
     }
 
@@ -172,7 +185,7 @@ ViewObjs build_view(const ViewSpec& spec) {
     // -- the coach verdict, the peak -- so it moves up into that slot rather
     // than leaving a gap the width of a line above it.
     if (spec.state_word) {
-        const int wy = spec.hero_unit ? 22 : -18;
+        const int wy = (spec.hero_unit ? 22 : -18) - hub_lift;
         const lv_font_t* f = spec.hero_unit ? &lv_font_montserrat_28 : &lv_font_montserrat_20;
         v.word = mk_label(c, f, 0x808080, LV_ALIGN_CENTER, 0, wy);
     }
@@ -196,11 +209,20 @@ ViewObjs build_view(const ViewSpec& spec) {
             lv_label_set_text(v.rlabel[i], spec.rows[i].label);
         }
     } else {
-        // Rows sit as label/value pairs below the hero, left and right of centre.
+        // Stacked label/value pairs below the hero, left and right of centre --
+        // the original arrangement. Only the SIZE was ever wrong: at 20 px the
+        // text was wide enough to reach the dial numbering at radius 143 and
+        // collided with it. At 14 px, with the rows drawn a little tighter, the
+        // whole block sits inside the empty bottom of the dial: a 270-degree
+        // sweep running bottom-left over the top to bottom-right leaves
+        // everything between 45 and 135 degrees free.
         for (int i = 0; i < n; ++i) {
-            int y = 66 + i * 27;
-            v.rlabel[i] = mk_label(c, &lv_font_montserrat_20, 0x606060, LV_ALIGN_CENTER, -78, y);
-            v.rvalue[i] = mk_label(c, &lv_font_montserrat_20, 0xD0D0D0, LV_ALIGN_CENTER, 62, y);
+            int y = 66 + i * 24;
+            // Label and value close enough to read as one phrase. At the old
+            // +/-78 and 62 the two were 140 px apart, which at 14 px text left
+            // them looking like two unrelated columns.
+            v.rlabel[i] = mk_label(c, &lv_font_montserrat_14, 0x606060, LV_ALIGN_CENTER, -40, y);
+            v.rvalue[i] = mk_label(c, &lv_font_montserrat_14, 0xD0D0D0, LV_ALIGN_CENTER, 20, y);
             lv_label_set_text(v.rlabel[i], spec.rows[i].label);
         }
     }

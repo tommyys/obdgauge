@@ -31,6 +31,7 @@
 #include "live_link.h"
 #include "imu.h"
 #include "flight_log.h"
+#include "drive_log.h"
 #include "gauge_ui.h"
 #include "slide.h"
 #include "esp_lv_adapter.h"
@@ -192,6 +193,7 @@ extern "C" void app_main(void) {
     printf("imu: %s (addr 0x%02x, whoami 0x%02x)\n",
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
     flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
+    drive_log_init();
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE
     // controller up costs a burst of DMA-capable internal RAM, and the gauge's
@@ -276,6 +278,7 @@ extern "C" void app_main(void) {
             live::Sample smp{};
             while (live::next(&smp)) {
                 st.set(smp.key, smp.value);
+                drive_log_sample(smp.key, smp.value, smp.t_s);
                 // Wall-clock seconds, unlike the replay's own timeline: this
                 // drive is happening now, so trip distance and the harshness
                 // thresholds are measuring real elapsed time (SPEC.md s4).
@@ -392,10 +395,6 @@ extern "C" void app_main(void) {
                            v("rpm"), v("speed"), v("coolant"), v("intake"),
                            v("throttle"), v("load"), v("volts"), v("fuel_rate"));
                 }
-                imu_sample_t im{};
-                if (have_imu && imu_read(&im))
-                    printf("     imu: a %+.2f %+.2f %+.2f g   g %+.1f %+.1f %+.1f dps\n",
-                           im.ax, im.ay, im.az, im.gx, im.gy, im.gz);
                 bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();

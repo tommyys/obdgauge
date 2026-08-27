@@ -84,10 +84,12 @@ void task(void*) {
                 for (const auto& k : g_keys) { list += k; list += ' '; }
                 printf("live: channels: %s\n", list.c_str());
 
-                // The display set, not the full sweep: a logging run wants
-                // every PID, a gauge wants rpm and speed to stay current.
+                // Every PID the car supports, not just the display set: the
+                // recorder wants all of it, and build_poll_cycle keeps
+                // kPollFast in front of each one so the needle does not
+                // notice (design s3).
                 std::vector<uint8_t> cycle =
-                    gauge::build_poll_cycle(supported, /*log_all=*/false);
+                    gauge::build_poll_cycle(supported, /*log_all=*/true);
                 backoff = 1.0;                  // a good connect resets backoff
                 size_t i = 0;
                 int misses = 0;

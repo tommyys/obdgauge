@@ -292,12 +292,39 @@ drops".
 - **Score weights** (smoothness / economy / calm) are constants at the top of
   `metrics.py` — tune them against a replay until the numbers feel right.
 
-## Porting to the board
+## The board
 
-When the Waveshare ESP32-S3-Touch-LCD-1.28 arrives:
+Done, not pending. The firmware lives in `firmware/` and runs on a **Waveshare
+ESP32-S3-Touch-AMOLED-1.75C** — not the 1.28" board this README used to
+anticipate. As of 2026-08-27 it reads the car on its own: plugged into the car's
+USB socket with no laptop attached, it goes from power-on to live engine data in
+32 seconds.
 
-- `pids.py` → `src/obd/pid.cpp` (same formulas, same tests)
-- `metrics.py` → `src/metrics/` (same accumulators)
-- `sources.LiveSource` → `src/obd/ble_transport.*` + `elm327.*` (same command
-  sequence, same discovery)
-- `web/index.html` → LVGL screens, one per view (same layout and thresholds)
+| Simulator | Firmware |
+|---|---|
+| `pids.py` | `firmware/components/gauge_core/pid.cpp`, `poll.cpp` |
+| `metrics.py` | `gauge_core/metrics.cpp` |
+| `sources.LiveSource` | `gauge_platform/ble_transport.cpp` (NimBLE), `gauge_core/elm327.cpp`, `main/live_link.cpp` |
+| `state.py` | `gauge_core/state.cpp` |
+| `vehicle.py`, `ignition.py` | `gauge_core/vehicle.cpp`, `ignition.cpp` |
+| `web/index.html` | `gauge_ui/ui.cpp` — eight of the nine views |
+
+Building and flashing, from `firmware/`:
+
+```sh
+. ../tools/idf_env.sh          # source it; plain export.sh picks the wrong Python
+idf.py -p /dev/cu.usbmodem1101 flash monitor
+```
+
+**Turn the Mac's Bluetooth off before testing in the car.** macOS auto-reconnects
+to the vLinker whenever it can, and a BLE adapter that is already connected stops
+advertising — so the board cannot see the very adapter the laptop is holding.
+Only one of them gets it at a time.
+
+For runs with no cable attached, the board keeps its own record: events go to
+NVS and the previous session is printed back on the next boot with a console
+attached (`main/flight_log.cpp`). Unplug, drive, plug in, read.
+
+**Unplug the board when you leave the car.** This car's USB socket is constant,
+not ignition-switched, so the gauge does not yet stop on its own — sleep-on-
+key-off is the next thing to build (`SPEC.md` §7).

@@ -9,7 +9,7 @@ the project up cold.
 ## 1. Goal
 
 A custom OBD-II gauge for a **Mazda MX-5 ND3 (2024, 6-speed automatic)**. A
-1.28" round touch display on the dash, driven by an ESP32, showing what the
+1.75" round AMOLED touch display on the dash, driven by an ESP32-S3, showing what the
 factory cluster doesn't. Firmware written from scratch — the build is the point,
 not the destination.
 
@@ -49,30 +49,51 @@ is explicitly out of scope.
 
 ### Chosen board
 
-**Waveshare ESP32-S3-Touch-LCD-1.28** (~RM100–140) — all-in-one:
+**Waveshare ESP32-S3-Touch-AMOLED-1.75C** — all-in-one, and *not* the board the
+first draft of this spec picked. Everything below is measured on the real
+hardware rather than read off a product page:
 
-- round **GC9A01** 240×240 IPS LCD
-- **CST816** capacitive touch → the swipeable view carousel
-- **QMI8658** 6-axis IMU → harsh-event detection for the driving score
+- round **CO5300 AMOLED, 466×466**, over QSPI. This project's vendored BSP
+  raises the panel clock to 80 MHz; at that clock a full-screen transfer costs
+  19 ms measured
+- **CST9217** capacitive touch → the swipeable view carousel
+- **QMI8658** 6-axis IMU. Read for the first time on 2026-08-27: gravity
+  registers on **Z, through the screen**. Which of X and Y is longitudinal
+  is still unknown and needs a moving car in the final mounting orientation
+- 32 MB flash, 8 MB octal PSRAM
 
 *Trade-off accepted:* the ESP32-S3 has **no Bluetooth Classic**, so it talks to
-the adapter over **BLE**. That's fine — the vLinker already does BLE with the
-iPhone every day. Bundling touch + IMU + round display on one board outweighs
-the slightly fiddlier transport.
+the adapter over **BLE**. Unchanged from the original reasoning and still worth
+recording — and now confirmed in the car: the board scans, connects to the
+vLinker, and runs the ELM327 handshake with no Mac involved.
 
 > If you ever swap to a modular build, note the **classic ESP32-WROOM-32** has
 > Bluetooth Classic (simpler SPP transport) but needs a separate LCD, touch
 > controller and IMU.
+
+**The memory constraint that governs this board.** Internal DMA-capable RAM is
+the scarce resource, not PSRAM and not flash. Any SPI transfer to the panel
+whose source is not DMA-capable makes the driver allocate a *contiguous
+internal* buffer the size of the whole transfer and copy into it, per transfer
+(`spi_master.c`, `setup_priv_desc`). Drawing from PSRAM in large bands
+therefore needs a large contiguous internal block on every single flush, and
+once the heap is fragmented that allocation fails permanently — the display
+freezes mid-frame and does not recover. **Nothing in the draw path may
+allocate.** The LVGL draw buffers live in internal DMA RAM in 16-row bands and
+the carousel slide blits through one 32-row buffer reserved at first use. That
+leaves ~22 KB of DMA-capable RAM spare, which the `ui:` log line reports every
+two seconds precisely so the next thing to want internal memory can be checked
+against it.
 
 ### Bill of materials (Malaysia, typical street prices)
 
 | Item | Model | RM |
 |---|---|---|
 | OBD adapter | **Vgate vLinker MC+** (owned) | 130–180 |
-| Board | Waveshare ESP32-S3-Touch-LCD-1.28 | 100–140 |
-| Power | DC-DC buck, 8–40 V → 5 V 3 A | 8–15 |
+| Board | **Waveshare ESP32-S3-Touch-AMOLED-1.75C** | 200–260 |
+| Power | DC-DC buck, 8–40 V → 5 V 3 A — *optional, see Power* | 8–15 |
 | OBD extension | male→female / Y-splitter cable | 15–30 |
-| 12 V tap | add-a-circuit fuse tap + inline fuse | 5–10 |
+| 12 V tap | add-a-circuit fuse tap + inline fuse — *optional, see Power* | 5–10 |
 | Wiring | JST connectors, heat-shrink | 10–20 |
 | *(later)* GPS | u-blox NEO-M8N | 18–35 |
 | *(later)* SD | microSD breakout | 3–6 |
@@ -81,10 +102,28 @@ the slightly fiddlier transport.
 
 ### Power (in-car install)
 
-Feed the buck converter from an **ignition-switched 12 V source**, *not* OBD
-pin 16, and have the firmware **deep-sleep** when the link goes idle as a
-backstop. Bench and early in-car testing run on **USB** — no wiring or soldering
-needed until the permanent install.
+**Measured in the car on 2026-08-27: this car's USB socket is CONSTANT, not
+ignition-switched.** The board was run from it with nothing else attached and
+stayed lit with the key out. That single fact decides most of this section.
+
+**Plugging into the car's USB socket is a legitimate permanent install.** The
+buck converter and the fuse tap in the BOM above are therefore **optional** —
+they buy a tidier cable run, not function. Power-on to live engine data takes
+**32 seconds** on that socket with no laptop involved: boot 0.06 s, display
+5.4 s, adapter found 13.1 s, 50 PIDs 28.0 s, first reading 32.0 s.
+
+**The cost of constant power is that the gauge never stops.** Key out, car
+locked, and it sits there with the panel lit and BLE scanning until the battery
+gives up. On a car that sits between weekends that is a flat battery, and it is
+the most important open item on the firmware path. **Until the firmware sleeps,
+unplug the board when leaving the car.**
+
+**The shutdown trigger already exists and is proven.** At key-off the vLinker
+stops answering and the poll loop reports it within about 15 seconds (12
+consecutive empty replies), observed at a real key-off. That is the signal to
+blank the panel and sleep — and, because there *is* power after key-off, it is
+also the moment a shutdown animation could play. See §14, where the reasoning
+that ruled one out no longer holds.
 
 ---
 
@@ -129,27 +168,49 @@ Recording the reasoning so it isn't relitigated:
 
 ## 5. Architecture
 
+The simulator and the firmware are the same design twice, meeting at one seam.
+Everything above the transport is pure logic, host-tested, and shared in shape
+between the two; only the bytes on the wire differ.
+
 ```
-BLE / replay  ->  ELM327  ->  PID decode  ->  VehicleState
-                                                  |
-                                    metrics (economy / trip / score)
-                                                  |
-                                       HTTP :8420 -> round gauge UI
+  Mac:   bleak ---.                                    .--> HTTP :8420 -> browser
+                   \                                  /
+                    +-> ELM327 -> PID decode -> VehicleState
+                   /                    |             \
+  Board: NimBLE --'          metrics (economy /         '--> LVGL -> AMOLED
+                             trip / score)
 ```
 
-| Module | Role | Ports to firmware as |
+| Module | Role | Ported to |
 |---|---|---|
-| `mx5gauge/pids.py` | PID table, decode formulas, response parsing | `src/obd/pid.cpp` |
-| `mx5gauge/metrics.py` | economy, trip accumulators, driving score | `src/metrics/` |
-| `mx5gauge/sources.py` | BLE + ELM327 client; `.brc`/CSV replay | `src/obd/ble_transport.*`, `elm327.*` |
-| `mx5gauge/state.py` | shared state, range validation, derived snapshot | `VehicleState` struct |
-| `mx5gauge/recorder.py` | CSV logging + JSON summary | SD-card logging (phase 3) |
-| `mx5gauge/web/index.html` | the nine views | LVGL screens |
-| `mx5gauge/library.py` | the replayable-drive library | SD-card index |
-| `mx5gauge/vehicle.py` | VIN decode, per-car dial profiles | `src/vehicle.*` |
+| `mx5gauge/pids.py` | PID table, decode formulas, response parsing | `gauge_core/pid.cpp`, `poll.cpp` |
+| `mx5gauge/metrics.py` | economy, trip accumulators, driving score | `gauge_core/metrics.cpp` |
+| `mx5gauge/sources.py` | BLE + ELM327 client; `.brc`/CSV replay | `gauge_platform/ble_transport.cpp` (NimBLE), `gauge_core/elm327.cpp`, `main/live_link.cpp` |
+| `mx5gauge/state.py` | shared state, range validation, derived snapshot | `gauge_core/state.cpp` |
+| `mx5gauge/vehicle.py` | VIN decode, per-car dial profiles | `gauge_core/vehicle.cpp` |
+| `mx5gauge/ignition.py` | engine stop/start from the sample stream | `gauge_core/ignition.cpp` |
+| `mx5gauge/library.py` | the replayable-drive library | `gauge_core/replay.cpp` + `main/drive_source.c` (mmap'd `drives` partition) |
+| `mx5gauge/web/index.html` | the eight views | `gauge_ui/ui.cpp`, `slide.cpp` |
+| `mx5gauge/recorder.py` | CSV logging + JSON summary | **not ported** — on-board drive logging is still phase 3 |
 
-`pids.py` and `metrics.py` are pure and host-tested — that's deliberate, so the
-maths is proven before it ever runs on the board.
+**The transport seam.** `gauge_core/transport.h` is the whole of it: `write`,
+`read` up to the ELM327's `>` prompt, and a delay. `bleak` fills it on the Mac,
+NimBLE on the board, and a fake fills it in the host tests — so the handshake
+proven by `test_elm327.cpp` is byte-for-byte the one that runs in the car.
+There is no second implementation to keep honest.
+
+**Everything in `gauge_core` builds and runs on the host.** `firmware/test/host`
+covers state, PID decode, poll order, metrics, carousel wrap, view gating,
+ignition and replay. `tools/verify_port.sh` goes further: it replays real logs
+through both the C++ and the Python cores, diffs every channel, then mutates
+the C++ to prove the harness would have noticed. Run it after touching anything
+in `mx5gauge/` that the port mirrors.
+
+**What is board-specific, and is therefore the only code a host test cannot
+reach:** `gauge_platform/ble_transport.cpp`, `main/drive_source.c`,
+`main/imu.c`, `main/live_link.cpp`, `main/flight_log.cpp` and the LVGL views.
+`flight_log` exists for exactly that reason — see §3's note that the gauge's
+real life has no console attached.
 
 ### Tunables
 
@@ -175,6 +236,14 @@ maths is proven before it ever runs on the board.
 | 8 | Electrical | control-module voltage / ATRV, charge status |
 | 9 | Drives | the replayable-drive library (§12), and one drive's summary + timeline (§13) |
 
+**Eight of the nine are on the board.** Views 1–8 are built and running on the
+AMOLED (plus the not-available screens that replace any view whose channels the
+car does not supply — `gauge::view_available`, host-tested). **View 9, Drives,
+is simulator-only**: browsing a library of past drives needs drives to have been
+recorded on the board first, and on-board drive logging is still phase 3. The
+firmware's carousel is eight wide, and `gauge_ui::view_count()` is the authority
+on that.
+
 Fuel rail temperature was dropped from Thermals: across every capture it
 returned **2 distinct values in 375 samples** (72/73 °C), so it is a canned
 number rather than a sensor — and there is no standard mode-01 PID for rail
@@ -193,26 +262,45 @@ than a rewind of the whole strip.
 - Reverse-engineered the Car Scanner `.brc` format (`mx5gauge/brc.py`)
 - Established what the car does and doesn't expose (section 2)
 - Mac simulator: live BLE + replay, eight views, full logging, session replay
-- **Live BLE connection to the car verified working**
+- **Board bought and brought up** — the AMOLED-1.75C, not the board this spec
+  originally picked (section 3)
+- **`gauge_core` ported to C++** and host-tested, cross-validated against the
+  Python core by `tools/verify_port.sh`
+- **All eight views on the board**, plus the not-available screens
+- **Boot splash on the panel** (§14)
+- **Phase 0 complete — the board talks to the car.** Proven 2026-08-27 with the
+  engine running: scan → connect → ELM327 handshake → 50 supported PIDs →
+  views switched off replay and onto the vehicle, no Mac in the loop. Idle
+  rpm 770, coolant 89 °C, 13.4 V, ~1 L/h — decoded values sane, not merely a
+  reply received. Survives an ignition cycle unattended and reconnects itself.
+- **Runs standalone on the car's USB socket**, 32 s from power-on to live data
 
 **Next**
-1. **Capture a proper drive** — 15–20 min with variety (town, open road, a few
-   pulls). Needed to tune the driving-score weights against real numbers.
-2. **Buy the board** (section 3) — the long pole; order early.
-3. **Phase 0 — bench bring-up** (USB, no soldering): display test pattern, touch
-   events, IMU readings, BLE connect + ELM327 init.
-4. **Phase 1 — firmware MVP**: port `pids` + `metrics`, render the engine-vitals
-   home screen, add ignition-off deep-sleep.
-5. **Phase 2 — the carousel**: touch swiping, the remaining views, the
-   user-supplied startup animation.
-6. **Phase 3 — extras**: SD logging, Wi-Fi sync, GPS, shift LEDs, 3D-printed
-   enclosure, permanent switched-12 V install.
+1. **Sleep when the car shuts down.** The top item, and it is a battery
+   problem, not a feature: the USB socket is constant (section 3, Power), so
+   the gauge currently runs until the battery is flat. The trigger is already
+   proven — the adapter stops answering within ~15 s of key-off. Blank the
+   panel, sleep, wake when it answers again. The shutdown animation that B1
+   dropped becomes possible in the same change.
+2. **Capture a proper drive** — 15–20 min with variety (town, open road, a few
+   pulls), now recordable from the board itself rather than the Mac.
+3. **B3 — decide what "spirited" means** (§7.5). Not a build task. Nothing in
+   the driving score should be tuned before it is settled, or the constants get
+   tuned twice.
+4. **Mount the board**, then identify the IMU axes in that orientation. Gravity
+   is known to read on Z; longitudinal versus lateral is not, and cannot be
+   until the board is fixed in place.
+5. **Phase 3 — extras**: on-board drive logging, Wi-Fi sync, GPS, shift LEDs,
+   3D-printed enclosure.
 
 **Open questions**
-- Driving-score weights are untuned guesses — needs a real drive log.
+- Driving-score weights are untuned guesses — needs a real drive log *and* B3.
 - Whether to fit a physical oil-temp sender.
 - Mounting position and enclosure design.
-- Exact ignition-switched 12 V tap point in the car.
+- ~~Exact ignition-switched 12 V tap point~~ — **moot**: the USB socket is
+  constant and is a legitimate install (section 3, Power).
+- The car will not answer mode 09, so the VIN is permanently empty and
+  identification falls back to the configured make/model. Not a bug.
 
 ---
 
@@ -592,7 +680,18 @@ There is deliberately no `ASLEEP` phase. A car that is off is a board with no
 power, not a board in a state, and modelling something the hardware cannot be
 in would be fiction.
 
-### Why there is no shutdown animation
+### Why there is no shutdown animation — *superseded 2026-08-27*
+
+> **The premise below was measured and is false.** It assumed §3 fed the board
+> from an ignition-switched source, making key-off a hard power cut with no
+> frame left to draw in. The board was then run from the car's own USB socket
+> and **stayed lit with the key out**: the socket is constant. There is power
+> after key-off, and there is a reliable trigger for it (the adapter stops
+> answering within ~15 s). A shutdown animation is therefore possible, and it
+> arrives with the sleep behaviour the constant supply now makes necessary —
+> see §3's Power note and §7's first Next item. The original reasoning is kept
+> below because the consequence it forced, in the following subsection, is real
+> and still load-bearing.
 
 `SPEC.md` §3 feeds the buck converter from an ignition-switched source. Key-off
 is a hard power cut, so a shutdown animation could never be seen. This was

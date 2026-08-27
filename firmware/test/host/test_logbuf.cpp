@@ -1,3 +1,5 @@
+#include <cstring>
+
 #include "check.h"
 #include "fake_flash.h"
 #include "logbuf.h"
@@ -80,6 +82,12 @@ static size_t linear_count(gauge_test::FakeFlash& f, size_t sector) {
 }
 
 static void test_records_in_matches_linear_scan() {
+    // target = 0 here is an *unwritten* sector: its header never validates,
+    // so mount() skips it via valid(h) before records_in() is ever called.
+    // It proves an unopened sector contributes 0 to record_count() -- it
+    // does not exercise the bisection. The bisection's own zero case (a
+    // valid header, no committed records) is covered separately by
+    // test_records_in_zero_with_valid_header(), below.
     const size_t targets[] = {0, 1, 2, 170, 339, 340};
     for (size_t target : targets) {
         FakeFlash f(8);
@@ -101,11 +109,48 @@ static void test_records_in_matches_linear_scan() {
     }
 }
 
+// A power cut between open_sector() writing the 16-byte header and flush()
+// writing the first record leaves exactly this on the real board: a valid,
+// still-current header with zero committed records after it. That is the
+// bisection's genuine zero case -- unlike an unopened sector, valid(h)
+// passes and mount() does call records_in() here. The header is written
+// directly (not via begin_drive(), which always commits its start marker
+// in the same call) because this is a partial-write state, not one any
+// public LogBuf sequence produces on its own.
+static void test_records_in_zero_with_valid_header() {
+    FakeFlash f(8);
+    struct {
+        char     magic[4];
+        uint32_t seq;
+        uint32_t drive;
+        uint16_t flags;
+        uint16_t pad;
+    } h{};
+    memcpy(h.magic, "MX5L", 4);
+    h.seq = 1;
+    h.drive = 1;
+    h.flags = 1;   // opens a drive
+    h.pad = 0;
+    static_assert(sizeof(h) == gauge::kSectorHeaderSize, "header layout mismatch");
+    check("write header directly", f.write(0, &h, sizeof h), true);
+
+    gauge::LogBuf log(f);
+    check("mount sees the valid, empty sector", log.mount(), true);
+    check("drive_count sees the open drive", (int)log.drive_count(), 1);
+    check("record_count is zero", (int)log.record_count(), 0);
+
+    const size_t expect = linear_count(f, 0);
+    check("bisection matches linear scan on header-only sector",
+          (int)log.record_count(), (int)expect);
+    check("linear scan also sees zero", (int)expect, 0);
+}
+
 int main() {
     test_layout();
     test_mount_empty();
     test_append_and_reopen();
     test_append_without_flush_is_lost_but_harmless();
     test_records_in_matches_linear_scan();
+    test_records_in_zero_with_valid_header();
     return gauge_test::check_report();
 }

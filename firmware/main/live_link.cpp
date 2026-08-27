@@ -13,6 +13,7 @@
 #include "ble_transport.h"
 #include "elm327.h"
 #include "poll.h"
+#include "flight_log.h"
 
 namespace live {
 namespace {
@@ -30,6 +31,7 @@ void set_status(const char* fmt, ...) {
     vsnprintf(g_status, sizeof g_status, fmt, ap);
     va_end(ap);
     printf("live: %s\n", g_status);
+    flight_log("%s", g_status);
 }
 
 double now_s() { return esp_timer_get_time() / 1e6; }

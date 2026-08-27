@@ -30,6 +30,7 @@
 #include "drive_source.h"
 #include "live_link.h"
 #include "imu.h"
+#include "flight_log.h"
 #include "gauge_ui.h"
 #include "slide.h"
 #include "esp_lv_adapter.h"
@@ -138,6 +139,9 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
 
 extern "C" void app_main(void) {
     printf("\n=== mx5-gauge %s: boot splash + home view ===\n", gauge::core_version());
+    // First, so that a run which dies during display bring-up still says so,
+    // and so the previous run's record is printed before anything can hang.
+    flight_log_init();
     // 64-byte aligned because the frame is cache-synced before the panel's DMA
     // reads it, exactly as the slide's buffers are.
     g_fb = static_cast<uint16_t*>(
@@ -187,6 +191,7 @@ extern "C" void app_main(void) {
     const bool have_imu = imu_init();
     printf("imu: %s (addr 0x%02x, whoami 0x%02x)\n",
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
+    flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE
     // controller up costs a burst of DMA-capable internal RAM, and the gauge's
@@ -305,6 +310,14 @@ extern "C" void app_main(void) {
         gauge_ui::update(model);
         bsp_display_unlock();
 
+        // Reprinted for the first minute, because a console attached after the
+        // boot print has missed it -- see flight_log_replay().
+        static int replays = 0;
+        if (replays < 4 && esp_timer_get_time() - t0 > (replays + 1) * 15000000) {
+            ++replays;
+            flight_log_replay();
+        }
+
         if (esp_timer_get_time() - last_fps_log > 2000000) {
             last_fps_log = esp_timer_get_time();
             uint32_t fps = 0;
@@ -353,6 +366,23 @@ extern "C" void app_main(void) {
                 // proves the car answered, not that we decoded it into
                 // anything sane.
                 if (live_mode) {
+                    static int64_t last_rec = 0;
+                    auto o = [&](const char* k) {
+                        auto x = st.get(k);
+                        return x ? *x : -1.0;
+                    };
+                    // Held back until the first reading actually lands. The
+                    // switch to live happens the moment the car answers its
+                    // PID sweep, which is before any value has arrived -- and
+                    // a recorded line of "-1 -1 -1" reads as a dead link when
+                    // it only means "one second early".
+                    if (o("rpm") >= 0 &&
+                        esp_timer_get_time() - last_rec > 30000000) {
+                        last_rec = esp_timer_get_time();
+                        flight_log("car rpm %.0f speed %.0f coolant %.0f volts %.1f, %u fps",
+                                   o("rpm"), o("speed"), o("coolant"), o("volts"),
+                                   (unsigned)fps);
+                    }
                     auto v = [&](const char* k) {
                         auto o = st.get(k);
                         return o ? *o : -1.0;

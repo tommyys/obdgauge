@@ -58,10 +58,50 @@ public:
     size_t drive_count() const { return drive_count_; }
     size_t record_count() const { return record_count_; }
 
+    // Opens a drive. epoch_s is wall-clock seconds if the Mac has set the
+    // clock, 0 if it has not -- a drive with an honest "unknown" beats one
+    // with a timestamp that looks authoritative and is wrong.
+    bool begin_drive(uint32_t epoch_s);
+
+    // Buffers one record. Committed by flush(), or when the batch fills.
+    bool append(const Record& r);
+
+    // Commits the buffer. Call at least every 2 s: a power cut can only cost
+    // what has not been flushed.
+    bool flush();
+
+    // Writes the end marker and commits. The 20 s silence rule that decides
+    // when to call this lives in main/drive_log.cpp, not here.
+    bool end_drive();
+
+    uint32_t current_drive() const { return drive_; }
+    uint32_t next_drive_id() const { return next_drive_; }
+
 private:
+    static constexpr size_t kBatch = 32;      // 384 B of RAM, ~1 s of records
+
+    // Number of records already committed in `sector`. Binary-searches for
+    // the boundary between committed slots and still-erased ones -- records
+    // are contiguous from the start of a sector by construction, so ~log2
+    // reads (about 9 for 340 slots) replace what would otherwise be up to
+    // 340 flash reads per sector, and mount() does this for every sector.
+    size_t records_in(size_t sector);
+
+    bool open_sector(uint32_t drive, bool opens_drive);
+    bool advance_sector(uint32_t drive, bool opens_drive);
+
     IFlash& flash_;
     size_t  drive_count_  = 0;
     size_t  record_count_ = 0;
+
+    size_t   head_        = 0;      // sector index being written
+    uint32_t seq_         = 0;      // seq of head_
+    size_t   used_        = 0;      // records already committed in head_
+    uint32_t drive_       = 0;      // 0 = no drive open
+    uint32_t next_drive_  = 1;
+    Record   batch_[kBatch]{};
+    size_t   batch_n_     = 0;
+    bool     mounted_     = false;
 };
 
 }  // namespace gauge

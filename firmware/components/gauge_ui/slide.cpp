@@ -36,7 +36,17 @@ constexpr int kSlideMs = 240;
 // bouncing misaligned bands through internal RAM; the cost is the ~1.6 ms of
 // per-band round-trip, ten times a frame. Left at 50, the value the adapter's
 // own flush path uses on every frame.
-constexpr int kBlitRows = 50;
+//
+// Dropped 50 -> 16 on 2026-08-27, together with a staging buffer (g_band
+// below), because 50 was the number that broke the gauge once BLE was on. The
+// note above was right that misaligned bands were not being bounced -- what it
+// missed is that a PSRAM *source* is bounced regardless of alignment
+// (spi_master.c, setup_priv_desc): the driver allocates a contiguous internal
+// buffer the size of the whole band and copies into it, per blit. At 50 rows
+// that is a 46 KB allocation ten times a frame, and with BLE holding internal
+// RAM there was no 46 KB block to be had -- every blit failed and the slide
+// froze the display for good.
+constexpr int kBlitRows = 32;
 
 // The make/model banner and the page dots belong to the carousel frame, not to
 // any one view, so they must not travel with the content -- a page indicator
@@ -96,15 +106,40 @@ uint16_t* alloc_frame(size_t bytes) {
         heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM));
 }
 
+// One band's worth of DMA-capable internal RAM, allocated once and reused for
+// every blit for the rest of the boot. This is the whole point: the copy from
+// PSRAM happens either way -- the SPI driver would do it itself -- but doing it
+// here means the memory is reserved up front instead of being asked for, and
+// refused, mid-slide.
+uint16_t* g_band = nullptr;
+bool g_band_tried = false;
+
+uint16_t* band_buffer(int w) {
+    if (!g_band_tried) {
+        g_band_tried = true;
+        g_band = static_cast<uint16_t*>(heap_caps_aligned_alloc(
+            64, static_cast<size_t>(w) * kBlitRows * 2,
+            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        printf("slide: band buffer %s\n", g_band ? "reserved" : "UNAVAILABLE");
+    }
+    return g_band;
+}
+
 // Rows [y0,y1) of a full-width frame, in kBlitRows bands because one blit of
 // the whole thing returns ESP_ERR_NO_MEM (see kBlitRows above).
 esp_err_t blit_bands(lv_display_t* disp, const uint16_t* frame, int w,
                      int y0, int y1) {
     esp_err_t first = ESP_OK;
+    uint16_t* band = band_buffer(w);
     for (int y = y0; y < y1; y += kBlitRows) {
         const int hh = (y + kBlitRows <= y1) ? kBlitRows : (y1 - y);
+        const uint16_t* src = frame + static_cast<size_t>(y) * w;
+        if (band) {
+            memcpy(band, src, static_cast<size_t>(w) * hh * 2);
+            src = band;
+        }
         esp_err_t e = esp_lv_adapter_dummy_draw_blit(
-            disp, 0, y, w, y + hh, frame + static_cast<size_t>(y) * w, true);
+            disp, 0, y, w, y + hh, src, true);
         if (e != ESP_OK && first == ESP_OK) first = e;
     }
     return first;
@@ -214,10 +249,14 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // The rows that never move, painted once. From the DESTINATION snapshot, so
     // the page indicator has already stepped when the slide starts moving.
     {
-        esp_err_t e1 = esp_lv_adapter_dummy_draw_blit(disp, 0, 0, g_w, kMoveTop, g_to, true);
-        esp_err_t e2 = esp_lv_adapter_dummy_draw_blit(
-            disp, 0, kMoveBot, g_w, g_h,
-            g_to + static_cast<size_t>(kMoveBot) * g_w, true);
+        // Banded rather than sent whole: these two were the last blits still
+        // asking the SPI driver for a bounce buffer the size of the region,
+        // and they are the one failure per slide that survived every other
+        // fix here -- the ESP_ERR_NO_MEM this file's comments have recorded
+        // as unavoidable since the slide was written. It was not unavoidable;
+        // it was the band size.
+        esp_err_t e1 = blit_bands(disp, g_to, g_w, 0, kMoveTop);
+        esp_err_t e2 = blit_bands(disp, g_to, g_w, kMoveBot, g_h);
         if (e1 != ESP_OK || e2 != ESP_OK) printf("slide: fixed rows failed\n");
     }
 
@@ -260,13 +299,8 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
         if (serr != ESP_OK && !sync_err) sync_err = serr;
         const int64_t c2 = esp_timer_get_time();
         sync_us += c2 - c1;
-        for (int y = kMoveTop; y < kMoveBot; y += kBlitRows) {
-            const int hh = (y + kBlitRows <= kMoveBot) ? kBlitRows : (kMoveBot - y);
-            esp_err_t berr = esp_lv_adapter_dummy_draw_blit(
-                disp, 0, y, g_w, y + hh,
-                g_compose + static_cast<size_t>(y) * g_w, true);
-            if (berr != ESP_OK && !blit_err) blit_err = berr;
-        }
+        esp_err_t berr = blit_bands(disp, g_compose, g_w, kMoveTop, kMoveBot);
+        if (berr != ESP_OK && !blit_err) blit_err = berr;
         blit_us += esp_timer_get_time() - c2;
         ++frames;
     }

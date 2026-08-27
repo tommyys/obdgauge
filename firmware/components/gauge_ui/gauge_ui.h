@@ -38,6 +38,12 @@ void update(const Model& m);
 // switching worked only sometimes.
 const char* slide_note();
 bool slide_selftest(int hold_ms);
+// Runs a real view change -- the same slide a swipe produces -- without a
+// finger on the glass. Kept for the same reason slide_selftest() is: the swipe
+// path is where this firmware's memory failures show up, and being able to
+// trigger it from the app loop is what let the SPI bounce-buffer exhaustion be
+// measured rather than argued about. step is +1 or -1.
+void advance_view(int step);
 int gesture_count();
 int press_count();
 int release_count();

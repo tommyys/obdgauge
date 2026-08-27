@@ -478,8 +478,19 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
             .rotation = cfg->rotation,
             .hor_res = BSP_LCD_H_RES,
             .ver_res = BSP_LCD_V_RES,
-            .buffer_height = 50,
-            .use_psram = true,
+            // 466 x 16 x 2 = 15 KB per buffer, in internal DMA-capable RAM
+            // rather than PSRAM. Both halves of that matter, and the reason is
+            // in spi_master.c's setup_priv_desc(): a transfer whose source is
+            // not DMA-capable makes the SPI driver allocate a *contiguous
+            // internal* buffer of the whole transfer and memcpy into it, every
+            // single flush. At 50 rows in PSRAM that was a 46 KB allocation
+            // per flush, and once BLE had taken its share of internal RAM
+            // there was no 46 KB block left after a swipe fragmented the heap
+            // -- so every draw failed, permanently, and the gauge froze mid
+            // slide. Drawing into DMA-capable RAM removes the copy and the
+            // allocation both: there is nothing left to fail.
+            .buffer_height = 16,
+            .use_psram = false,
             .enable_ppa_accel = false,
             .require_double_buffer = true,
         },

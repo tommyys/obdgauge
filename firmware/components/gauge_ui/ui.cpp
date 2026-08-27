@@ -366,6 +366,10 @@ void gesture_cb(lv_event_t* e) {
 
 }  // namespace
 
+void advance_view(int step) {
+    switch_to(gauge::ring_index(g_cur, g_count, step), step);
+}
+
 void init(lv_obj_t* parent, const gauge::Identity& id) {
     g_parent = parent;
     // Presses land here now that the view roots are non-clickable, and LVGL

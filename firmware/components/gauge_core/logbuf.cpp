@@ -260,6 +260,13 @@ size_t LogBuf::list(DriveInfo* out, size_t max) {
     return written;
 }
 
+bool LogBuf::erase_all() {
+    if (!mounted_) return false;
+    for (size_t i = 0; i < flash_.sector_count(); ++i)
+        if (!flash_.erase_sector(i)) return false;
+    return mount();
+}
+
 bool LogBuf::has_drive(uint32_t id) {
     DriveInfo info{};
     return summarise(id, &info) && info.records >= kMinDriveRecords;

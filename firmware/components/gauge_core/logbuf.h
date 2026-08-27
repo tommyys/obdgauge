@@ -129,6 +129,10 @@ public:
     size_t list(DriveInfo* out, size_t max);
     bool has_drive(uint32_t id);
 
+    // Wipes every sector and starts over. The only way back from a ring the
+    // channel table has outgrown.
+    bool erase_all();
+
     // Test-only: starts the sequence numbers near the u32 rollover so the
     // wrap can be exercised without writing four billion sectors.
     void force_seq_for_test(uint32_t seq) { seq_ = seq; }

@@ -401,6 +401,16 @@ static void test_records_in_across_a_narrow_erase_hole() {
     check("finds the narrow hole exactly", (int)after.record_count(), 205);
 }
 
+static void test_erase_all() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    drive_of(log, 1756300000u, 200);
+    check("erase_all", log.erase_all(), true);
+    check("nothing left", (int)log.drive_count(), 0);
+    check("still usable", log.begin_drive(0), true);
+}
+
 static void test_channel_ids() {
     // Ids come from poll.cpp's PID table, which is sorted by PID: 0x05 is
     // coolant, 0x0C is rpm, so coolant's id comes before rpm's.
@@ -448,6 +458,7 @@ int main() {
     test_records_survive_a_cut_mid_drive();
     test_records_in_across_a_mid_sector_erase_hole();
     test_records_in_across_a_narrow_erase_hole();
+    test_erase_all();
     test_channel_ids();
     return gauge_test::check_report();
 }

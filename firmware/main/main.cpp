@@ -32,6 +32,7 @@
 #include "imu.h"
 #include "flight_log.h"
 #include "drive_log.h"
+#include "serial_cmd.h"
 #include "gauge_ui.h"
 #include "slide.h"
 #include "esp_lv_adapter.h"
@@ -194,6 +195,7 @@ extern "C" void app_main(void) {
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
     flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
     drive_log_init();
+    serial_cmd_init();
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE
     // controller up costs a burst of DMA-capable internal RAM, and the gauge's

@@ -113,6 +113,8 @@ uint16_t* alloc_frame(size_t bytes) {
 // refused, mid-slide.
 uint16_t* g_band = nullptr;
 bool g_band_tried = false;
+int64_t g_copy_us = 0, g_send_us = 0;
+int g_band_count = 0;
 
 uint16_t* band_buffer(int w) {
     if (!g_band_tried) {
@@ -134,12 +136,17 @@ esp_err_t blit_bands(lv_display_t* disp, const uint16_t* frame, int w,
     for (int y = y0; y < y1; y += kBlitRows) {
         const int hh = (y + kBlitRows <= y1) ? kBlitRows : (y1 - y);
         const uint16_t* src = frame + static_cast<size_t>(y) * w;
+        const int64_t b0 = esp_timer_get_time();
         if (band) {
             memcpy(band, src, static_cast<size_t>(w) * hh * 2);
             src = band;
         }
+        const int64_t b1 = esp_timer_get_time();
         esp_err_t e = esp_lv_adapter_dummy_draw_blit(
             disp, 0, y, w, y + hh, src, true);
+        g_copy_us += b1 - b0;
+        g_send_us += esp_timer_get_time() - b1;
+        ++g_band_count;
         if (e != ESP_OK && first == ESP_OK) first = e;
     }
     return first;
@@ -264,6 +271,8 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // must drop frames rather than run long. The travel eases out, so the view
     // arrives rather than stopping dead.
     int frames = 0;
+    g_copy_us = g_send_us = 0;
+    g_band_count = 0;
     int64_t compose_us = 0, sync_us = 0, blit_us = 0;
     esp_err_t blit_err = ESP_OK;
     esp_err_t sync_err = ESP_OK;
@@ -278,28 +287,39 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
         if (off < 1) off = 1;
         if (off > g_w) off = g_w;
         const int64_t c0 = esp_timer_get_time();
-        const size_t skip = static_cast<size_t>(kMoveTop) * g_w;
-        gauge::slide_compose(g_compose + skip, g_from + skip, g_to + skip,
-                             g_w, kMoveBot - kMoveTop, off, dir,
-                             0, 0);   // no static band inside the moving rows
+        // Composed a band at a time, straight into the DMA buffer the panel
+        // will read from -- see the loop below. The old shape (compose the
+        // whole moving region into a PSRAM scratch, flush the cache over it,
+        // then copy each band into the DMA buffer) walked 350 KB across the
+        // PSRAM bus three times per frame to put the same pixels on screen.
+        uint16_t* band = band_buffer(g_w);
         const int64_t c1 = esp_timer_get_time();
         compose_us += c1 - c0;
-        // The compose buffer lives in PSRAM and was just written by the CPU
-        // through a write-back cache; the panel's DMA reads PSRAM directly and
-        // sees whatever has actually been written back. The adapter does this
-        // for us on the normal LVGL flush path (display_cache_msync_range on
-        // the colour map) but NOT in dummy_draw_blit, which hands our pointer
-        // straight to esp_lcd_panel_draw_bitmap. Without this the frame is
-        // part new pixels and part stale cache lines, which on the panel is
-        // bands of garbage and bands that never move.
-        esp_err_t serr = esp_cache_msync(
-                        g_compose + static_cast<size_t>(kMoveTop) * g_w,
-                        static_cast<size_t>(kMoveBot - kMoveTop) * g_w * 2,
-                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-        if (serr != ESP_OK && !sync_err) sync_err = serr;
+        // The cache flush that used to sit here is gone with the PSRAM scratch
+        // it existed for: that buffer was written through a write-back cache,
+        // and dummy_draw_blit hands our pointer straight to
+        // esp_lcd_panel_draw_bitmap without the msync the adapter does on its
+        // own flush path -- so without it the panel showed bands of stale
+        // pixels. The band buffer is internal RAM, read coherently by DMA.
         const int64_t c2 = esp_timer_get_time();
         sync_us += c2 - c1;
-        esp_err_t berr = blit_bands(disp, g_compose, g_w, kMoveTop, kMoveBot);
+        esp_err_t berr = ESP_OK;
+        for (int y = kMoveTop; y < kMoveBot; y += kBlitRows) {
+            const int hh = (y + kBlitRows <= kMoveBot) ? kBlitRows : (kMoveBot - y);
+            const size_t off_px = static_cast<size_t>(y) * g_w;
+            const int64_t k0 = esp_timer_get_time();
+            uint16_t* dst = band ? band : g_compose + off_px;
+            gauge::slide_compose(dst, g_from + off_px, g_to + off_px,
+                                 g_w, hh, off, dir,
+                                 0, 0);   // no static band inside the moving rows
+            const int64_t k1 = esp_timer_get_time();
+            g_copy_us += k1 - k0;
+            esp_err_t e = esp_lv_adapter_dummy_draw_blit(disp, 0, y, g_w, y + hh,
+                                                         dst, true);
+            g_send_us += esp_timer_get_time() - k1;
+            ++g_band_count;
+            if (e != ESP_OK && berr == ESP_OK) berr = e;
+        }
         if (berr != ESP_OK && !blit_err) blit_err = berr;
         blit_us += esp_timer_get_time() - c2;
         ++frames;
@@ -314,14 +334,14 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // swipe was losing this every time, which is why the same question kept
     // having to be asked again. main() repeats it on every status line.
     snprintf(g_note, sizeof g_note,
-             "slide: snap %lldms(prep %lldms) %dfr %lldms (%.0ffps) per-frame comp %lldms "
-             "sync %lldms blit %lldms | %s %s "
+             "slide: snap %lldms(prep %lldms) %dfr %lldms (%.0ffps) "
+             "per-frame blit %lldms (compose %lldus send %lldus over %d bands) | %s %s "
              "from[t %d/%04x b %d/%04x] to[t %d/%04x b %d/%04x]",
              snap_us / 1000, prep_us / 1000, frames, anim_us / 1000,
              frames * 1e6 / static_cast<double>(anim_us ? anim_us : 1),
-             frames ? compose_us / frames / 1000 : 0,
-             frames ? sync_us / frames / 1000 : 0,
              frames ? blit_us / frames / 1000 : 0,
+             frames ? g_copy_us / frames : 0, frames ? g_send_us / frames : 0,
+             frames ? g_band_count / frames : 0,
              esp_err_to_name(sync_err), esp_err_to_name(blit_err),
              fnz_t, fx_t, fnz_b, fx_b, tnz_t, tx_t, tnz_b, tx_b);
     printf("%s\n", g_note);

@@ -75,6 +75,12 @@ void task(void*) {
                 g_ready = true;
                 set_status("live: %d PIDs, vin %s", (int)supported.size(),
                            g_vin.empty() ? "n/a" : g_vin.c_str());
+                // The car's actual capability, once, in full. Task 14 step 4
+                // asks for this to be checked against what the simulator
+                // reports for the same car, and a count cannot be compared.
+                std::string list;
+                for (const auto& k : g_keys) { list += k; list += ' '; }
+                printf("live: channels: %s\n", list.c_str());
 
                 // The display set, not the full sweep: a logging run wants
                 // every PID, a gauge wants rpm and speed to stay current.

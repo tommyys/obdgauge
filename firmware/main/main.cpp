@@ -29,6 +29,7 @@
 #include "vehicle.h"
 #include "drive_source.h"
 #include "live_link.h"
+#include "imu.h"
 #include "gauge_ui.h"
 #include "slide.h"
 #include "esp_lv_adapter.h"
@@ -178,6 +179,14 @@ extern "C" void app_main(void) {
     int64_t last_fps_log = esp_timer_get_time();
     printf("ui: %d views, starting on %s\n",
            gauge_ui::view_count(), gauge_ui::current_view_name());
+
+    // The QMI8658 is on the board and the driving score needs it (SPEC.md B3):
+    // "harsh" is a speed-delta proxy today, which lags and cannot tell braking
+    // from cornering. Which axis is which can only be settled against real
+    // gravity and real cornering, so it is logged rather than guessed.
+    const bool have_imu = imu_init();
+    printf("imu: %s (addr 0x%02x, whoami 0x%02x)\n",
+           have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE
     // controller up costs a burst of DMA-capable internal RAM, and the gauge's
@@ -338,6 +347,25 @@ extern "C" void app_main(void) {
                 // Repeated rather than printed once at the swipe: a serial
                 // capture that opens after the swipe was losing it every time.
                 printf("     %s\n", gauge_ui::slide_note());
+
+                // What the car is actually saying. Until this line existed the
+                // only evidence the live link worked was a PID count -- which
+                // proves the car answered, not that we decoded it into
+                // anything sane.
+                if (live_mode) {
+                    auto v = [&](const char* k) {
+                        auto o = st.get(k);
+                        return o ? *o : -1.0;
+                    };
+                    printf("     car: rpm %.0f speed %.0f coolant %.0f intake %.0f "
+                           "throttle %.0f load %.0f volts %.1f fuel %.2f (-1 = absent)\n",
+                           v("rpm"), v("speed"), v("coolant"), v("intake"),
+                           v("throttle"), v("load"), v("volts"), v("fuel_rate"));
+                }
+                imu_sample_t im{};
+                if (have_imu && imu_read(&im))
+                    printf("     imu: a %+.2f %+.2f %+.2f g   g %+.1f %+.1f %+.1f dps\n",
+                           im.ax, im.ay, im.az, im.gx, im.gy, im.gz);
                 bsp_display_lock(-1);
                 gauge_ui::set_fps(fps);
                 bsp_display_unlock();

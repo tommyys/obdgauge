@@ -35,6 +35,17 @@ constexpr size_t kRecordsPerSector = (kSectorSize - kSectorHeaderSize) / sizeof(
 constexpr uint16_t kChanDriveStart = 0xFFFF;   // value = epoch seconds, 0 if unknown
 constexpr uint16_t kChanDriveEnd   = 0xFFFE;
 
+// 16 bytes, on flash. Moved here (out of logbuf.cpp's anonymous namespace)
+// so LogBuf::sector_of() can name it in its declaration.
+struct SectorHeader {
+    char     magic[4];
+    uint32_t seq;
+    uint32_t drive;
+    uint16_t flags;
+    uint16_t pad;
+};
+static_assert(sizeof(SectorHeader) == kSectorHeaderSize, "header is the file format");
+
 // The flash, as little of it as this needs. The board implements this over
 // esp_partition; the tests implement it over a byte array.
 class IFlash {
@@ -77,6 +88,12 @@ public:
     uint32_t current_drive() const { return drive_; }
     uint32_t next_drive_id() const { return next_drive_; }
 
+    // Streams a drive's records in order, a sector at a time. A whole drive
+    // can be 2 MB; the board hands it to the serial port in pieces rather
+    // than holding it. Return false from the sink to stop early.
+    using RecordSink = bool (*)(const Record* records, size_t count, void* ctx);
+    bool read_drive(uint32_t id, RecordSink sink, void* ctx);
+
 private:
     static constexpr size_t kBatch = 32;      // 384 B of RAM, ~1 s of records
 
@@ -89,6 +106,9 @@ private:
 
     bool open_sector(uint32_t drive, bool opens_drive);
     bool advance_sector(uint32_t drive, bool opens_drive);
+
+    // Is this sector part of drive `id`? Fills *out with its header if so.
+    bool sector_of(size_t index, uint32_t id, SectorHeader* out);
 
     IFlash& flash_;
     size_t  drive_count_  = 0;

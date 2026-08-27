@@ -4,15 +4,6 @@
 namespace gauge {
 namespace {
 
-struct SectorHeader {
-    char     magic[4];
-    uint32_t seq;
-    uint32_t drive;
-    uint16_t flags;
-    uint16_t pad;
-};
-static_assert(sizeof(SectorHeader) == kSectorHeaderSize, "header is the file format");
-
 bool valid(const SectorHeader& h) { return memcmp(h.magic, "MX5L", 4) == 0; }
 
 // Wrap-safe. seq is u32 and the ring outlives 2^32 sectors written, so a
@@ -144,6 +135,49 @@ bool LogBuf::end_drive() {
     const bool ok = append(m) && flush();
     drive_ = 0;
     return ok;
+}
+
+// Is this sector part of drive `id`?
+bool LogBuf::sector_of(size_t index, uint32_t id, SectorHeader* out) {
+    SectorHeader h{};
+    if (!flash_.read(index * kSectorSize, &h, sizeof h)) return false;
+    if (!valid(h) || h.drive != id) return false;
+    if (out) *out = h;
+    return true;
+}
+
+bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx) {
+    if (!mounted_ || !id) return false;
+    const size_t count = flash_.sector_count();
+
+    // A drive's sectors are CONSECUTIVE ring indices, because the head only
+    // ever advances by one -- so this needs one pass to find where the drive
+    // starts and then a walk, not a search per sector. The earlier draft of
+    // this searched the whole ring for each sector in turn, which on a full
+    // 2544-sector partition is millions of flash reads and turns LIST into
+    // a multi-minute command.
+    //
+    // The first surviving sector is the one whose ring predecessor is NOT
+    // part of this drive. That is also the correct answer when the drive's
+    // real opening sector has already been overwritten.
+    size_t start = count;
+    for (size_t i = 0; i < count; ++i) {
+        if (!sector_of(i, id, nullptr)) continue;
+        if (!sector_of((i + count - 1) % count, id, nullptr)) { start = i; break; }
+    }
+    if (start == count) return false;          // no such drive
+
+    Record buf[kRecordsPerSector];
+    for (size_t k = 0; k < count; ++k) {
+        const size_t i = (start + k) % count;
+        if (!sector_of(i, id, nullptr)) break;   // walked off the end of the drive
+        const size_t n = records_in(i);
+        if (n && !flash_.read(i * kSectorSize + kSectorHeaderSize, buf, n * sizeof(Record)))
+            return false;
+        if (n && !sink(buf, n, ctx)) return true;
+        if (n < kRecordsPerSector) break;        // a partial sector is the last one
+    }
+    return true;
 }
 
 }  // namespace gauge

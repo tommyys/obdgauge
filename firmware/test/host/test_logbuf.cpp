@@ -1,4 +1,5 @@
 #include <cstring>
+#include <vector>
 
 #include "check.h"
 #include "fake_flash.h"
@@ -145,6 +146,34 @@ static void test_records_in_zero_with_valid_header() {
     check("linear scan also sees zero", (int)expect, 0);
 }
 
+struct Collect {
+    std::vector<gauge::Record> all;
+};
+static bool collect(const gauge::Record* r, size_t n, void* ctx) {
+    auto* c = static_cast<Collect*>(ctx);
+    c->all.insert(c->all.end(), r, r + n);
+    return true;
+}
+
+static void test_sector_roll() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    log.begin_drive(0);
+    // One marker is already in, so this crosses the boundary by 9 records.
+    const int n = (int)gauge::kRecordsPerSector + 8;
+    for (int i = 0; i < n; ++i) check("append", log.append(rec(i * 10u, 12, (float)i)), true);
+    check("flush", log.flush(), true);
+
+    Collect c;
+    check("read back", log.read_drive(log.current_drive(), collect, &c), true);
+    check("stream is continuous", (int)c.all.size(), n + 1);
+    check("marker first", (int)c.all[0].chan, (int)gauge::kChanDriveStart);
+    check("last record survived the roll", (int)c.all.back().value, n - 1);
+    // Two sectors written means two erased: one per open.
+    check("erases so far", (int)f.erases(), 2);
+}
+
 int main() {
     test_layout();
     test_mount_empty();
@@ -152,5 +181,6 @@ int main() {
     test_append_without_flush_is_lost_but_harmless();
     test_records_in_matches_linear_scan();
     test_records_in_zero_with_valid_header();
+    test_sector_roll();
     return gauge_test::check_report();
 }

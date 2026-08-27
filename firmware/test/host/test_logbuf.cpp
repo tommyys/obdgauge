@@ -174,6 +174,39 @@ static void test_sector_roll() {
     check("erases so far", (int)f.erases(), 2);
 }
 
+// read_drive() must keep no state between calls: start, buf, and the loop
+// index are all locals, so two calls for the same drive must walk the
+// identical path and yield the identical stream. Task 4's summarise() calls
+// read_drive() repeatedly for the same drive and would silently go quiet if
+// this ever regressed. The drive spans two sectors so both calls' walks
+// actually iterate more than once.
+static void test_read_drive_is_stateless() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    log.begin_drive(0);
+    const int n = (int)gauge::kRecordsPerSector + 8;
+    for (int i = 0; i < n; ++i) check("append", log.append(rec(i * 10u, 12, (float)i)), true);
+    check("flush", log.flush(), true);
+
+    Collect first, second;
+    check("first read", log.read_drive(log.current_drive(), collect, &first), true);
+    check("second read", log.read_drive(log.current_drive(), collect, &second), true);
+
+    check("same length", (int)first.all.size(), (int)second.all.size());
+    const size_t mid = first.all.size() / 2;
+    const gauge::Record* pairs[][2] = {
+        {&first.all.front(), &second.all.front()},
+        {&first.all[mid],    &second.all[mid]},
+        {&first.all.back(),  &second.all.back()},
+    };
+    for (auto& p : pairs) {
+        check("t_ms matches", (int)p[0]->t_ms, (int)p[1]->t_ms);
+        check("chan matches", (int)p[0]->chan, (int)p[1]->chan);
+        check("value matches", (double)p[0]->value, (double)p[1]->value);
+    }
+}
+
 int main() {
     test_layout();
     test_mount_empty();
@@ -182,5 +215,6 @@ int main() {
     test_records_in_matches_linear_scan();
     test_records_in_zero_with_valid_header();
     test_sector_roll();
+    test_read_drive_is_stateless();
     return gauge_test::check_report();
 }

@@ -364,11 +364,39 @@ static void test_records_in_across_a_mid_sector_erase_hole() {
 
     gauge::LogBuf after(f);
     check("remount survives a mid-sector hole", after.mount(), true);
-    // Bisection alone answers 301 here -- it never probes slots 100-149, so
-    // it reports a count that spans the hole (a genuine defect, fixed in
-    // records_in() by the grid-scan-plus-fallback below the bisection). The
-    // safe answer is the real first-erased index: 100.
+    // Bisection alone answered 301 here -- it never probed slots 100-149,
+    // so it reported a count that spanned the hole (a genuine defect, fixed
+    // by replacing the bisection with the exact chunked scan in
+    // records_in()). The correct answer is the real first-erased index: 100.
     check("stops exactly at the hole, not past it", (int)after.record_count(), 100);
+}
+
+// A stride-8 grid-sampling fix (tried and rejected during review) would
+// have missed a hole narrower than its stride if the hole happened to land
+// entirely between two sampled slots. This is exactly that case: a 3-record
+// hole, which a sample-every-8th-slot scan could step clean over while
+// leaving valid records on both sides -- meaning a still-offered, otherwise
+// intact drive would splice in a few garbage records (chan 0xFFFF among
+// them, colliding with kChanDriveStart) rather than being dropped for being
+// too short. The chunked scan reads every record, so a hole of any width is
+// found exactly -- this proves that width does not matter to it.
+static void test_records_in_across_a_narrow_erase_hole() {
+    FakeFlash f(4);
+    gauge::LogBuf log(f);
+    log.mount();
+    log.begin_drive(1756300000u);
+    const int n = 300;
+    for (int i = 0; i < n; ++i) check("append", log.append(rec((uint32_t)i, 12, (float)i)), true);
+    check("flush", log.flush(), true);
+    uint8_t* p = f.raw(1);
+    const size_t rec_off = gauge::kSectorHeaderSize;
+    // Indices 205-207: three records, well inside the real data, punched
+    // back to 0xFF -- narrower than any plausible sampling stride.
+    memset(p + rec_off + 205 * sizeof(gauge::Record), 0xFF, 3 * sizeof(gauge::Record));
+
+    gauge::LogBuf after(f);
+    check("remount survives a narrow hole", after.mount(), true);
+    check("finds the narrow hole exactly", (int)after.record_count(), 205);
 }
 
 int main() {
@@ -388,5 +416,6 @@ int main() {
     test_drive_spanning_the_wrap();
     test_records_survive_a_cut_mid_drive();
     test_records_in_across_a_mid_sector_erase_hole();
+    test_records_in_across_a_narrow_erase_hole();
     return gauge_test::check_report();
 }

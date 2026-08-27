@@ -136,11 +136,18 @@ public:
 private:
     static constexpr size_t kBatch = 32;      // 384 B of RAM, ~1 s of records
 
-    // Number of records already committed in `sector`. Binary-searches for
-    // the boundary between committed slots and still-erased ones -- records
-    // are contiguous from the start of a sector by construction, so ~log2
-    // reads (about 9 for 340 slots) replace what would otherwise be up to
-    // 340 flash reads per sector, and mount() does this for every sector.
+    // Number of records already committed in `sector`. Reads the sector body
+    // in 10 chunks of 34 records (408 bytes each -- 10 x 34 = 340, the whole
+    // sector) and finds the first erased slot in RAM. This used to be a
+    // binary search trusting "records are contiguous from the start of a
+    // sector, everything after is erased", but a power cut mid-erase can
+    // break that invariant with a hole in the middle of a sector rather
+    // than just its tail, and a bisection can walk straight past a hole
+    // without ever reading it. The chunked scan is exact -- every record in
+    // the sector is actually read -- while still costing 10 flash
+    // transactions per sector rather than up to 340, which matters because
+    // mount() does this for every sector -- 2,544 of them on the real
+    // partition.
     size_t records_in(size_t sector);
 
     bool open_sector(uint32_t drive, bool opens_drive);

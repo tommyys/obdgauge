@@ -81,3 +81,23 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 # for its arc masks: the tacho's heat band alone is 54 arcs, each allocating a
 # radius mask, across two draw-unit threads. That is what hung every swipe.
 CONFIG_LV_MEM_SIZE_KILOBYTES=128
+
+# --- Task 14: BLE link to the vLinker -------------------------------------
+# The ESP32-S3 has no Bluetooth Classic, so the adapter is reached over BLE
+# (SPEC.md section 3). NimBLE rather than Bluedroid: this firmware is a GATT
+# *client* and nothing else, which is the case NimBLE is small for.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# Central only. The gauge scans and connects; nothing ever connects to it, so
+# the advertising and GATT-server roles are dead weight.
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# One link, ever: the vLinker.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# The ELM327 replies to 0100-style requests in one or two 20-byte notifications,
+# but a full supported-PID sweep reply can be longer; a 128-byte ATT MTU keeps
+# a whole reply in one packet on adapters that will negotiate it.
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=128
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y

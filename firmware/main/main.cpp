@@ -28,6 +28,7 @@
 #include "state.h"
 #include "vehicle.h"
 #include "drive_source.h"
+#include "live_link.h"
 #include "gauge_ui.h"
 #include "slide.h"
 #include "esp_lv_adapter.h"
@@ -178,6 +179,14 @@ extern "C" void app_main(void) {
     printf("ui: %d views, starting on %s\n",
            gauge_ui::view_count(), gauge_ui::current_view_name());
 
+    // Look for the car. This returns straight away -- scanning, handshaking
+    // and the supported-PID sweep all happen on the live task, so the gauge
+    // shows the replay (below) meanwhile and swaps over the moment a real car
+    // answers. A gauge that came up before the adapter did still lands: the
+    // task retries forever.
+    live::start("vlinker");
+    bool live_mode = false;
+
     // Replay a real drive out of flash rather than animating a sine wave.
     // Playback runs at 4x, matching the simulator's --replay default, but the
     // metrics are fed the capture's OWN timeline: a sped-up replay must not
@@ -222,7 +231,35 @@ extern "C" void app_main(void) {
     int64_t t0 = esp_timer_get_time();
 
     for (;;) {
-        if (have_replay) {
+        // The car wins over the replay the moment it has answered its
+        // supported-PID sweep, and the switch is one-way: a dropped link
+        // reconnects rather than falling back, because a replayed drive
+        // running under a driver who is actually driving is worse than a
+        // frozen one.
+        if (live::ready() && !live_mode) {
+            live_mode = true;
+            have_replay = false;
+            supported = &live::keys();
+            if (!live::vin().empty())
+                id = gauge::identify(live::vin(), "", "MX-5");
+            st = gauge::VehicleState{};
+            trip = gauge::Trip{};
+            score = gauge::DrivingScore{};
+            printf("live: %s -- switching the views off replay\n", live::status());
+        }
+
+        if (live_mode) {
+            live::Sample smp{};
+            while (live::next(&smp)) {
+                st.set(smp.key, smp.value);
+                // Wall-clock seconds, unlike the replay's own timeline: this
+                // drive is happening now, so trip distance and the harshness
+                // thresholds are measuring real elapsed time (SPEC.md s4).
+                trip.update(smp.t_s, st.get("speed"), st.get("fuel_rate"));
+                score.update(smp.t_s, st.get("speed"), st.get("rpm"),
+                             st.get("throttle"), st.get("fuel_rate"));
+            }
+        } else if (have_replay) {
             double logical = (esp_timer_get_time() - t0) / 1e6 * kSpeed;
             gauge::ReplaySample smp{};
             while (replay.next(logical, &smp)) {

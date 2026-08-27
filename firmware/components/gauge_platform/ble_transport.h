@@ -29,6 +29,11 @@ class BleTransport : public gauge::ITransport {
     // also produces.
     bool connected() const;
 
+    // Drops the link and waits for it to actually close. Required before any
+    // retry: while we hold the adapter it does not advertise, so a scan cannot
+    // find the very device we are still connected to.
+    void disconnect();
+
     // Advertised name of the peer we settled on, "" when not connected. Logged
     // so a wrong-adapter connection is visible rather than mysterious.
     const char* peer_name() const;

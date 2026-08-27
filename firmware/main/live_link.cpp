@@ -55,7 +55,20 @@ void task(void*) {
             set_status("connected to %s, handshaking", bt.peer_name());
             if (elm.init()) {
                 g_vin = elm.read_vin();
-                std::set<uint8_t> supported = elm.discover();
+                // Retried, because an empty supported-PID sweep is usually the
+                // car not being awake yet rather than a car with nothing to
+                // say -- ATSP0 has to negotiate a protocol, and with the
+                // ignition just turned on the first sweep can land before the
+                // bus does. Dropping the link over that costs a full rescan
+                // and a reconnect for something that answers on the next try.
+                std::set<uint8_t> supported;
+                for (int attempt = 1; attempt <= 5 && bt.connected(); ++attempt) {
+                    supported = elm.discover();
+                    if (!supported.empty()) break;
+                    set_status("no PIDs yet (try %d/5) -- is the ignition on?",
+                               attempt);
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                }
                 std::set<std::string> keys = gauge::keys_for(supported);
                 keys.insert("volts");
                 g_keys = keys;
@@ -95,6 +108,9 @@ void task(void*) {
             } else {
                 set_status("'%s' would not handshake", bt.peer_name());
             }
+            // Always hand the adapter back before retrying. See
+            // BleTransport::disconnect().
+            bt.disconnect();
         }
         // Deliberately left ready(): once a car has been seen, the views stay
         // on live data across a reconnect rather than snapping back to replay

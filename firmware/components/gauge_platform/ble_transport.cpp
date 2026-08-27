@@ -74,6 +74,40 @@ void signal_ready(bool ok) {
     xSemaphoreGive(g.ready);
 }
 
+// Each distinct name once per scan, now that duplicate filtering is off and
+// the same device reports several times a second.
+char g_seen[12][32];
+int  g_seen_n = 0;
+
+int g_reports = 0;
+char g_anon[16][18];
+int  g_anon_n = 0;
+
+void log_anon(const uint8_t* addr, int8_t rssi) {
+    char key[18];
+    snprintf(key, sizeof key, "%02x:%02x:%02x:%02x:%02x:%02x",
+             addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
+    for (int i = 0; i < g_anon_n; ++i)
+        if (strcmp(g_anon[i], key) == 0) return;
+    if (g_anon_n < 16) {
+        strncpy(g_anon[g_anon_n], key, sizeof g_anon[0] - 1);
+        g_anon[g_anon_n][sizeof g_anon[0] - 1] = 0;
+        ++g_anon_n;
+    }
+    ESP_LOGI(TAG, "  saw %s (no name) rssi %d", key, rssi);
+}
+
+void log_seen(const char* nm) {
+    for (int i = 0; i < g_seen_n; ++i)
+        if (strcmp(g_seen[i], nm) == 0) return;
+    if (g_seen_n < 12) {
+        strncpy(g_seen[g_seen_n], nm, sizeof g_seen[0] - 1);
+        g_seen[g_seen_n][sizeof g_seen[0] - 1] = 0;
+        ++g_seen_n;
+    }
+    ESP_LOGI(TAG, "  saw '%s'", nm);
+}
+
 bool contains_ci(const char* hay, int hay_len, const char* needle) {
     const int n = static_cast<int>(strlen(needle));
     if (n == 0) return true;
@@ -155,7 +189,14 @@ int gap_event(struct ble_gap_event* event, void* arg);
 void begin_scan() {
     struct ble_gap_disc_params p = {};
     p.passive = 0;                 // active: the name is in the scan response
-    p.filter_duplicates = 1;
+    // Duplicate filtering OFF, and this is the whole reason the car test found
+    // nothing. A device's name usually arrives in the SCAN RESPONSE, not the
+    // advertisement -- and the controller's duplicate filter treats that
+    // response as a repeat of the advertisement it just reported, and drops
+    // it. So every device whose name is not in the first packet was invisible:
+    // the scan saw them and discarded exactly the field we match on. The cost
+    // of turning it off is repeat events, which log_seen() below absorbs.
+    p.filter_duplicates = 0;
     // 30 ms of listening in every 100 ms, rather than NimBLE's default of
     // listening continuously. A continuous scan keeps the radio and its
     // interrupts busy against a UI that is already only managing 10-20 fps,
@@ -169,17 +210,28 @@ void begin_scan() {
         signal_ready(false);
         return;
     }
+    g_seen_n = 0;
+    g_anon_n = 0;
+    g_reports = 0;
     ESP_LOGI(TAG, "scanning for an adapter matching '%s'", g.hint);
 }
 
 int gap_event(struct ble_gap_event* event, void*) {
     switch (event->type) {
     case BLE_GAP_EVENT_DISC: {
+        // Every report, named or not, with its address and signal strength.
+        // "no adapter found" and "the radio is hearing nothing" look identical
+        // when only named devices are logged, and that ambiguity is what made
+        // the first car test unreadable -- a scan that reports zero named
+        // devices may be working perfectly in a quiet place, or may be deaf.
+        ++g_reports;
         struct ble_hs_adv_fields f;
-        if (ble_hs_adv_parse_fields(&f, event->disc.data,
-                                    event->disc.length_data) != 0)
+        bool parsed = ble_hs_adv_parse_fields(&f, event->disc.data,
+                                              event->disc.length_data) == 0;
+        if (!parsed || !f.name || f.name_len == 0) {
+            log_anon(event->disc.addr.val, event->disc.rssi);
             return 0;
-        if (!f.name || f.name_len == 0) return 0;
+        }
         char nm[32];
         int n = f.name_len < (int)sizeof nm - 1 ? f.name_len : (int)sizeof nm - 1;
         memcpy(nm, f.name, n);
@@ -188,7 +240,7 @@ int gap_event(struct ble_gap_event* event, void*) {
         // the same (README "the error lists every visible Bluetooth device"):
         // when the adapter is asleep or renamed, this list is the only way to
         // tell "nothing is advertising" from "it is there under another name".
-        ESP_LOGI(TAG, "  saw '%s'", nm);
+        log_seen(nm);
         if (!contains_ci(nm, n, g.hint)) return 0;
 
         strncpy(g.name, nm, sizeof g.name - 1);
@@ -302,7 +354,9 @@ bool BleTransport::connect(const char* name_hint, int timeout_ms) {
     }
 
     if (xSemaphoreTake(g.ready, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
-        ESP_LOGE(TAG, "no adapter matching '%s' after %d ms", g.hint, timeout_ms);
+        ESP_LOGE(TAG, "no adapter matching '%s' after %d ms -- %d reports, "
+                      "%d named, %d unnamed",
+                 g.hint, timeout_ms, g_reports, g_seen_n, g_anon_n);
         ble_gap_disc_cancel();
         return false;
     }
@@ -311,6 +365,17 @@ bool BleTransport::connect(const char* name_hint, int timeout_ms) {
 
 bool BleTransport::connected() const {
     return g.conn != BLE_HS_CONN_HANDLE_NONE && g.write_handle && g.notify_handle;
+}
+
+void BleTransport::disconnect() {
+    if (g.conn == BLE_HS_CONN_HANDLE_NONE) return;
+    // Without this the link stays open after we give up on the car, and a
+    // connected peripheral does not advertise -- so every later scan found
+    // nothing and we could never get back to the adapter we were still
+    // holding. Observed in the car on the first live link.
+    ble_gap_terminate(g.conn, BLE_ERR_REM_USER_CONN_TERM);
+    for (int i = 0; i < 50 && g.conn != BLE_HS_CONN_HANDLE_NONE; ++i)
+        vTaskDelay(pdMS_TO_TICKS(20));
 }
 
 const char* BleTransport::peer_name() const { return g.name; }

@@ -36,6 +36,27 @@ Desktop alias works:
 *(First double-click may show "unidentified developer" — right-click → Open once,
 then it runs normally after that.)*
 
+## Pulling drives off the board
+
+The ESP32-S3 board records every drive to its own flash while it's out
+driving, whether or not the Mac was ever connected (SPEC.md §15). Bring the
+board back, plug it into the Mac over USB, and pull whatever it collected:
+
+```bash
+.venv/bin/python tools/pull_drives.py           # lists what's held, then pulls it
+.venv/bin/python tools/pull_drives.py --list    # just look, pull nothing
+.venv/bin/python tools/pull_drives.py --force   # re-pull drives already in logs/
+```
+
+It lends the board the Mac's clock, then writes anything new into `logs/` in
+the same CSV shape everything else here reads, so it shows up in `run.py
+--replay` and `run.py --sessions` immediately. A drive recorded before the
+board ever had a clock is written as `drive-unknown-<id>.csv` with no
+timestamp, rather than guessing one.
+
+**The USB console is shared with `idf.py monitor`** — close any open monitor
+window first, or the puller reports the port busy rather than hanging.
+
 ## Quick start (Terminal)
 
 Replay one of your existing captures — no car, no hardware:

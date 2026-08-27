@@ -730,3 +730,107 @@ black screen.
 **This is a simulator asset.** The ESP32-S3 cannot decode H.264 — the firmware
 port needs the same animation as extracted frames or an LVGL sequence, which is
 phase 2 work.
+
+## 15. Drive recording
+
+Every drive the board ever sees while nobody is watching — a commute with the
+phone in a pocket, a wife or a mechanic driving it, an overnight forgotten
+`idf.py monitor` window closed — is worth being able to go back and look at.
+So the board keeps its own flight recorder, independent of the Mac, the BLE
+link and the desk app: as long as the vLinker is answering, every reading
+gets written to flash, and a Mac only needs to show up occasionally to take
+what's new.
+
+### What's recorded, and where
+
+A dedicated `logs` partition (`firmware/partitions.csv`), sized 0x9F0000
+(≈9.9 MB), is carved out of flash as a flat ring of 4096-byte sectors —
+`gauge::LogBuf` in `firmware/components/gauge_core/logbuf.h`/`.cpp`. There is
+no filesystem in it: no directory table, no wear-levelling layer, nothing
+that has to be mounted or can get corrupted independently of the data. A
+sector holds a small header plus as many 12-byte records as fit
+(`kRecordsPerSector`), and a record is `u32 t_ms, u16 chan, u16 pad, f32
+value` — the same 12 bytes `tools/build_drive_asset.py` and the desk replay
+already read, so nothing downstream had to change shape to accept flash
+instead of a Mac.
+
+While a drive is open, `firmware/main/drive_log.cpp` records every PID the
+poll loop reads (§3's decode table, all of it — not a curated subset) and the
+board's own IMU at 5 Hz (a quarter of the poll rate — the IMU is 4 channels
+against the car's dozen-plus readings a second, and going faster would
+roughly halve how much history the partition holds for a resolution the
+driving-score maths in §7.5 B3 doesn't need). At that combined rate the ring
+holds roughly **nine hours** of driving before the oldest record has to make
+room for the newest — see "wipe-ahead" below.
+
+### Drive boundaries
+
+A drive starts on the first reading after the car goes quiet, and ends after
+**20 seconds of silence** (`kSilenceUs` in `drive_log.cpp`) — long enough that
+a red light or a stalled queue doesn't split one drive into two, short enough
+that key-off (which the vLinker itself notices within about 15 s, measured in
+the car) reliably closes it. A drive under 100 records (`kMinDriveRecords` in
+`logbuf.h`) is a key bump, not a drive, and is filtered out of what `LIST`
+reports — it is never actively erased, because erasing mid-ring would take a
+live sector with it; it is just never offered.
+
+The ring is wipe-ahead: `begin_drive()` always advances onto a fresh sector,
+erasing it first if that means overwriting the oldest drive still held. So
+the partition is self-cleaning — nobody has to remember to clear it, and it
+never fills up and stops recording; it just quietly forgets the oldest drive
+to make room for the newest, oldest dropped first.
+
+### Time, and what `drive-unknown-N` means
+
+The board has no RTC and no network — it only knows the time of day if a Mac
+tells it. `TIME <epoch>` (below) sets an in-RAM clock and also persists it to
+NVS every five minutes, so a reboot with no Mac nearby still has a floor to
+date a drive's records after. A drive that starts before the clock is ever
+set — first power-up after a blank build, or a long stretch with no Mac
+around — records with epoch 0. `tools/pull_drives.py` writes that drive as
+`drive-unknown-<id>.csv` with its `iso` column left empty, rather than
+guessing: a clearly-labelled gap is more useful later than a confidently
+wrong timestamp quietly poisoning a replay.
+
+The drive-start marker record (reserved channel id `kChanDriveStart`,
+`0xFFFF`) carries that epoch, but not as a normal reading — see the comment
+at its definition in `logbuf.h`. A 12-byte record has no field to spare for a
+proper timestamp, so the marker's `value` field carries the epoch as the raw
+bits of a `uint32_t`, not that number converted to a float (a float only has
+24 bits of mantissa; converting a Unix timestamp through one rounds to the
+nearest ~128 seconds, silently). Nothing downstream needs to unpack this —
+`LIST` already reports each drive's epoch decoded correctly — but any code
+that ever reads a marker's value directly must treat those 4 bytes as a
+`uint32_t`, not a `float`.
+
+### Retrieval — the console, and the puller
+
+The recorder is read back over the same USB console the board already
+exposes, five plain-text commands (`firmware/main/serial_cmd.cpp`):
+
+- `TIME <epoch>` — lends the board the caller's clock.
+- `STATS` — sector/drive/record counts, samples dropped, and a channel-table
+  version (so a caller that disagrees about what channel id 9 means refuses
+  to guess rather than mislabel a column).
+- `LIST` — one line per drive held: id, epoch, record count, duration,
+  whether it ended cleanly.
+- `GET <id>` — streams a drive's records out as base64, three records per
+  line, followed by a record count and a crc32 the reader must check before
+  trusting anything it received.
+- `ERASE CONFIRM` — wipes the whole ring.
+
+`tools/pull_drives.py` drives all of this: it sets the board's clock from the
+Mac's, lists what's held, and pulls anything not already sitting in `logs/`
+into `logs/drive-YYYYmmdd-HHMMSS.csv` — the same four-column `iso,t,key,value`
+shape every other tool here already reads, so a drive nobody watched can be
+replayed with `run.py --replay` exactly like a normal capture, and folded
+back into `build-assets/drives.bin` with `tools/build_drive_asset.py`. It
+verifies `GET`'s crc32 and record count itself and refuses to write a
+half-pulled drive into `logs/` as though it were whole. Run it with
+`--list` to see what the board is holding without pulling anything, and
+`--force` to re-pull a drive already on disk.
+
+**The console is shared with `idf.py monitor`.** Only one program can have
+the USB-CDC port open at a time — leaving a monitor window running is the
+most likely reason the puller can't connect, and it says so rather than
+hanging.

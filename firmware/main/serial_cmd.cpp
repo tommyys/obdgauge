@@ -141,8 +141,19 @@ void task(void*) {
     char line[64];
     for (;;) {
         // Blocking now (see install_blocking_console_reads above): this task
-        // sleeps here between commands rather than polling stdin.
-        if (!fgets(line, sizeof line, stdin)) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
+        // sleeps here between commands rather than polling stdin. But
+        // usb_serial_jtag_read() has its own unconditional early return --
+        // if usb_serial_jtag_is_connected() is false (a sleeping Mac, a
+        // jiggled cable, a USB re-enumeration) it returns -1 with errno left
+        // untouched, even in driver/blocking mode. That single -1 is enough
+        // to latch stdin's sticky error flag (__SERR): once set, newlib's
+        // __srefill short-circuits on it and every fgets() after this one
+        // fails immediately without calling read() again -- the same dead
+        // console this task's blocking-read fix exists to prevent, just
+        // reached by a transient USB drop instead of the VFS default. A
+        // physical disconnect must not be allowed to latch a software error
+        // the wire will recover from as soon as the host reappears.
+        if (!fgets(line, sizeof line, stdin)) { clearerr(stdin); vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         char* nl = strpbrk(line, "\r\n");
         if (nl) *nl = 0;
         if (!strncmp(line, "TIME ", 5)) {

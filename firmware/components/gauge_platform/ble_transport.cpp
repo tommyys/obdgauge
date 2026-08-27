@@ -154,8 +154,15 @@ int gap_event(struct ble_gap_event* event, void* arg);
 
 void begin_scan() {
     struct ble_gap_disc_params p = {};
-    p.passive = 0;
+    p.passive = 0;                 // active: the name is in the scan response
     p.filter_duplicates = 1;
+    // 30 ms of listening in every 100 ms, rather than NimBLE's default of
+    // listening continuously. A continuous scan keeps the radio and its
+    // interrupts busy against a UI that is already only managing 10-20 fps,
+    // and costs frames for nothing: an adapter advertises many times a second,
+    // so a 30% duty cycle still finds it within a second or two.
+    p.itvl = 160;                  // 160 * 0.625 ms = 100 ms
+    p.window = 48;                 //  48 * 0.625 ms =  30 ms
     int rc = ble_gap_disc(g.own_addr_type, BLE_HS_FOREVER, &p, gap_event, nullptr);
     if (rc != 0) {
         ESP_LOGE(TAG, "scan failed to start: %d", rc);

@@ -101,3 +101,10 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # a whole reply in one packet on adapters that will negotiate it.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=128
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+# NimBLE's buffers live in PSRAM, not internal RAM. Measured 2026-08-27: with
+# them internal, the panel driver started failing draws outright --
+# "spi transmit (queue) color failed / ESP_ERR_NO_MEM" every few frames, which
+# on the glass is a torn, half-drawn gauge. The SPI DMA the display depends on
+# can only come from internal RAM; the BLE host's buffers have no such
+# requirement, so they are the ones that move.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y

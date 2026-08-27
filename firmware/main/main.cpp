@@ -311,12 +311,20 @@ extern "C" void app_main(void) {
                 // before adding more objects.
                 lv_mem_monitor_t mm;
                 lv_mem_monitor(&mm);
+                // DMA-capable internal RAM, reported because LVGL's own pool
+                // being healthy says nothing about it: the panel's SPI
+                // transfers can only come from here, and when BLE was allowed
+                // to take its buffers from the same place the driver failed
+                // draws with ESP_ERR_NO_MEM while lv pool sat at 33%.
+                size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA |
+                                                          MALLOC_CAP_INTERNAL);
                 printf("ui: %u fps, view %s, gest %d, press %d, rel %d, indev %s @%d,%d, "
-                       "lv pool %u%% used (%u free)\n",
+                       "lv pool %u%% used (%u free), dma free %u\n",
                        (unsigned)fps, gauge_ui::current_view_name(),
                        gauge_ui::gesture_count(), gauge_ui::press_count(),
                        gauge_ui::release_count(), st_s, (int)pt.x, (int)pt.y,
-                       (unsigned)mm.used_pct, (unsigned)mm.free_size);
+                       (unsigned)mm.used_pct, (unsigned)mm.free_size,
+                       (unsigned)dma_free);
                 // Repeated rather than printed once at the swipe: a serial
                 // capture that opens after the swipe was losing it every time.
                 printf("     %s\n", gauge_ui::slide_note());

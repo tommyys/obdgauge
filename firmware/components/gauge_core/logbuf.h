@@ -59,11 +59,21 @@ struct DriveInfo {
     uint32_t records;
     uint32_t duration_ms;
     bool     complete;
+    // The channel-table version stamped into this drive's sector headers.
+    // A drive written by a different firmware's table cannot be labelled by
+    // this one's names -- see SectorHeader::table_version.
+    uint16_t table_version;
 };
 
 // A drive shorter than this is a key touched, not a drive, and list() does
 // not offer it.
 constexpr uint32_t kMinDriveRecords = 100;
+
+// How many drives list() can hold in its accumulator, and therefore the most
+// it can ever report in one call. Callers must size their DriveInfo array to
+// this -- passing a smaller `max` silently hides the drives that do not fit,
+// which is exactly the bug the `truncated` out-parameter exists to surface.
+constexpr size_t kListCapacity = 64;
 
 // 16 bytes, on flash. Moved here (out of logbuf.cpp's anonymous namespace)
 // so LogBuf::sector_of() can name it in its declaration.
@@ -72,7 +82,15 @@ struct SectorHeader {
     uint32_t seq;
     uint32_t drive;
     uint16_t flags;
-    uint16_t pad;
+    // Design s2: "the header carries a table version so a mismatch is an
+    // error rather than silently mislabelled data." A record stores a channel
+    // *id*, and ids are positions in poll.cpp's compiled-in table -- so a
+    // firmware whose table gained an entry in the middle renames every
+    // channel of every drive already on flash. This is the field that makes
+    // that detectable: it is written from kChanTableVersion and compared
+    // against it on the way out. It occupies the 2 bytes the design called
+    // `pad`, so the 16-byte header is unchanged.
+    uint16_t table_version;
 };
 static_assert(sizeof(SectorHeader) == kSectorHeaderSize, "header is the file format");
 
@@ -96,8 +114,16 @@ public:
     // False only if the flash itself will not answer.
     bool mount();
 
-    size_t drive_count() const { return drive_count_; }
+    // Sector headers flagged as opening a drive: the ones found at mount,
+    // plus one per begin_drive() since. It is an UPPER BOUND on what can be
+    // pulled, not an answer -- it is never decremented when the ring drops a
+    // drive, and it counts drives too short for list() to offer. list() is
+    // the only authority on what is held and offerable.
+    size_t drive_starts() const { return drive_starts_; }
     size_t record_count() const { return record_count_; }
+    // Sectors carrying a valid header. Rises to sector_count() and stops --
+    // once the ring has been round once, every sector is in use.
+    size_t sectors_used() const { return sectors_used_; }
 
     // Opens a drive. epoch_s is wall-clock seconds if the Mac has set the
     // clock, 0 if it has not -- a drive with an honest "unknown" beats one
@@ -121,12 +147,22 @@ public:
     // Streams a drive's records in order, a sector at a time. A whole drive
     // can be 2 MB; the board hands it to the serial port in pieces rather
     // than holding it. Return false from the sink to stop early.
+    // `version_out`, when given, receives the channel-table version stamped
+    // in this drive's sector headers and the read goes ahead whatever it
+    // says -- that is for list(), which must still be able to describe a
+    // drive it cannot label. When it is null, a drive stamped with any
+    // version other than kChanTableVersion is REFUSED (returns false)
+    // rather than streamed out to be mislabelled by the reader's table.
     using RecordSink = bool (*)(const Record* records, size_t count, void* ctx);
-    bool read_drive(uint32_t id, RecordSink sink, void* ctx);
+    bool read_drive(uint32_t id, RecordSink sink, void* ctx,
+                    uint16_t* version_out = nullptr);
 
     // Drives held, newest first, skipping ones below kMinDriveRecords.
-    // Returns how many were written to `out`.
-    size_t list(DriveInfo* out, size_t max);
+    // Returns how many were written to `out`. `truncated`, when given, is set
+    // true if there were drives this call could not report -- either `max`
+    // was reached or the internal table overflowed. "N drives" and "N drives
+    // and more I cannot show you" must never look the same to a caller.
+    size_t list(DriveInfo* out, size_t max, bool* truncated = nullptr);
     bool has_drive(uint32_t id);
 
     // Wipes every sector and starts over. The only way back from a ring the
@@ -165,8 +201,9 @@ private:
     bool summarise(uint32_t id, DriveInfo* out);
 
     IFlash& flash_;
-    size_t  drive_count_  = 0;
+    size_t  drive_starts_ = 0;
     size_t  record_count_ = 0;
+    size_t  sectors_used_ = 0;
 
     size_t   head_        = 0;      // sector index being written
     uint32_t seq_         = 0;      // seq of head_

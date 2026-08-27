@@ -21,8 +21,9 @@ bool erased(const void* p, size_t len) {
 }  // namespace
 
 bool LogBuf::mount() {
-    drive_count_ = 0;
+    drive_starts_ = 0;
     record_count_ = 0;
+    sectors_used_ = 0;
     bool any = false;
     uint32_t best_seq = 0;
     size_t   best = 0;
@@ -32,8 +33,9 @@ bool LogBuf::mount() {
         SectorHeader h{};
         if (!flash_.read(i * kSectorSize, &h, sizeof h)) return false;
         if (!valid(h)) continue;
+        ++sectors_used_;
         if (!any || newer(h.seq, best_seq)) { any = true; best_seq = h.seq; best = i; }
-        if (h.flags & 1) ++drive_count_;
+        if (h.flags & 1) ++drive_starts_;
         if (h.drive > max_drive) max_drive = h.drive;
         record_count_ += records_in(i);
     }
@@ -98,7 +100,7 @@ bool LogBuf::open_sector(uint32_t drive, bool opens_drive) {
     h.seq = ++seq_;
     h.drive = drive;
     h.flags = opens_drive ? 1 : 0;
-    h.pad = 0;
+    h.table_version = kChanTableVersion;
     if (!flash_.write(head_ * kSectorSize, &h, sizeof h)) return false;
     used_ = 0;
     return true;
@@ -106,10 +108,17 @@ bool LogBuf::open_sector(uint32_t drive, bool opens_drive) {
 
 bool LogBuf::advance_sector(uint32_t drive, bool opens_drive) {
     head_ = (head_ + 1) % flash_.sector_count();
+    // One 16-byte read before the erase, purely so sectors_used() can be a
+    // fact rather than an estimate: a sector that already carried a header is
+    // being recycled, not newly occupied.
+    SectorHeader old{};
+    const bool was_used = flash_.read(head_ * kSectorSize, &old, sizeof old) && valid(old);
     // Wipe-ahead: this sector holds the oldest data in the ring, so erasing
     // it here IS "drop the oldest" -- no free-space accounting anywhere.
     if (!flash_.erase_sector(head_)) return false;
-    return open_sector(drive, opens_drive);
+    if (!open_sector(drive, opens_drive)) return false;
+    if (!was_used && sectors_used_ < flash_.sector_count()) ++sectors_used_;
+    return true;
 }
 
 bool LogBuf::begin_drive(uint32_t epoch_s) {
@@ -117,7 +126,7 @@ bool LogBuf::begin_drive(uint32_t epoch_s) {
     if (drive_) end_drive();
     drive_ = next_drive_++;
     if (!advance_sector(drive_, /*opens_drive=*/true)) return false;
-    ++drive_count_;
+    ++drive_starts_;
     Record m{};
     m.t_ms = 0;
     m.chan = kChanDriveStart;
@@ -171,7 +180,8 @@ bool LogBuf::sector_of(size_t index, uint32_t id, SectorHeader* out) {
     return true;
 }
 
-bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx) {
+bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx,
+                        uint16_t* version_out) {
     if (!mounted_ || !id) return false;
     const size_t count = flash_.sector_count();
 
@@ -182,15 +192,29 @@ bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx) {
     // 2544-sector partition is millions of flash reads and turns LIST into
     // a multi-minute command.
     //
-    // The first surviving sector is the one whose ring predecessor is NOT
-    // part of this drive. That is also the correct answer when the drive's
-    // real opening sector has already been overwritten.
+    // The first surviving sector is the one with the OLDEST seq, which is
+    // exactly the drive's first surviving sector because seq only ever
+    // increases as the head advances. This used to look for the sector whose
+    // ring predecessor belongs to a different drive, which is the same answer
+    // whenever such a gap exists -- but a drive long enough to own EVERY
+    // sector of the ring has no gap anywhere, so that search found nothing,
+    // read_drive returned false, and list() silently dropped a drive holding
+    // the entire 10 MB partition. Oldest-seq needs no gap, and it is still
+    // correct when the drive's real opening sector has been overwritten (the
+    // overwriting sector carries a much newer seq).
     size_t start = count;
+    SectorHeader h{}, start_h{};
     for (size_t i = 0; i < count; ++i) {
-        if (!sector_of(i, id, nullptr)) continue;
-        if (!sector_of((i + count - 1) % count, id, nullptr)) { start = i; break; }
+        if (!sector_of(i, id, &h)) continue;
+        if (start == count || newer(start_h.seq, h.seq)) { start = i; start_h = h; }
     }
     if (start == count) return false;          // no such drive
+
+    // The channel-table version this drive was written under. Records store
+    // channel *ids*, so labelling them with a different table's names is
+    // silent corruption of meaning -- refuse rather than guess (design s2).
+    if (version_out) *version_out = start_h.table_version;
+    else if (start_h.table_version != kChanTableVersion) return false;
 
     Record buf[kRecordsPerSector];
     for (size_t k = 0; k < count; ++k) {
@@ -205,7 +229,8 @@ bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx) {
     return true;
 }
 
-size_t LogBuf::list(DriveInfo* out, size_t max) {
+size_t LogBuf::list(DriveInfo* out, size_t max, bool* truncated) {
+    if (truncated) *truncated = false;
     if (!mounted_ || !max) return 0;
     // Gather per-drive facts in one pass over the headers, then a second pass
     // for the drives that qualify. The board has 8 MB of PSRAM but this runs
@@ -213,7 +238,7 @@ size_t LogBuf::list(DriveInfo* out, size_t max) {
     struct Acc { uint32_t id, first_seq, last_seq, sectors; bool opens; };
     // 2544 sectors could in principle be 2544 drives; in practice a drive is
     // never one sector. Cap the table and report the newest that fit.
-    constexpr size_t kMaxDrives = 64;
+    constexpr size_t kMaxDrives = kListCapacity;
     Acc acc[kMaxDrives]{};
     size_t n_acc = 0;
 
@@ -231,6 +256,7 @@ size_t LogBuf::list(DriveInfo* out, size_t max) {
                     if (newer(acc[oldest].last_seq, acc[k].last_seq)) oldest = k;
                 acc[oldest] = Acc{};
                 a = &acc[oldest];
+                if (truncated) *truncated = true;   // a drive fell off the table
             } else {
                 a = &acc[n_acc++];
             }
@@ -251,11 +277,19 @@ size_t LogBuf::list(DriveInfo* out, size_t max) {
             if (!acc[k].id) continue;
             if (pick == n_acc || newer(acc[k].last_seq, acc[pick].last_seq)) pick = k;
         }
-        if (pick == n_acc || written == max) break;
+        if (pick == n_acc) break;
         DriveInfo info{};
-        if (summarise(acc[pick].id, &info) && info.records >= kMinDriveRecords)
-            out[written++] = info;
+        const bool offerable =
+            summarise(acc[pick].id, &info) && info.records >= kMinDriveRecords;
         acc[pick].id = 0;
+        if (!offerable) continue;              // too short to offer: not hidden, absent
+        if (written == max) {
+            // A drive that WOULD have been offered and there is no room for
+            // it. Saying "N drives" here would read as a complete answer.
+            if (truncated) *truncated = true;
+            break;
+        }
+        out[written++] = info;
     }
     return written;
 }
@@ -276,6 +310,7 @@ bool LogBuf::summarise(uint32_t id, DriveInfo* out) {
     struct Ctx { DriveInfo* d; bool first; } ctx{out, true};
     *out = DriveInfo{};
     out->id = id;
+    out->table_version = kChanTableVersion;
     auto sink = [](const Record* r, size_t n, void* c) -> bool {
         Ctx* x = static_cast<Ctx*>(c);
         for (size_t i = 0; i < n; ++i) {
@@ -295,7 +330,10 @@ bool LogBuf::summarise(uint32_t id, DriveInfo* out) {
         }
         return true;
     };
-    return read_drive(id, sink, &ctx);
+    // summarise() must describe a drive it cannot label, so it asks for the
+    // version rather than being refused because of it -- LIST reports the
+    // mismatch and GET is what refuses.
+    return read_drive(id, sink, &ctx, &out->table_version);
 }
 
 }  // namespace gauge

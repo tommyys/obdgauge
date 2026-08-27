@@ -74,7 +74,12 @@ def find_port():
 class Gauge:
     def __init__(self, port):
         try:
-            self.ser = serial.Serial(port, 115200, timeout=5)
+            # 30 s, not 5. LIST scans all 2,544 sector headers once per
+            # drive held, and GET runs the whole of LIST again before it
+            # prints BEGIN -- with 20-30 drives on the board that is seconds
+            # of silence, and a 5 s timeout turned it into a bogus "the board
+            # stopped answering" in the middle of a pull.
+            self.ser = serial.Serial(port, 115200, timeout=30)
         except serial.SerialException as e:
             sys.exit('cannot open %s: %s\n'
                      '(is `idf.py monitor` still open? they share the port)'
@@ -133,13 +138,30 @@ def parse_drives(body):
         d = dict(kv.split('=', 1) for kv in line.split()[1:])
         out.append({'id': int(d['id']), 'epoch': int(d['epoch']),
                     'records': int(d['records']), 'ms': int(d['ms']),
-                    'complete': d['complete'] == '1'})
+                    'complete': d['complete'] == '1',
+                    # The channel table the DRIVE was recorded under, stamped
+                    # in its sector headers. Not the same thing as the table
+                    # the firmware is running now -- that is what STATS says.
+                    'table': int(d.get('table', TABLE_VERSION))})
     return out
 
 
+def parse_truncated(terminator):
+    """Pure: did LIST have more drives than it could show?
+
+    `OK N drives` used to be the whole answer, which read as complete even
+    when the board was holding drives it had no room to report. The board now
+    ends LIST with `OK N drives truncated=0|1`.
+    """
+    for kv in terminator.split():
+        if kv.startswith('truncated='):
+            return kv.split('=', 1)[1] == '1'
+    return False
+
+
 def drives(g):
-    body, _ = g.command('LIST')
-    return parse_drives(body)
+    body, term = g.command('LIST')
+    return parse_drives(body), parse_truncated(term)
 
 
 def reassemble(lines, drive_id):
@@ -182,7 +204,7 @@ def fetch(g, drive_id):
     return reassemble(g.lines(), drive_id)
 
 
-def write_csv(root, drive, records):
+def write_csv(root, drive, records, clock_floor=0):
     """Pure: write one drive's records as the iso,t,key,value CSV.
 
     The drive-start/end markers (chan 0xFFFF/0xFFFE) are skipped entirely --
@@ -201,10 +223,28 @@ def write_csv(root, drive, records):
         # No clock when this was recorded. An honest name beats a wrong one.
         start = None
         name = 'drive-unknown-%d.csv' % drive['id']
-    path = os.path.join(root, 'logs', name)
+    logs = os.path.join(root, 'logs')
+    # A fresh clone has no logs/ directory. Without this the pull streamed the
+    # whole drive off the board and only then tracebacked on open().
+    os.makedirs(logs, exist_ok=True)
+    path = os.path.join(logs, name)
     skipped = 0
     with open(path, 'w', newline='') as fh:
         fh.write('iso,t,key,value\n')
+        if start is None and clock_floor:
+            # The board had no clock when this was recorded, so the drive has
+            # no timestamp -- but the clock floor persisted in NVS says it
+            # happened AFTER this moment, and that is the only thing that
+            # places a drive-unknown-N in time at all (design s5).
+            #
+            # Deliberately the SECOND line, not the first. Every reader of
+            # these files (mx5gauge.recorder.load_csv,
+            # tools/build_drive_asset.py, tools/dump_python_states.py) uses
+            # csv.DictReader: a comment above the header would be taken FOR
+            # the header, while here it is one row whose numeric conversions
+            # fail and which all three already skip.
+            fh.write('# clock floor: recorded after %s (board had no clock)\n'
+                     % dt.datetime.fromtimestamp(clock_floor).isoformat(' ', 'seconds'))
         for t_ms, chan, _pad, value in records:
             if chan in (CHAN_DRIVE_START, CHAN_DRIVE_END):
                 continue
@@ -236,23 +276,42 @@ def main():
         sys.exit('board channel table is v%s, this tool speaks v%d -- update '
                  'PID_KEYS from poll.cpp before trusting anything it says'
                  % (s.get('table'), TABLE_VERSION))
-    print('board: %s sectors, %s drives held, %s records, %s samples dropped'
-          % (s['sectors'], s['drives'], s['records'], s['dropped']))
+    # `starts` is drive-open markers, an upper bound -- the board cannot cheaply
+    # say how many drives are still whole and offerable, and LIST below is the
+    # authority. Saying "N drives held" here was overstating it.
+    print('board: %s of %s sectors used (%s bytes), %s drive starts, %s records'
+          % (s.get('used', '?'), s['sectors'], s.get('bytes', '?'),
+             s.get('starts', s.get('drives', '?')), s['records']))
+    dropped = int(s.get('dropped', 0))
+    if dropped:
+        print('  WARNING: %d samples were dropped -- the queue was full and '
+              'those readings are gone' % dropped)
+    write_fail = int(s.get('writefail', 0))
+    if write_fail:
+        print('  WARNING: %d flash writes FAILED -- some drive on this board '
+              'has a hole in it. See the flight log for the first one.'
+              % write_fail)
+    clock_floor = int(s.get('floor', 0))
 
     now = int(time.time())
     g.command('TIME %d' % now)
     print('clock set to %s' % dt.datetime.fromtimestamp(now).isoformat(' ', 'seconds'))
 
-    held = drives(g)
+    held, truncated = drives(g)
     if not held:
         print('no drives held.')
         return
     for d in held:
         when = (dt.datetime.fromtimestamp(d['epoch']).isoformat(' ', 'seconds')
                 if d['epoch'] else 'clock unknown')
-        print('  drive %-4d %-20s %7d records  %5.1f min%s'
+        print('  drive %-4d %-20s %7d records  %5.1f min%s%s'
               % (d['id'], when, d['records'], d['ms'] / 60000.0,
-                 '' if d['complete'] else '  (unfinished)'))
+                 '' if d['complete'] else '  (unfinished)',
+                 '' if d['table'] == TABLE_VERSION
+                 else '  (channel table v%d -- CANNOT BE PULLED)' % d['table']))
+    if truncated:
+        print('  ...and more the board could not list in one reply. Pull these,'
+              ' then run again -- what is shown is the newest %d.' % len(held))
     if args.list:
         return
 
@@ -263,9 +322,14 @@ def main():
         if guess in existing and not args.force:
             print('drive %d already in logs/ as %s -- skipping' % (d['id'], guess))
             continue
+        if d['table'] != TABLE_VERSION:
+            print('drive %d was recorded under channel table v%d, this tool '
+                  'speaks v%d -- skipping rather than mislabelling every '
+                  'channel in it' % (d['id'], d['table'], TABLE_VERSION))
+            continue
         print('pulling drive %d (%d records)...' % (d['id'], d['records']))
         records = fetch(g, d['id'])
-        path, skipped = write_csv(root, d, records)
+        path, skipped = write_csv(root, d, records, clock_floor)
         print('  wrote %s (%d rows%s)'
               % (os.path.relpath(path, root), len(records),
                  ', %d unknown channels skipped' % skipped if skipped else ''))

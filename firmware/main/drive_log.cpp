@@ -67,8 +67,21 @@ gauge::LogBuf*   g_log = nullptr;
 QueueHandle_t    g_q = nullptr;
 SemaphoreHandle_t g_lock = nullptr;
 uint32_t         g_dropped = 0;
+uint32_t         g_write_fail = 0;         // LogBuf calls that returned false
 uint32_t         g_epoch_at_boot = 0;      // wall clock of uptime 0, 0 if unknown
+uint32_t         g_clock_floor = 0;        // NVS wall clock from a previous run
 bool             g_have_imu = false;
+
+// Every LogBuf entry point returns bool and every one of them used to be
+// discarded, so a failed flash write or erase left a hole in a drive nobody
+// was watching and no way to find out afterwards. This is the only place any
+// of them is called from; funnel them all through here.
+bool note(bool ok, const char* what) {
+    if (ok) return true;
+    if (!g_write_fail) flight_log("drive log write FAILED (%s)", what);
+    ++g_write_fail;
+    return false;
+}
 
 uint32_t wall_now() {
     if (!g_epoch_at_boot) return 0;
@@ -86,6 +99,12 @@ void save_clock() {
 }
 
 void task(void*) {
+    // Refreshed ONLY by a reading that came from the car. The IMU must never
+    // touch this: it used to be fed back through the same queue, which meant
+    // the recorder refreshed its own liveness timer 20 times a second and the
+    // 20 s silence test below could never fire -- no drive ever closed, every
+    // drive merged into drive 1, and a parked gauge on constant USB power
+    // overwrote the whole ring overnight.
     int64_t last_sample = 0;              // 0 = no drive open
     int64_t last_flush = esp_timer_get_time();
     int64_t last_imu = 0;
@@ -102,7 +121,7 @@ void task(void*) {
             // end_drive() zeroes current_drive() before returning, so the id
             // to log has to be captured first, not read off the object after.
             const uint32_t closed_id = g_log->current_drive();
-            g_log->end_drive();
+            note(g_log->end_drive(), "end_drive");
             xSemaphoreGive(g_lock);
             flight_log("drive %u closed, %u records", (unsigned)closed_id,
                        (unsigned)drive_records);
@@ -113,10 +132,15 @@ void task(void*) {
         QSample s{};
         while (xQueueReceive(g_q, &s, 0) == pdTRUE) {
             xSemaphoreTake(g_lock, portMAX_DELAY);
-            if (!last_sample) {
+            // `!current_drive()` is the ERASE CONFIRM case: erase_all()
+            // remounts, which drops the open drive, and without this every
+            // append would fail until the silence timer eventually closed a
+            // drive that no longer exists. Re-open on the very next reading
+            // instead of limping for 20 s.
+            if (!last_sample || !g_log->current_drive()) {
                 drive_t0 = s.t_s;
                 drive_records = 0;
-                g_log->begin_drive(wall_now());
+                note(g_log->begin_drive(wall_now()), "begin_drive");
                 flight_log("drive %u opened, clock %s",
                            (unsigned)g_log->current_drive(),
                            wall_now() ? "known" : "UNKNOWN");
@@ -126,30 +150,50 @@ void task(void*) {
             r.t_ms = dt > 0 ? (uint32_t)(dt * 1000.0) : 0;
             r.chan = s.chan;
             r.value = s.value;
-            g_log->append(r);
+            note(g_log->append(r), "append");
             ++drive_records;
             xSemaphoreGive(g_lock);
+            // The car spoke. This -- and only this -- keeps the drive alive.
             last_sample = now;
         }
 
         // The IMU moves here from the UI loop, where it was read once a
-        // second only to be printed.
+        // second only to be printed. It is appended straight to the ring
+        // rather than pushed back through g_q: this task is the only thing
+        // allowed to touch LogBuf, it is already holding the lock in the same
+        // breath, and the round trip through the queue was what fed the
+        // liveness timer and stopped drives from ever ending.
         if (last_sample && g_have_imu && now - last_imu > kImuPeriodUs) {
             last_imu = now;
             imu_sample_t im{};
             if (imu_read(&im)) {
-                const double t_s = now / 1e6;
-                drive_log_sample("imu_ax", im.ax, t_s);
-                drive_log_sample("imu_ay", im.ay, t_s);
-                drive_log_sample("imu_az", im.az, t_s);
-                drive_log_sample("imu_gz", im.gz, t_s);
+                // Ids are looked up once: log_chan_id walks a string table.
+                static const uint16_t kImuChan[4] = {
+                    gauge::log_chan_id("imu_ax"), gauge::log_chan_id("imu_ay"),
+                    gauge::log_chan_id("imu_az"), gauge::log_chan_id("imu_gz"),
+                };
+                const float v[4] = {im.ax, im.ay, im.az, im.gz};
+                const double dt = now / 1e6 - drive_t0;
+                const uint32_t t_ms = dt > 0 ? (uint32_t)(dt * 1000.0) : 0;
+                xSemaphoreTake(g_lock, portMAX_DELAY);
+                // A drive may have closed between the check and the lock;
+                // append() would refuse, and that refusal is not a fault.
+                if (g_log->current_drive()) {
+                    for (int i = 0; i < 4; ++i) {
+                        if (kImuChan[i] == gauge::kChanUnknown) continue;
+                        gauge::Record r{t_ms, kImuChan[i], 0, v[i]};
+                        note(g_log->append(r), "append imu");
+                        ++drive_records;
+                    }
+                }
+                xSemaphoreGive(g_lock);
             }
         }
 
         if (now - last_flush > kFlushUs) {
             last_flush = now;
             xSemaphoreTake(g_lock, portMAX_DELAY);
-            g_log->flush();
+            note(g_log->flush(), "flush");
             xSemaphoreGive(g_lock);
         }
         if (now - last_clock_save > kClockSaveUs) {
@@ -186,10 +230,12 @@ extern "C" void drive_log_init(void) {
         nvs_get_u32(h, "clock", &floor_s);
         nvs_close(h);
     }
-    ESP_LOGI(TAG, "%u sectors, %u drives held, %u records, clock floor %u",
-             (unsigned)g_flash.sector_count(), (unsigned)log.drive_count(),
-             (unsigned)log.record_count(), (unsigned)floor_s);
-    flight_log("drive log up: %u drives held", (unsigned)log.drive_count());
+    g_clock_floor = floor_s;
+    ESP_LOGI(TAG, "%u sectors (%u used), %u drive starts, %u records, clock floor %u",
+             (unsigned)g_flash.sector_count(), (unsigned)log.sectors_used(),
+             (unsigned)log.drive_starts(), (unsigned)log.record_count(),
+             (unsigned)floor_s);
+    flight_log("drive log up: %u drive starts", (unsigned)log.drive_starts());
 
     // Priority 3 -- below the UI and below live_link's 4. Core 0, beside the
     // radio, so LVGL's render on core 1 never waits behind a flash erase.
@@ -214,13 +260,22 @@ extern "C" void drive_log_set_epoch(uint32_t epoch_s) {
 
 extern "C" bool drive_log_stats(drive_log_stats_t* out) {
     if (!out || !g_log) return false;
+    // drive_log.h says the LogBuf may only be touched under this lock, and
+    // this function used to read it without. The writer task can be part-way
+    // through a flush that moves record_count_ and sectors_used_.
+    if (!drive_log_lock(5000)) return false;
     *out = drive_log_stats_t{};
-    out->drives = (uint32_t)g_log->drive_count();
+    out->drive_starts = (uint32_t)g_log->drive_starts();
     out->records = (uint32_t)g_log->record_count();
     out->sectors = (uint32_t)g_flash.sector_count();
+    out->sectors_used = (uint32_t)g_log->sectors_used();
+    out->bytes_used = (uint32_t)(g_log->sectors_used() * gauge::kSectorSize);
     out->dropped = g_dropped;
+    out->write_fail = g_write_fail;
     out->epoch_s = wall_now();
+    out->clock_floor_s = g_clock_floor;
     out->table_version = gauge::kChanTableVersion;
+    drive_log_unlock();
     return true;
 }
 

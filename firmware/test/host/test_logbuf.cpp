@@ -9,6 +9,7 @@
 
 using gauge_test::check;
 using gauge_test::FakeFlash;
+using gauge::kListCapacity;
 
 static void test_layout() {
     check("sector size", (int)gauge::kSectorSize, 4096);
@@ -21,7 +22,8 @@ static void test_mount_empty() {
     FakeFlash f(8);
     gauge::LogBuf log(f);
     check("mount on erased flash", log.mount(), true);
-    check("empty: no drives", (int)log.drive_count(), 0);
+    check("empty: no drive starts", (int)log.drive_starts(), 0);
+    check("empty: no sectors used", (int)log.sectors_used(), 0);
     check("empty: no records", (int)log.record_count(), 0);
     check("mount does not erase", (int)f.erases(), 0);
 }
@@ -46,7 +48,8 @@ static void test_append_and_reopen() {
     // A fresh object over the same flash is what a reboot looks like.
     gauge::LogBuf again(f);
     check("remount", again.mount(), true);
-    check("remount sees the drive", (int)again.drive_count(), 1);
+    check("remount sees the drive", (int)again.drive_starts(), 1);
+    check("remount counts the one sector in use", (int)again.sectors_used(), 1);
     check("remount sees the records", (int)again.record_count(), 11);
     check("remount continues the drive numbering", (int)again.next_drive_id(), 2);
 }
@@ -127,19 +130,19 @@ static void test_records_in_zero_with_valid_header() {
         uint32_t seq;
         uint32_t drive;
         uint16_t flags;
-        uint16_t pad;
+        uint16_t table_version;
     } h{};
     memcpy(h.magic, "MX5L", 4);
     h.seq = 1;
     h.drive = 1;
     h.flags = 1;   // opens a drive
-    h.pad = 0;
+    h.table_version = gauge::kChanTableVersion;
     static_assert(sizeof(h) == gauge::kSectorHeaderSize, "header layout mismatch");
     check("write header directly", f.write(0, &h, sizeof h), true);
 
     gauge::LogBuf log(f);
     check("mount sees the valid, empty sector", log.mount(), true);
-    check("drive_count sees the open drive", (int)log.drive_count(), 1);
+    check("drive_starts sees the open drive", (int)log.drive_starts(), 1);
     check("record_count is zero", (int)log.record_count(), 0);
 
     const size_t expect = linear_count(f, 0);
@@ -407,7 +410,8 @@ static void test_erase_all() {
     log.mount();
     drive_of(log, 1756300000u, 200);
     check("erase_all", log.erase_all(), true);
-    check("nothing left", (int)log.drive_count(), 0);
+    check("nothing left", (int)log.drive_starts(), 0);
+    check("no sectors in use after erase_all", (int)log.sectors_used(), 0);
     check("still usable", log.begin_drive(0), true);
 }
 
@@ -440,6 +444,140 @@ static void test_channel_ids() {
           gauge::log_chan_id("imu_gz") < gauge::kChanDriveEnd, true);
 }
 
+// A drive long enough to own every sector of the ring. The old start-finding
+// looked for the sector whose ring predecessor belongs to a DIFFERENT drive;
+// a drive that fills the ring has no such gap anywhere, so read_drive found
+// no start, returned false, and list() silently dropped a drive holding the
+// entire partition -- "OK 0 drives" while sitting on 10 MB. Every existing
+// wrap test keeps two drives alive, which is exactly why this survived.
+static void test_drive_filling_the_whole_ring_is_readable() {
+    FakeFlash f(4);
+    gauge::LogBuf log(f);
+    log.mount();
+    log.begin_drive(1756300000u);        // writes the start marker
+    // 4 sectors x 340 records, minus the marker already written.
+    const int n = (int)(4 * gauge::kRecordsPerSector) - 1;
+    for (int i = 0; i < n; ++i) log.append(rec((uint32_t)i * 10u, 12, (float)i));
+    check("flush a ring-filling drive", log.flush(), true);
+    check("every sector is in use", (int)log.sectors_used(), 4);
+
+    Collect got;
+    check("read_drive finds a drive with no gap", log.read_drive(1, collect, &got), true);
+    check("it hands back every record", (int)got.all.size(),
+          (int)(4 * gauge::kRecordsPerSector));
+    // Guarded: read_drive returning false (which is exactly the bug this
+    // test exists for) leaves this empty, and a crashing test reports worse
+    // than a failing one.
+    if (got.all.size() == 4 * gauge::kRecordsPerSector) {
+        check("first record is the start marker", (int)got.all.front().chan,
+              (int)gauge::kChanDriveStart);
+        check("second record is reading 0", (double)got.all[1].value, 0.0);
+        check("last record is the last reading", (double)got.all.back().value,
+              (double)(n - 1));
+    }
+    // In order, not just present: t_ms rises monotonically across the wrap.
+    bool ordered = true;
+    for (size_t i = 2; i < got.all.size(); ++i)
+        if (got.all[i].t_ms < got.all[i - 1].t_ms) ordered = false;
+    check("records come back in order across the whole ring", ordered, true);
+
+    gauge::DriveInfo out[4]{};
+    check("list still offers it", (int)log.list(out, 4), 1);
+    check("with all of its records", (int)out[0].records,
+          (int)(4 * gauge::kRecordsPerSector));
+}
+
+// Design s9: "a channel table version mismatch is refused, not guessed."
+// A record stores a channel *id*, which is a position in poll.cpp's compiled
+// table -- so a firmware whose table gained a middle entry renames every
+// channel of every drive already on flash.
+static void test_channel_table_version_mismatch_is_refused() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    drive_of(log, 1756300000u, 200);
+
+    // The sector this drive lives in, stamped by a firmware whose table is
+    // one version newer. Poked straight into the array: a real flash write
+    // could not set the bit, and a real one would not need to.
+    size_t stamped = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        auto* h = reinterpret_cast<gauge::SectorHeader*>(f.raw(i));
+        if (memcmp(h->magic, "MX5L", 4) == 0 && h->drive == 1) {
+            h->table_version = gauge::kChanTableVersion + 1;
+            ++stamped;
+        }
+    }
+    check("the drive's sectors were re-stamped", (int)stamped > 0, true);
+
+    gauge::LogBuf after(f);
+    check("remount", after.mount(), true);
+    gauge::DriveInfo out[4]{};
+    check("list still describes it", (int)after.list(out, 4), 1);
+    check("and reports the version it was written under", (int)out[0].table_version,
+          (int)gauge::kChanTableVersion + 1);
+    check("its records are still countable", (int)out[0].records, 202);
+
+    // The refusal: a read that does not ask about the version is denied
+    // rather than handed records this firmware's table would mislabel.
+    Collect got;
+    check("read_drive refuses a foreign table version",
+          after.read_drive(1, collect, &got), false);
+    check("and hands back nothing", (int)got.all.size(), 0);
+
+    // A drive written by THIS table is unaffected.
+    after.begin_drive(1756300500u);
+    for (int i = 0; i < 200; ++i) after.append(rec((uint32_t)i, 12, (float)i));
+    after.end_drive();
+    Collect mine;
+    check("a current-version drive still reads", after.read_drive(2, collect, &mine), true);
+}
+
+// "OK 32 drives" used to be indistinguishable from "32 drives and more I
+// cannot show you". Both ways of running out have to say so.
+static void test_list_says_when_it_is_truncated() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    for (int d = 0; d < 4; ++d) drive_of(log, 1756300000u + (uint32_t)d, 150);
+
+    gauge::DriveInfo out[8]{};
+    bool truncated = true;
+    check("all four fit", (int)log.list(out, 8, &truncated), 4);
+    check("nothing was hidden", truncated, false);
+
+    truncated = false;
+    check("asked for two, got two", (int)log.list(out, 2, &truncated), 2);
+    check("and it says the answer is partial", truncated, true);
+    check("the two it gave are the newest", (int)out[0].id, 4);
+
+    // The other way out of room: more distinct drives than the accumulator
+    // table holds. kListCapacity is the number, so make one more than that.
+    FakeFlash big(kListCapacity + 8);
+    gauge::LogBuf many(big);
+    many.mount();
+    for (size_t d = 0; d < kListCapacity + 1; ++d)
+        drive_of(many, 1756300000u + (uint32_t)d, 150);
+    static gauge::DriveInfo room[kListCapacity];
+    truncated = false;
+    check("the table fills up", (int)many.list(room, kListCapacity, &truncated),
+          (int)kListCapacity);
+    check("and that is reported too", truncated, true);
+}
+
+// Only the writer can stamp a version, so this is the guard that a future
+// table change actually has to bump the constant to be detectable.
+static void test_written_sectors_carry_the_table_version() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    drive_of(log, 1756300000u, 150);
+    const auto* h = reinterpret_cast<const gauge::SectorHeader*>(f.raw(1));
+    check("the sector is the drive's", (int)h->drive, 1);
+    check("and carries the compiled table version", (int)h->table_version,
+          (int)gauge::kChanTableVersion);
+}
+
 int main() {
     test_layout();
     test_mount_empty();
@@ -459,6 +597,10 @@ int main() {
     test_records_in_across_a_mid_sector_erase_hole();
     test_records_in_across_a_narrow_erase_hole();
     test_erase_all();
+    test_drive_filling_the_whole_ring_is_readable();
+    test_channel_table_version_mismatch_is_refused();
+    test_list_says_when_it_is_truncated();
+    test_written_sectors_carry_the_table_version();
     test_channel_ids();
     return gauge_test::check_report();
 }

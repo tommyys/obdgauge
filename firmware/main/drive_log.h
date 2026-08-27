@@ -18,11 +18,24 @@ extern "C" {
 #endif
 
 typedef struct {
-    uint32_t drives;        // drives held and offerable
+    // Sector headers flagged as opening a drive: an UPPER BOUND, not an
+    // answer. It is never decremented when the ring drops a drive and it
+    // counts drives too short to be offered, so it can exceed what LIST
+    // shows. LIST is the only authority on what is held and pullable. (It
+    // was called `drives` and documented as "drives held and offerable",
+    // which it has never been.)
+    uint32_t drive_starts;
     uint32_t records;       // records committed since mount
     uint32_t sectors;       // sectors in the partition
+    uint32_t sectors_used;  // of those, the ones carrying data
+    uint32_t bytes_used;    // sectors_used x 4096
     uint32_t dropped;       // samples the queue could not take
+    uint32_t write_fail;    // LogBuf writes/erases that failed -- silent data loss
     uint32_t epoch_s;       // borrowed wall clock, 0 if never set
+    // The clock last persisted to NVS by a previous run. A drive recorded
+    // with no Mac attached happened AFTER this, and that floor is the only
+    // thing that places it in time at all (design s5).
+    uint32_t clock_floor_s;
     uint16_t table_version;
 } drive_log_stats_t;
 
@@ -37,6 +50,8 @@ void drive_log_sample(const char* key, float value, double t_s);
 // The Mac's clock, from `TIME <epoch>`. Applies to drives opened afterwards.
 void drive_log_set_epoch(uint32_t epoch_s);
 
+// Takes drive_log_lock() itself; do not call it while already holding it.
+// False if there is no recorder, or if the lock could not be had in 5 s.
 bool drive_log_stats(drive_log_stats_t* out);
 
 #ifdef __cplusplus

@@ -815,14 +815,23 @@ The recorder is read back over the same USB console the board already
 exposes, five plain-text commands (`firmware/main/serial_cmd.cpp`):
 
 - `TIME <epoch>` — lends the board the caller's clock.
-- `STATS` — sector/drive/record counts, samples dropped, and a channel-table
-  version (so a caller that disagrees about what channel id 9 means refuses
-  to guess rather than mislabel a column).
-- `LIST` — one line per drive held: id, epoch, record count, duration,
-  whether it ended cleanly.
+- `STATS` — sectors in the partition and sectors actually used, the bytes
+  those come to, drive-start markers, record count, samples dropped, flash
+  writes that failed, the borrowed clock and the NVS clock floor, and a
+  channel-table version (so a caller that disagrees about what channel id 9
+  means refuses to guess rather than mislabel a column). `starts=` is an
+  upper bound on drives, not an answer: it counts drive-open markers, is
+  never decremented when the ring drops a drive, and includes drives too
+  short to be offered. `LIST` is the authority on what can be pulled.
+- `LIST` — one line per drive held, newest first: id, epoch, record count,
+  duration, whether it ended cleanly, and the channel-table version it was
+  recorded under. Its `OK N drives truncated=0|1` terminator says whether
+  there were drives it had no room to report — "N drives" and "N drives and
+  more I cannot show you" must not look the same.
 - `GET <id>` — streams a drive's records out as base64, three records per
   line, followed by a record count and a crc32 the reader must check before
-  trusting anything it received.
+  trusting anything it received. A drive recorded under a different channel
+  table is refused outright rather than streamed out to be mislabelled.
 - `ERASE CONFIRM` — wipes the whole ring.
 
 `tools/pull_drives.py` drives all of this: it sets the board's clock from the

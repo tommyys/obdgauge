@@ -4,13 +4,13 @@
 #include <cstring>
 #include <cstdlib>
 
-#include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 
+#include "crc32.h"
 #include "drive_log.h"
 #include "logbuf.h"
 
@@ -84,7 +84,11 @@ bool emit(const gauge::Record* r, size_t n, void* ctx) {
     GetCtx* g = static_cast<GetCtx*>(ctx);
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(r);
     const size_t total = n * sizeof(gauge::Record);
-    g->crc = esp_rom_crc32_le(g->crc, bytes, total);
+    // gauge::crc32, not esp_rom_crc32_le: the two are the same algorithm
+    // (crc32.h shows the IDF source), but only this one is reachable from
+    // firmware/test/host, so only this one can be pinned to the standard
+    // check value that the Python side is also pinned to.
+    g->crc = gauge::crc32(g->crc, bytes, total);
     for (size_t off = 0; off < total; off += kRecordsPerLine * sizeof(gauge::Record)) {
         const size_t chunk = total - off < kRecordsPerLine * sizeof(gauge::Record)
                                  ? total - off
@@ -98,9 +102,12 @@ bool emit(const gauge::Record* r, size_t n, void* ctx) {
 void cmd_stats() {
     drive_log_stats_t s{};
     if (!drive_log_stats(&s)) { printf("ERR no recorder\n"); return; }
-    printf("STATS sectors=%u drives=%u records=%u dropped=%u epoch=%u table=%u\n",
-           (unsigned)s.sectors, (unsigned)s.drives, (unsigned)s.records,
-           (unsigned)s.dropped, (unsigned)s.epoch_s, (unsigned)s.table_version);
+    printf("STATS sectors=%u used=%u bytes=%u starts=%u records=%u dropped=%u "
+           "writefail=%u epoch=%u floor=%u table=%u\n",
+           (unsigned)s.sectors, (unsigned)s.sectors_used, (unsigned)s.bytes_used,
+           (unsigned)s.drive_starts, (unsigned)s.records, (unsigned)s.dropped,
+           (unsigned)s.write_fail, (unsigned)s.epoch_s, (unsigned)s.clock_floor_s,
+           (unsigned)s.table_version);
     printf("OK\n");
 }
 
@@ -108,26 +115,44 @@ void cmd_list() {
     gauge::LogBuf* log = drive_log_buf();
     if (!log) { printf("ERR no recorder\n"); return; }
     if (!drive_log_lock(5000)) { printf("ERR busy\n"); return; }
-    gauge::DriveInfo info[32]{};
-    const size_t n = log->list(info, 32);
+    // Sized to what list() can actually hold. It used to be 32 against a
+    // 64-entry table, so a commute's worth of drives past the cap were
+    // invisible to LIST, refused by GET, and eventually dropped unpulled --
+    // while "OK 32 drives" read like a complete answer.
+    static gauge::DriveInfo info[gauge::kListCapacity];
+    for (auto& d : info) d = gauge::DriveInfo{};
+    bool truncated = false;
+    const size_t n = log->list(info, gauge::kListCapacity, &truncated);
     drive_log_unlock();
     for (size_t i = 0; i < n; ++i)
-        printf("DRIVE id=%u epoch=%u records=%u ms=%u complete=%d\n",
+        printf("DRIVE id=%u epoch=%u records=%u ms=%u complete=%d table=%u\n",
                (unsigned)info[i].id, (unsigned)info[i].epoch_s,
                (unsigned)info[i].records, (unsigned)info[i].duration_ms,
-               info[i].complete ? 1 : 0);
-    printf("OK %u drives\n", (unsigned)n);
+               info[i].complete ? 1 : 0, (unsigned)info[i].table_version);
+    printf("OK %u drives truncated=%d\n", (unsigned)n, truncated ? 1 : 0);
 }
 
 void cmd_get(uint32_t id) {
     gauge::LogBuf* log = drive_log_buf();
     if (!log) { printf("ERR no recorder\n"); return; }
     if (!drive_log_lock(5000)) { printf("ERR busy\n"); return; }
-    gauge::DriveInfo info[32]{};
-    const size_t n = log->list(info, 32);
+    static gauge::DriveInfo info[gauge::kListCapacity];
+    for (auto& d : info) d = gauge::DriveInfo{};
+    const size_t n = log->list(info, gauge::kListCapacity);
     uint32_t records = 0;
-    for (size_t i = 0; i < n; ++i) if (info[i].id == id) records = info[i].records;
+    uint16_t version = gauge::kChanTableVersion;
+    for (size_t i = 0; i < n; ++i)
+        if (info[i].id == id) { records = info[i].records; version = info[i].table_version; }
     if (!records) { drive_log_unlock(); printf("ERR no drive %u\n", (unsigned)id); return; }
+    if (version != gauge::kChanTableVersion) {
+        // Channel ids are positions in this firmware's table. Handing these
+        // records to a reader that would label them with a different table's
+        // names is mislabelled data, which is worse than no data (design s2).
+        drive_log_unlock();
+        printf("ERR drive %u was written by channel table v%u, this firmware is v%u\n",
+               (unsigned)id, (unsigned)version, (unsigned)gauge::kChanTableVersion);
+        return;
+    }
     printf("BEGIN %u %u\n", (unsigned)id, (unsigned)records);
     GetCtx g{0, 0};
     const bool ok = log->read_drive(id, emit, &g);
@@ -184,6 +209,10 @@ void task(void*) {
 
 extern "C" void serial_cmd_init(void) {
     // Priority 2: below the recorder, well below the UI. Nothing waits on it.
-    // 8192 bytes because read_drive puts a 4 KB sector on the stack.
-    xTaskCreatePinnedToCore(task, "serialcmd", 8192, nullptr, 2, nullptr, 0);
+    // 12288 bytes, not 8192: cmd_get's own frame holds read_drive's 4,080-byte
+    // sector buffer, and emit()'s sink calls printf, which is 1-1.5 KB of
+    // stack in ESP-IDF on its own. (The DriveInfo table that grew from 32 to
+    // 64 entries with the truncation fix is static, so it is not on this
+    // stack -- but 8 KB was thin before that and has never once run.)
+    xTaskCreatePinnedToCore(task, "serialcmd", 12288, nullptr, 2, nullptr, 0);
 }

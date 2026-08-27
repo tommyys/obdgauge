@@ -111,10 +111,18 @@ void cmd_stats() {
     printf("OK\n");
 }
 
-void cmd_list() {
+// before_id 0 is the newest page; anything else is the page of drives OLDER
+// than that drive. The window is still kListCapacity wide -- paging is what
+// makes the drives past it reachable instead of merely admitted to.
+void cmd_list(uint32_t before_id) {
     gauge::LogBuf* log = drive_log_buf();
     if (!log) { printf("ERR no recorder\n"); return; }
     if (!drive_log_lock(5000)) { printf("ERR busy\n"); return; }
+    if (before_id && !log->has_drive(before_id)) {
+        drive_log_unlock();
+        printf("ERR no drive %u\n", (unsigned)before_id);
+        return;
+    }
     // Sized to what list() can actually hold. It used to be 32 against a
     // 64-entry table, so a commute's worth of drives past the cap were
     // invisible to LIST, refused by GET, and eventually dropped unpulled --
@@ -122,7 +130,7 @@ void cmd_list() {
     static gauge::DriveInfo info[gauge::kListCapacity];
     for (auto& d : info) d = gauge::DriveInfo{};
     bool truncated = false;
-    const size_t n = log->list(info, gauge::kListCapacity, &truncated);
+    const size_t n = log->list(info, gauge::kListCapacity, &truncated, before_id);
     drive_log_unlock();
     for (size_t i = 0; i < n; ++i)
         printf("DRIVE id=%u epoch=%u records=%u ms=%u complete=%d table=%u\n",
@@ -136,14 +144,21 @@ void cmd_get(uint32_t id) {
     gauge::LogBuf* log = drive_log_buf();
     if (!log) { printf("ERR no recorder\n"); return; }
     if (!drive_log_lock(5000)) { printf("ERR busy\n"); return; }
-    static gauge::DriveInfo info[gauge::kListCapacity];
-    for (auto& d : info) d = gauge::DriveInfo{};
-    const size_t n = log->list(info, gauge::kListCapacity);
-    uint32_t records = 0;
-    uint16_t version = gauge::kChanTableVersion;
-    for (size_t i = 0; i < n; ++i)
-        if (info[i].id == id) { records = info[i].records; version = info[i].table_version; }
-    if (!records) { drive_log_unlock(); printf("ERR no drive %u\n", (unsigned)id); return; }
+    // Resolved by id alone, NOT by looking for it in list()'s reply. list()
+    // can only ever report the newest kListCapacity drives, so a GET that
+    // went through it refused every drive older than that window -- and the
+    // pull tool skips drives already in logs/, so once the newest 64 were
+    // pulled no further run could ever reach the older ones: they sat on
+    // flash until the ring dropped them, unpulled. has_drive() scans for the
+    // one drive and applies the same offerable rule, with no window at all.
+    gauge::DriveInfo info{};
+    if (!log->has_drive(id, &info)) {
+        drive_log_unlock();
+        printf("ERR no drive %u\n", (unsigned)id);
+        return;
+    }
+    const uint32_t records = info.records;
+    const uint16_t version = info.table_version;
     if (version != gauge::kChanTableVersion) {
         // Channel ids are positions in this firmware's table. Handing these
         // records to a reader that would label them with a different table's
@@ -187,7 +202,9 @@ void task(void*) {
         } else if (!strcmp(line, "STATS")) {
             cmd_stats();
         } else if (!strcmp(line, "LIST")) {
-            cmd_list();
+            cmd_list(0);
+        } else if (!strncmp(line, "LIST BEFORE ", 12)) {
+            cmd_list((uint32_t)strtoul(line + 12, nullptr, 10));
         } else if (!strncmp(line, "GET ", 4)) {
             cmd_get((uint32_t)strtoul(line + 4, nullptr, 10));
         } else if (!strcmp(line, "ERASE CONFIRM")) {

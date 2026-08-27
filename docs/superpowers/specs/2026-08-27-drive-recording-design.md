@@ -1,7 +1,8 @@
 # Drive recording on the gauge — design
 
 **Date:** 2026-08-27
-**Status:** approved, not yet implemented
+**Status:** approved, implemented — sections marked *Changed during
+implementation* record where the shipped code departed from this document.
 
 ## The problem
 
@@ -61,8 +62,13 @@ magic   4 B  "MX5L"
 seq     4 B  u32, +1 per sector written, ever
 drive   4 B  u32 drive id
 flags   2 B  bit 0: this sector opens a drive
-pad     2 B
+table   2 B  channel-table version (see "Channel names" below)
 ```
+
+*Changed during implementation:* those last 2 bytes were spec'd as `pad`. The
+channel-table version this section's "Channel names" asks for needed somewhere
+to live, and the pad was exactly 2 bytes of it — so the header is still 16
+bytes and the field is `SectorHeader::table_version`.
 
 The remaining 4,080 bytes hold up to 340 records in **the same 12-byte layout
 `build_drive_asset.py` writes** (`u32 t_ms, u16 chan, u16 pad, f32 value`), so a
@@ -187,17 +193,43 @@ cannot be open at once. The pull tool says so when the port is busy.
 
 A line-based command reader on stdin:
 
+Every reply ends in a line beginning `OK` or `ERR`, so a caller always knows
+where a reply stopped.
+
 | Command | Reply |
 |---|---|
-| `TIME <epoch>` | `OK` |
-| `STATS` | sectors used, drives held, bytes, table version |
-| `LIST` | one line per drive: id, epoch (or `?`), record count, duration |
-| `GET <id>` | base64 records, 64 lines per chunk, `END <crc32>` |
-| `ERASE` | wipes the partition; asks for confirmation |
+| `TIME <epoch>` | `OK clock set` |
+| `STATS` | `STATS sectors= used= bytes= starts= records= dropped= writefail= epoch= floor= table=`, then `OK` |
+| `LIST` | `DRIVE id= epoch= records= ms= complete= table=` per drive, newest first, then `OK N drives truncated=0\|1` |
+| `LIST BEFORE <id>` | the same, for the page of drives *older* than `<id>` |
+| `GET <id>` | `BEGIN <id> <records>`, base64 records three per line, `END crc32=%08x`, then `OK` |
+| `ERASE CONFIRM` | wipes the partition; plain `ERASE` is refused with `ERR say 'ERASE CONFIRM'` |
 
-`tools/pull_drives.py` sets the clock, runs `LIST`, skips ids already present in
-`logs/`, `GET`s the rest, and writes `logs/drive-YYYYmmdd-HHMMSS.csv` in the
-existing four-column `iso,t,key,value` shape. Which means
+*Changed during implementation*, all five for reasons the shipped code
+records at the point of change:
+
+- `STATS` reports `starts=`, which is drive-*open markers* — an upper bound,
+  never decremented when the ring drops a drive, and including drives too
+  short to be offered. "Drives held" is a claim it cannot make; `LIST` is the
+  authority on what can actually be pulled.
+- `LIST` also reports `complete` (a drive with no end marker — power cut, or
+  the one recording right now) and `table` (the channel table it was recorded
+  under), and its terminator carries `truncated`, because "N drives" and "N
+  drives and more I cannot show you" must not look the same.
+- `LIST` reports at most `kListCapacity` (64) drives per reply, so `LIST
+  BEFORE <id>` was added to page back through the older ones. `GET` resolves
+  its drive by id directly (`LogBuf::has_drive`) and has no window at all —
+  going through `LIST` made every drive past the newest 64 unpullable.
+- `GET` emits **three** records per line, not 64: 36 bytes encode to 48 base64
+  characters with no padding, so a line never carries a partial record and the
+  host can decode line by line. Its terminator is `END crc32=%08x`.
+- `ERASE` on its own is refused; the command is `ERASE CONFIRM`. It is the one
+  irreversible command on the console.
+
+`tools/pull_drives.py` sets the clock, walks `LIST`/`LIST BEFORE` until it has
+every drive the board holds, skips ids already present in `logs/`, `GET`s the
+rest, and writes `logs/drive-YYYYmmdd-HHMMSS.csv` in the existing four-column
+`iso,t,key,value` shape. Which means
 `tools/build_drive_asset.py` can then compile a real unattended drive back into
 the replay library — the loop closes.
 
@@ -206,12 +238,21 @@ the replay library — the loop closes.
 | File | Role |
 |---|---|
 | `firmware/components/gauge_core/logbuf.{h,cpp}` | ring index and framing, pure, no flash — host-tested |
-| `firmware/main/drive_log.{h,cpp}` | the task, the partition, the IMU, drive boundaries |
+| `firmware/main/drive_log.{h,cpp}` | the task, the partition, the IMU sampling, drive boundaries |
 | `firmware/main/serial_cmd.{h,cpp}` | the stdin command reader |
 | `tools/pull_drives.py` | host side |
 | `firmware/partitions.csv` | the `logs` line |
 | `firmware/main/live_link.cpp` | `log_all=true` |
-| `firmware/main/main.cpp` | tap the sample drain; hand the IMU over |
+| `firmware/main/main.cpp` | tap the sample drain |
+
+*Changed during implementation:* `main.cpp` was to hand the IMU over. It does
+not — the recorder task reads the IMU itself on its own 5 Hz tick and appends
+straight to the ring. Handing IMU samples in through the same queue as the
+car's readings refreshed the recorder's liveness timer 5 times a second all by
+itself, so the 20 s silence test could never fire: no drive ever closed, every
+drive merged into drive 1, and a parked gauge on constant USB power overwrote
+the whole ring overnight. That was the Critical, and this is the shape of its
+fix (`drive_log.cpp`, "The IMU moves here from the UI loop").
 
 `logbuf` goes in `gauge_core`, not `main`, for the reason the rest of core is
 there: it is the part with the bugs worth catching on a Mac in a second rather

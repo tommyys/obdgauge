@@ -236,19 +236,32 @@ find the adapter and nothing else in Part B will happen.
 
 Start the engine and watch the console.
 
-- **Good:** a line like `live: 52 PIDs` — around 50, confirming the recorder
-  asks the car for everything it supports, not just the ~14 the screen shows.
+Every line quoted in Part B is a **substring** of a longer console line. The
+board prefixes its own logging, so what you actually see is, for example,
+`flight: [ 123.456s] drive 1 opened, clock known` — look for the quoted text
+inside the line, not for a line equal to it.
+
+- **Good:** `live: 52 PIDs` — around 50, confirming the recorder asks the car
+  for everything it supports, not just the ~14 the screen shows. The whole
+  line doubles the prefix and carries the VIN: `live: live: 52 PIDs, vin ...`.
   **Bad:** a number in the teens or single digits.
 - **Good:** `drive 1 opened, clock known`. If it says `clock UNKNOWN`, A7 did
   not take — the drive will still record, it just will not have a timestamp.
 - Drive normally for **about 5 minutes**, then switch the engine off.
-- Wait a full 25 seconds without touching anything. Do not restart the car.
-- **Good:** within those 25 seconds, `drive 1 closed, NNNN records`. Five
+- Wait a full **45 seconds** without touching anything. Do not restart the car.
+- **How the timer actually counts.** The drive closes 20 seconds after the
+  **last reading arrives**, not 20 seconds after the key turns. At key-off the
+  vLinker goes to sleep and the poll loop takes around 15 seconds to notice,
+  and only then does the 20 s of silence start being counted. So a perfectly
+  healthy board closes the drive somewhere between about **20 and 45 seconds**
+  after key-off, and 35 seconds is a completely ordinary figure.
+- **Good:** `drive 1 closed, NNNN records`, within that 45 seconds. Five
   minutes of driving should be roughly ten thousand records. Under 100 and the
   drive will not be offered at all — write down the exact number and flag it.
-- **Bad:** no `drive 1 closed` within 30 seconds of key-off. This is the
-  single most important failure in this document: it means the silence timer
-  is not firing, drives never end, and everything merges into drive 1.
+- **Bad:** no `drive 1 closed` at all **after a full minute** of key-off
+  silence. That, not a close at 30 or 40 seconds, is the single most important
+  failure in this document: it means the silence timer is not firing, drives
+  never end, and everything merges into drive 1.
 - **Bad:** it closes immediately, within a couple of seconds of key-off. The
   timer is firing too early and one drive will be split into many.
 - Keep half an eye on the `ui: NN fps` line throughout. It should not dip when
@@ -256,8 +269,8 @@ Start the engine and watch the console.
 
 ### B2. Second drive — and check that it is a second drive
 
-Restart the car and drive for **another 5 minutes**, then key off and wait 25
-seconds again.
+Restart the car and drive for **another 5 minutes**, then key off and wait up
+to 45 seconds again — the same window, counted the same way as B1.
 
 - **Good:** `drive 2 opened`, and later `drive 2 closed, NNNN records`.
 - **Bad:** it still says `drive 1`. The first drive never closed.
@@ -272,8 +285,11 @@ unplug the gauge's USB power for 2 seconds and plug it back in.**
 
 After it reboots:
 
-- **Good:** the boot line shows non-zero `used=` and `records=` — the earlier
-  drives are still there.
+- **Good:** the recorder's boot line shows a non-zero sector-used count and a
+  non-zero record count — the earlier drives are still there. It reads
+  `drivelog: 2544 sectors (N used), M drive starts, R records, clock floor F`;
+  `N` and `R` are the two that must not be zero. (The `used=`/`records=`
+  spelling is `STATS`, not the boot line.)
 - Then `LIST` (or `pull_drives.py --list`, remembering rule 1) must still show
   the interrupted drive, with roughly the records it had accumulated, and
   `complete=0`. An unfinished drive is expected here; its records are still
@@ -322,8 +338,12 @@ Failure signals:
 - A drive marked `(channel table v2 -- CANNOT BE PULLED)` — that drive was
   recorded by different firmware and this tool would mislabel every channel in
   it. It is refused on purpose.
-- `...and more the board could not list in one reply` — there are more drives
-  than one `LIST` can report. Pull these, then run again.
+- `...and MORE the board is still holding that this run could not reach` —
+  this should not happen. One `LIST` reply only carries the newest 64 drives,
+  but the tool pages backwards through the older ones automatically (`LIST
+  BEFORE <id>`), so the list you see is everything the board holds. Seeing
+  this line means the paging walk hit its 100-page safety cap, which is far
+  more drives than the ring can physically hold. Report it.
 - `WARNING: N flash writes FAILED` — the `writefail` counter from A5, surfaced
   by the tool. Report it.
 
@@ -347,7 +367,11 @@ drive. Re-run the pull once.
 
 - If the re-run succeeds, it was the USB link. Fine.
 - **If the same mismatch repeats on the re-run AND happens on a different
-  drive too, it is not the cable.** It is the CRC convention between the
+  drive too, it is not the cable.** One run cannot show you this: the tool
+  exits on the first bad CRC, so it never reaches a second drive. It shows up
+  **across runs** — drives already pulled into `logs/` are skipped, so each
+  re-run starts at the drive after the last one that succeeded. Two or three
+  runs, each failing on a different drive, is the pattern to look for. It is the CRC convention between the
   firmware and Python disagreeing, and every pull of every drive will fail
   identically. The fix is in `emit()` in `firmware/main/serial_cmd.cpp` and in
   `gauge::crc32` — not in the cable, not in the port. Report it that way.

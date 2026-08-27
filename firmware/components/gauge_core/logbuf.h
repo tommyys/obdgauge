@@ -162,8 +162,23 @@ public:
     // true if there were drives this call could not report -- either `max`
     // was reached or the internal table overflowed. "N drives" and "N drives
     // and more I cannot show you" must never look the same to a caller.
-    size_t list(DriveInfo* out, size_t max, bool* truncated = nullptr);
-    bool has_drive(uint32_t id);
+    //
+    // `before_id`, when non-zero, answers with the drives OLDER than that
+    // drive -- the page after it. That is what makes "and more I cannot show
+    // you" reachable rather than merely honest: a caller that is told the
+    // answer was truncated asks again with the oldest id it got, and walks
+    // back through the ring a window at a time. A `before_id` no sector
+    // carries returns 0 drives.
+    size_t list(DriveInfo* out, size_t max, bool* truncated = nullptr,
+                uint32_t before_id = 0);
+
+    // Resolves one drive by id, with none of list()'s windowing: it scans for
+    // that drive alone, so a drive too old to appear in any single list()
+    // reply is still reachable. `out`, when given, receives the same
+    // DriveInfo list() would have built for it -- which is what GET needs to
+    // announce a record count and check the channel table. Applies the same
+    // offerable rule as list(): a drive below kMinDriveRecords is not held.
+    bool has_drive(uint32_t id, DriveInfo* out = nullptr);
 
     // Wipes every sector and starts over. The only way back from a ring the
     // channel table has outgrown.
@@ -199,6 +214,11 @@ private:
     // Scans one drive's records via read_drive() and reduces them to a
     // DriveInfo. The only place that counts records and reads markers.
     bool summarise(uint32_t id, DriveInfo* out);
+
+    // The lowest seq any sector of drive `id` carries -- where that drive
+    // begins in the ring's write order. False if no sector carries the id.
+    // list()'s paging cut-off, and nothing else.
+    bool drive_first_seq(uint32_t id, uint32_t* out);
 
     IFlash& flash_;
     size_t  drive_starts_ = 0;

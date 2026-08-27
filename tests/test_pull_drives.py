@@ -18,8 +18,8 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 from pull_drives import (  # noqa: E402
     REC, CHAN_DRIVE_START, CHAN_DRIVE_END, TABLE_VERSION,
-    chan_name, parse_stats, parse_drives, parse_truncated, reassemble,
-    write_csv,
+    chan_name, page_drives, parse_stats, parse_drives, parse_truncated,
+    reassemble, write_csv,
 )
 
 FAILED = []
@@ -100,6 +100,32 @@ check('parse_drives: a drive from another channel table is flagged',
 # cannot show you". The board now says which it is.
 check('parse_truncated: complete answer', parse_truncated('OK 4 drives truncated=0'), False)
 check('parse_truncated: partial answer', parse_truncated('OK 64 drives truncated=1'), True)
+
+
+# --- page_drives: walking LIST past its own window --------------------------
+# LIST only ever reports the newest 64 drives, and the pull skips drives
+# already in logs/ -- so "pull these, then run again" handed back the same 64
+# for ever and the older ones were never reachable. The tool pages instead.
+PAGES = {
+    None: ([{'id': 9}, {'id': 8}], True),
+    8: ([{'id': 7}, {'id': 6}], True),
+    6: ([{'id': 5}], False),
+}
+check('page_drives: walks every page, newest first',
+      page_drives(lambda b: PAGES[b])[0],
+      [{'id': 9}, {'id': 8}, {'id': 7}, {'id': 6}, {'id': 5}])
+check('page_drives: and reports the walk as complete',
+      page_drives(lambda b: PAGES[b])[1], False)
+check('page_drives: one complete page needs no second call',
+      page_drives(lambda b: ([{'id': 2}, {'id': 1}], False)),
+      ([{'id': 2}, {'id': 1}], False))
+# A board that keeps saying "truncated" must not spin this for ever, and must
+# not be reported as a complete answer either.
+check('page_drives: the page cap stops the walk',
+      page_drives(lambda b: ([{'id': 1}], True), max_pages=3)[1], True)
+check('page_drives: a page with nothing new stops the walk',
+      page_drives(lambda b: ([{'id': 4}, {'id': 3}], True), max_pages=9),
+      ([{'id': 4}, {'id': 3}], True))
 
 
 # --- reassemble: the base64 + crc32 GET reassembly --------------------------

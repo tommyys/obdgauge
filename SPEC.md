@@ -827,7 +827,10 @@ exposes, five plain-text commands (`firmware/main/serial_cmd.cpp`):
   duration, whether it ended cleanly, and the channel-table version it was
   recorded under. Its `OK N drives truncated=0|1` terminator says whether
   there were drives it had no room to report — "N drives" and "N drives and
-  more I cannot show you" must not look the same.
+  more I cannot show you" must not look the same. `LIST BEFORE <id>` answers
+  with the page of drives *older* than that one, which is how the puller walks
+  back past the 64-drive window instead of being stuck on the newest 64 for
+  ever.
 - `GET <id>` — streams a drive's records out as base64, three records per
   line, followed by a record count and a crc32 the reader must check before
   trusting anything it received. A drive recorded under a different channel

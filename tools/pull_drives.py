@@ -75,7 +75,7 @@ class Gauge:
     def __init__(self, port):
         try:
             # 30 s, not 5. LIST scans all 2,544 sector headers once per
-            # drive held, and GET runs the whole of LIST again before it
+            # drive held, and GET scans the ring for its own drive before it
             # prints BEGIN -- with 20-30 drives on the board that is seconds
             # of silence, and a 5 s timeout turned it into a bogus "the board
             # stopped answering" in the middle of a pull.
@@ -159,8 +159,45 @@ def parse_truncated(terminator):
     return False
 
 
-def drives(g):
-    body, term = g.command('LIST')
+# How many LIST pages one run will walk. 64 drives a page, so this is 6,400
+# drives -- far past what the ring can hold. It exists only so a board that
+# somehow kept saying "truncated" could not spin this loop forever.
+MAX_LIST_PAGES = 100
+
+
+def page_drives(fetch_page, max_pages=MAX_LIST_PAGES):
+    """Pure: walk LIST's pages into one newest-first list of every drive held.
+
+    `fetch_page(before_id)` returns `(drives, truncated)` -- LIST's reply for
+    the newest page (`before_id` None) or for the page of drives older than
+    `before_id`. Returns `(drives, incomplete)`; `incomplete` is true only if
+    the walk stopped with the board still saying there is more, which now
+    means the page cap, not the window.
+
+    This exists because LIST only ever reports the newest 64 drives, and the
+    caller skips drives already in logs/: without paging, "pull these, then
+    run again" hands back the same 64 for ever and the older drives are never
+    reachable at all.
+    """
+    held, seen, before = [], set(), None
+    for _ in range(max_pages):
+        page, truncated = fetch_page(before)
+        # Ids are the ring's own, and a page is defined as strictly older than
+        # the one before it -- but a drive that rolled off between two LISTs
+        # must not be able to turn this into a loop or a duplicate pull.
+        fresh = [d for d in page if d['id'] not in seen]
+        held.extend(fresh)
+        seen.update(d['id'] for d in fresh)
+        if not truncated or not fresh:
+            # `not fresh` while the board still says there is more means the
+            # walk cannot advance: report that honestly rather than as done.
+            return held, bool(truncated)
+        before = fresh[-1]['id']
+    return held, True
+
+
+def drives(g, before=None):
+    body, term = g.command('LIST' if before is None else 'LIST BEFORE %d' % before)
     return parse_drives(body), parse_truncated(term)
 
 
@@ -297,7 +334,7 @@ def main():
     g.command('TIME %d' % now)
     print('clock set to %s' % dt.datetime.fromtimestamp(now).isoformat(' ', 'seconds'))
 
-    held, truncated = drives(g)
+    held, truncated = page_drives(lambda before: drives(g, before))
     if not held:
         print('no drives held.')
         return
@@ -310,8 +347,10 @@ def main():
                  '' if d['table'] == TABLE_VERSION
                  else '  (channel table v%d -- CANNOT BE PULLED)' % d['table']))
     if truncated:
-        print('  ...and more the board could not list in one reply. Pull these,'
-              ' then run again -- what is shown is the newest %d.' % len(held))
+        print('  ...and MORE the board is still holding that this run could not'
+              ' reach after %d pages of LIST. Report this -- it should not'
+              ' happen; %d drives is far more than the ring can hold.'
+              % (MAX_LIST_PAGES, len(held)))
     if args.list:
         return
 

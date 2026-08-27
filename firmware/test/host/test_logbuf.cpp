@@ -565,6 +565,66 @@ static void test_list_says_when_it_is_truncated() {
     check("and that is reported too", truncated, true);
 }
 
+// GET used to resolve a drive by looking for it in list()'s reply, so every
+// drive older than the newest kListCapacity was unreachable -- and since the
+// pull tool skips drives already in logs/, "pull these and run again" could
+// never reach them. Nothing outside list()'s window may be unresolvable.
+static void test_a_drive_past_the_list_window_is_still_resolvable() {
+    FakeFlash f(kListCapacity + 8);
+    gauge::LogBuf log(f);
+    log.mount();
+    for (size_t d = 0; d < kListCapacity + 4; ++d)
+        drive_of(log, 1756300000u + (uint32_t)d, 150);
+
+    static gauge::DriveInfo room[kListCapacity];
+    bool truncated = false;
+    const size_t n = log.list(room, kListCapacity, &truncated);
+    check("the window is full", (int)n, (int)kListCapacity);
+    check("and says so", truncated, true);
+
+    // Drive 1 is old enough that the newest-64 window cannot reach it.
+    bool listed = false;
+    for (size_t i = 0; i < n; ++i) if (room[i].id == 1) listed = true;
+    check("drive 1 is outside the window", listed, false);
+
+    gauge::DriveInfo info{};
+    check("but it resolves by id", log.has_drive(1, &info), true);
+    check("with the count GET needs", (int)info.records, 152);   // + 2 markers
+    check("and the table it was written under", (int)info.table_version,
+          (int)gauge::kChanTableVersion);
+    check("a drive that was never written does not", log.has_drive(9999), false);
+}
+
+// The other half: LIST itself must be able to walk past its own window, or
+// the tool has no way to learn the older ids in the first place.
+static void test_list_pages_backwards() {
+    FakeFlash f(16);
+    gauge::LogBuf log(f);
+    log.mount();
+    for (int d = 0; d < 6; ++d) drive_of(log, 1756300000u + (uint32_t)d, 150);
+
+    gauge::DriveInfo page[8]{};
+    bool truncated = false;
+    check("first page of two", (int)log.list(page, 2, &truncated), 2);
+    check("newest first", (int)page[0].id, 6);
+    check("and the second is drive 5", (int)page[1].id, 5);
+    check("there is more", truncated, true);
+
+    check("second page", (int)log.list(page, 2, &truncated, 5), 2);
+    check("carries on where it left off", (int)page[0].id, 4);
+    check("still more", truncated, true);
+
+    check("third page", (int)log.list(page, 2, &truncated, 3), 2);
+    check("the oldest two", (int)page[0].id, 2);
+    check("down to drive 1", (int)page[1].id, 1);
+    check("and now the ring is exhausted", truncated, false);
+
+    check("past the end is empty, not an error", (int)log.list(page, 2, &truncated, 1), 0);
+    check("with nothing hidden", truncated, false);
+    check("an id no sector carries pages to nothing",
+          (int)log.list(page, 2, &truncated, 77), 0);
+}
+
 // Only the writer can stamp a version, so this is the guard that a future
 // table change actually has to bump the constant to be detectable.
 static void test_written_sectors_carry_the_table_version() {
@@ -600,6 +660,8 @@ int main() {
     test_drive_filling_the_whole_ring_is_readable();
     test_channel_table_version_mismatch_is_refused();
     test_list_says_when_it_is_truncated();
+    test_a_drive_past_the_list_window_is_still_resolvable();
+    test_list_pages_backwards();
     test_written_sectors_carry_the_table_version();
     test_channel_ids();
     return gauge_test::check_report();

@@ -229,9 +229,14 @@ bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx,
     return true;
 }
 
-size_t LogBuf::list(DriveInfo* out, size_t max, bool* truncated) {
+size_t LogBuf::list(DriveInfo* out, size_t max, bool* truncated, uint32_t before_id) {
     if (truncated) *truncated = false;
     if (!mounted_ || !max) return 0;
+    // Paging: everything strictly older than where `before_id` starts. A
+    // drive's sectors are contiguous in seq, so one seq cut-off separates
+    // "older than that drive" from that drive and everything after it.
+    uint32_t before_seq = 0;
+    if (before_id && !drive_first_seq(before_id, &before_seq)) return 0;
     // Gather per-drive facts in one pass over the headers, then a second pass
     // for the drives that qualify. The board has 8 MB of PSRAM but this runs
     // in a task with an 8 KB stack, so nothing here is per-record.
@@ -246,6 +251,7 @@ size_t LogBuf::list(DriveInfo* out, size_t max, bool* truncated) {
         SectorHeader h{};
         if (!flash_.read(i * kSectorSize, &h, sizeof h)) return 0;
         if (!valid(h) || !h.drive) continue;
+        if (before_id && !newer(before_seq, h.seq)) continue;   // this page starts below it
         Acc* a = nullptr;
         for (size_t k = 0; k < n_acc; ++k) if (acc[k].id == h.drive) { a = &acc[k]; break; }
         if (!a) {
@@ -301,9 +307,25 @@ bool LogBuf::erase_all() {
     return mount();
 }
 
-bool LogBuf::has_drive(uint32_t id) {
+bool LogBuf::has_drive(uint32_t id, DriveInfo* out) {
     DriveInfo info{};
-    return summarise(id, &info) && info.records >= kMinDriveRecords;
+    if (!summarise(id, &info) || info.records < kMinDriveRecords) return false;
+    if (out) *out = info;
+    return true;
+}
+
+bool LogBuf::drive_first_seq(uint32_t id, uint32_t* out) {
+    if (!mounted_ || !id) return false;
+    bool any = false;
+    uint32_t first = 0;
+    for (size_t i = 0; i < flash_.sector_count(); ++i) {
+        SectorHeader h{};
+        if (!flash_.read(i * kSectorSize, &h, sizeof h)) return false;
+        if (!valid(h) || h.drive != id) continue;
+        if (!any || newer(first, h.seq)) { first = h.seq; any = true; }
+    }
+    if (any && out) *out = first;
+    return any;
 }
 
 bool LogBuf::summarise(uint32_t id, DriveInfo* out) {

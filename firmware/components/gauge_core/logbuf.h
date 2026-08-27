@@ -32,7 +32,22 @@ constexpr size_t kRecordsPerSector = (kSectorSize - kSectorHeaderSize) / sizeof(
 
 // Reserved channel ids. Real channels are assigned in poll.cpp table order
 // (Task 6) and never reach this range.
-constexpr uint16_t kChanDriveStart = 0xFFFF;   // value = epoch seconds, 0 if unknown
+//
+// kChanDriveStart's record carries the drive's epoch seconds (0 if the clock
+// was unknown when it opened) -- but as the raw bits of a uint32_t stuffed
+// into Record::value, not as that uint32_t converted to a float. A 12-byte
+// record has no spare field to hold it properly, and widening Record would
+// break the format tools/build_drive_asset.py and the desk replay app both
+// already read. float only has 24 bits of mantissa, so converting a real
+// epoch (~1.75e9, ~31 bits) instead of copying it rounds to the nearest 128
+// and is silently wrong -- there is no exception thrown, just a timestamp
+// that's off by up to two minutes. A reader must memcpy the 4 bytes of
+// Record::value into a uint32_t, the same way begin_drive() in logbuf.cpp
+// writes them; treating this field as a float to read is a bug, not a
+// simplification.
+constexpr uint16_t kChanDriveStart = 0xFFFF;
+// kChanDriveEnd just closes the drive -- its record's value is left zeroed
+// and carries no meaning.
 constexpr uint16_t kChanDriveEnd   = 0xFFFE;
 
 // What a drive looks like from outside. `complete` is false for a drive with

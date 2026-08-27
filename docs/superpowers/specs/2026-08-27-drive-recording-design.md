@@ -78,8 +78,8 @@ free.
 partition, so "drop the oldest" needs no bookkeeping, no compaction and no
 free-space accounting — it falls out of the loop advancing.
 
-Rate is about 1.1 MB/hour of driving (§3), so each sector is erased roughly
-once per 9 hours of driving. The part is rated for 100,000 erases per sector.
+Rate is about 1.38 MB/hour of driving (§3), so each sector is erased roughly
+once per 7.5 hours of driving. The part is rated for 100,000 erases per sector.
 
 ### Finding the head on boot
 
@@ -122,10 +122,12 @@ it lands 5 samples in. It will not see a pothole, which is not what it is for.
 
 The rate is set by storage, not by the sensor. The IMU is four channels against
 the car's twelve readings a second, so at 10 Hz it would be 40 records/s and
-outweigh the car three to one — 10 MB would hold 4.5 hours. At 5 Hz the total
-is ~28 records/s, ~1.1 MB/hour, and the partition holds **about 9 hours of
-driving**. If the axes turn out to need more resolution once B3 is decided,
-this is one constant.
+outweigh the car three to one — 52 rec/s combined, and the ~10.38 MB usable
+in the partition (0x9F0000 minus a 16-byte header per 4096-byte sector) would
+hold only about 4.6 hours. At 5 Hz the total is 20 IMU + 12 car = 32
+records/s, 384 B/s, ~1.38 MB/hour, and the partition holds **about 7.5 hours
+of driving**. If the axes turn out to need more resolution once B3 is
+decided, this is one constant.
 
 *Rejected:* packing all four axes into one 12-byte record (`u32 t_ms` + four
 `int16`) would buy 10 Hz at the same cost, but it breaks the uniform record

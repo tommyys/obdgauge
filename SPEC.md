@@ -755,12 +755,18 @@ already read, so nothing downstream had to change shape to accept flash
 instead of a Mac.
 
 While a drive is open, `firmware/main/drive_log.cpp` records every PID the
-poll loop reads (§3's decode table, all of it — not a curated subset) and the
-board's own IMU at 5 Hz (a quarter of the poll rate — the IMU is 4 channels
-against the car's dozen-plus readings a second, and going faster would
-roughly halve how much history the partition holds for a resolution the
-driving-score maths in §7.5 B3 doesn't need). At that combined rate the ring
-holds roughly **nine hours** of driving before the oldest record has to make
+poll loop reads (§3's decode table, all of it — not a curated subset), about
+12 readings a second measured across the four real logs, plus the board's
+own IMU sampled at 5 Hz across 4 channels — 20 records a second, the larger
+half of the combined rate. That is deliberate: at 10 Hz the IMU alone would
+be 40 records/s, pushing the combined rate to 52 rec/s and the retained
+history down to about 4.6 hours, for IMU resolution the driving-score maths
+in §7.5 B3 doesn't need.
+
+At 32 records/s combined × 12 bytes/record = 384 B/s ≈ 1.38 MB/hour, and the
+`logs` partition's 2544 sectors give 10,379,520 usable bytes once each
+sector's 16-byte header is subtracted (0x9F0000 × 4080/4096) — so the ring
+holds roughly **7.5 hours** of driving before the oldest record has to make
 room for the newest — see "wipe-ahead" below.
 
 ### Drive boundaries

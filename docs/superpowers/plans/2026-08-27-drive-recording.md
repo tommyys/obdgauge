@@ -2241,7 +2241,7 @@ Expected: the new drive appears in the listing with its record count.
 
 - [ ] **Step 5: Document and commit**
 
-Add a `§15 Drive recording` to `SPEC.md` covering: the `logs` partition and its size, what is recorded (all supported PIDs + IMU at 5 Hz), the ~9 hours retained with oldest-dropped-first, the 20 s drive boundary, the borrowed clock and what `drive-unknown-N` means, and `tools/pull_drives.py` with its shared-port caveat. Add the pull command to `README.md` beside the existing launchers.
+Add a `§15 Drive recording` to `SPEC.md` covering: the `logs` partition and its size, what is recorded (all supported PIDs + IMU at 5 Hz), the ~7.5 hours retained with oldest-dropped-first, the 20 s drive boundary, the borrowed clock and what `drive-unknown-N` means, and `tools/pull_drives.py` with its shared-port caveat. Add the pull command to `README.md` beside the existing launchers.
 
 ```bash
 git add tools/pull_drives.py requirements.txt SPEC.md README.md

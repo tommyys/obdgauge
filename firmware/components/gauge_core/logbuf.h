@@ -35,6 +35,21 @@ constexpr size_t kRecordsPerSector = (kSectorSize - kSectorHeaderSize) / sizeof(
 constexpr uint16_t kChanDriveStart = 0xFFFF;   // value = epoch seconds, 0 if unknown
 constexpr uint16_t kChanDriveEnd   = 0xFFFE;
 
+// What a drive looks like from outside. `complete` is false for a drive with
+// no end marker -- the power went out mid-drive, or it is the one recording
+// right now. Its records are still good.
+struct DriveInfo {
+    uint32_t id;
+    uint32_t epoch_s;       // 0 when the clock was unknown
+    uint32_t records;
+    uint32_t duration_ms;
+    bool     complete;
+};
+
+// A drive shorter than this is a key touched, not a drive, and list() does
+// not offer it.
+constexpr uint32_t kMinDriveRecords = 100;
+
 // 16 bytes, on flash. Moved here (out of logbuf.cpp's anonymous namespace)
 // so LogBuf::sector_of() can name it in its declaration.
 struct SectorHeader {
@@ -94,6 +109,11 @@ public:
     using RecordSink = bool (*)(const Record* records, size_t count, void* ctx);
     bool read_drive(uint32_t id, RecordSink sink, void* ctx);
 
+    // Drives held, newest first, skipping ones below kMinDriveRecords.
+    // Returns how many were written to `out`.
+    size_t list(DriveInfo* out, size_t max);
+    bool has_drive(uint32_t id);
+
 private:
     static constexpr size_t kBatch = 32;      // 384 B of RAM, ~1 s of records
 
@@ -109,6 +129,10 @@ private:
 
     // Is this sector part of drive `id`? Fills *out with its header if so.
     bool sector_of(size_t index, uint32_t id, SectorHeader* out);
+
+    // Scans one drive's records via read_drive() and reduces them to a
+    // DriveInfo. The only place that counts records and reads markers.
+    bool summarise(uint32_t id, DriveInfo* out);
 
     IFlash& flash_;
     size_t  drive_count_  = 0;

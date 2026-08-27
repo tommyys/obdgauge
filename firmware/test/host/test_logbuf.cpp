@@ -207,6 +207,57 @@ static void test_read_drive_is_stateless() {
     }
 }
 
+// Fills a drive with `n` readings and closes it.
+static void drive_of(gauge::LogBuf& log, uint32_t epoch, int n) {
+    log.begin_drive(epoch);
+    for (int i = 0; i < n; ++i) log.append(rec((uint32_t)i * 10u, 12, (float)i));
+    log.end_drive();
+}
+
+static void test_wrap_drops_the_oldest() {
+    FakeFlash f(4);                      // a deliberately tiny ring
+    gauge::LogBuf log(f);
+    log.mount();
+    // Each drive takes one sector, and begin_drive always advances -- so four
+    // drives fill the four sectors exactly and the FIFTH is the one that
+    // pushes the first out. (Getting this off by one hid the wrap entirely:
+    // four drives in four sectors lose nothing and the test still "passed".)
+    for (int d = 0; d < 5; ++d) drive_of(log, 1756300000u + (uint32_t)d, 100);
+
+    gauge::DriveInfo got[8]{};
+    const size_t n = log.list(got, 8);
+    check("holds four drives, not five", (int)n, 4);
+    check("newest first", (int)got[0].id, 5);
+    check("oldest surviving is drive 2", (int)got[3].id, 2);
+    check("drive 1 is gone", log.has_drive(1), false);
+    check("epoch came back", (int)got[3].epoch_s, (int)1756300001u);
+}
+
+static void test_short_drives_are_not_offered() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    drive_of(log, 1756300000u, 5);        // a key touched and released
+    drive_of(log, 1756300100u, 200);      // an actual drive
+    gauge::DriveInfo got[8]{};
+    const size_t n = log.list(got, 8);
+    check("the 5-record drive is hidden", (int)n, 1);
+    check("the real drive is listed", (int)got[0].records, 202);  // + 2 markers
+}
+
+static void test_duration_and_completeness() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    log.begin_drive(1756300000u);
+    for (int i = 0; i < 150; ++i) log.append(rec((uint32_t)i * 100u, 12, (float)i));
+    log.end_drive();
+    gauge::DriveInfo got[4]{};
+    log.list(got, 4);
+    check("duration is the last t_ms", (int)got[0].duration_ms, 14900);
+    check("closed drive is complete", got[0].complete, true);
+}
+
 int main() {
     test_layout();
     test_mount_empty();
@@ -216,5 +267,8 @@ int main() {
     test_records_in_zero_with_valid_header();
     test_sector_roll();
     test_read_drive_is_stateless();
+    test_wrap_drops_the_oldest();
+    test_short_drives_are_not_offered();
+    test_duration_and_completeness();
     return gauge_test::check_report();
 }

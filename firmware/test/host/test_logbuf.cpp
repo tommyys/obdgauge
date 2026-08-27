@@ -1,9 +1,11 @@
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "check.h"
 #include "fake_flash.h"
 #include "logbuf.h"
+#include "poll.h"
 
 using gauge_test::check;
 using gauge_test::FakeFlash;
@@ -399,6 +401,35 @@ static void test_records_in_across_a_narrow_erase_hole() {
     check("finds the narrow hole exactly", (int)after.record_count(), 205);
 }
 
+static void test_channel_ids() {
+    // Ids come from poll.cpp's PID table, which is sorted by PID: 0x05 is
+    // coolant, 0x0C is rpm, so coolant's id comes before rpm's.
+    const uint16_t coolant = gauge::log_chan_id("coolant");
+    const uint16_t rpm     = gauge::log_chan_id("rpm");
+    check("coolant has an id", coolant != gauge::kChanUnknown, true);
+    check("rpm has an id", rpm != gauge::kChanUnknown, true);
+    check("table order is PID order", coolant < rpm, true);
+    check("round trip rpm", std::string(gauge::log_chan_name(rpm)), std::string("rpm"));
+
+    // volts is not a PID -- ATRV is an adapter command -- so it lives in the
+    // extras block with the IMU rather than in the table.
+    const uint16_t volts = gauge::log_chan_id("volts");
+    check("volts has an id", volts != gauge::kChanUnknown, true);
+    check("round trip volts", std::string(gauge::log_chan_name(volts)), std::string("volts"));
+
+    for (const char* k : {"imu_ax", "imu_ay", "imu_az", "imu_gz"}) {
+        const uint16_t id = gauge::log_chan_id(k);
+        check("imu channel has an id", id != gauge::kChanUnknown, true);
+        check("imu round trip", std::string(gauge::log_chan_name(id)), std::string(k));
+    }
+
+    check("nonsense has no id", gauge::log_chan_id("nope") == gauge::kChanUnknown, true);
+    check("marker ids are not channels", gauge::log_chan_name(gauge::kChanDriveStart) == nullptr, true);
+    // Nothing real may collide with the markers.
+    check("ids stay clear of the markers",
+          gauge::log_chan_id("imu_gz") < gauge::kChanDriveEnd, true);
+}
+
 int main() {
     test_layout();
     test_mount_empty();
@@ -417,5 +448,6 @@ int main() {
     test_records_survive_a_cut_mid_drive();
     test_records_in_across_a_mid_sector_erase_hole();
     test_records_in_across_a_narrow_erase_hole();
+    test_channel_ids();
     return gauge_test::check_report();
 }

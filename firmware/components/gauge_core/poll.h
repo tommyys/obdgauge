@@ -44,4 +44,15 @@ std::set<uint8_t> parse_supported(const Bytes& data, uint8_t base);
 // Fast PIDs are interleaved between every slow one so rpm/speed stay live.
 std::vector<uint8_t> build_poll_cycle(const std::set<uint8_t>& supported, bool log_all = true);
 
+// Channel ids for the recorder. A 12-byte record has room for an id, not a
+// name, so the id IS the file format: it is the index into the PID table
+// below, and kChanTableVersion in logbuf.h must change if that table's order
+// ever does. Non-PID channels (volts, the IMU) get the extras block, well
+// clear of the PID range so adding a PID never moves them.
+constexpr uint16_t kChanUnknown = 0xFFFD;
+constexpr uint16_t kChanExtras  = 0x0200;
+
+uint16_t    log_chan_id(const char* key);
+const char* log_chan_name(uint16_t id);
+
 }  // namespace gauge

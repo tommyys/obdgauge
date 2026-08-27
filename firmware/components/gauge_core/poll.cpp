@@ -1,5 +1,6 @@
 #include "poll.h"
 #include <algorithm>
+#include <cstring>
 #include <map>
 
 namespace gauge {
@@ -94,6 +95,10 @@ bool contains(const std::vector<uint8_t>& v, uint8_t x) {
     return std::find(v.begin(), v.end(), x) != v.end();
 }
 
+// Channels with no PID behind them. Order is the file format; append only.
+const char* const kExtras[] = {"volts", "imu_ax", "imu_ay", "imu_az", "imu_gz"};
+constexpr size_t kExtraCount = sizeof kExtras / sizeof kExtras[0];
+
 }  // namespace
 
 const PidInfo* pid_info(uint8_t pid) {
@@ -107,6 +112,31 @@ std::optional<Reading> decode(uint8_t pid, const Bytes& data) {
     auto v = info->decoder(data);
     if (!v) return std::nullopt;
     return Reading{info->key, *v};
+}
+
+uint16_t log_chan_id(const char* key) {
+    if (!key) return kChanUnknown;
+    uint16_t i = 0;
+    for (const auto& kv : table()) {              // std::map: sorted by PID
+        if (std::strcmp(kv.second.key, key) == 0) return i;
+        ++i;
+    }
+    for (size_t e = 0; e < kExtraCount; ++e)
+        if (std::strcmp(kExtras[e], key) == 0)
+            return static_cast<uint16_t>(kChanExtras + e);
+    return kChanUnknown;
+}
+
+const char* log_chan_name(uint16_t id) {
+    if (id >= kChanExtras) {
+        const size_t e = id - kChanExtras;
+        return e < kExtraCount ? kExtras[e] : nullptr;
+    }
+    uint16_t i = 0;
+    for (const auto& kv : table()) {
+        if (i++ == id) return kv.second.key;
+    }
+    return nullptr;
 }
 
 std::set<std::string> keys_for(const std::set<uint8_t>& supported) {

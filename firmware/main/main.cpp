@@ -179,12 +179,17 @@ extern "C" void app_main(void) {
     printf("ui: %d views, starting on %s\n",
            gauge_ui::view_count(), gauge_ui::current_view_name());
 
-    // Look for the car. This returns straight away -- scanning, handshaking
-    // and the supported-PID sweep all happen on the live task, so the gauge
-    // shows the replay (below) meanwhile and swaps over the moment a real car
-    // answers. A gauge that came up before the adapter did still lands: the
-    // task retries forever.
-    live::start("vlinker");
+    // Looking for the car is deliberately NOT started here. Bringing the BLE
+    // controller up costs a burst of DMA-capable internal RAM, and the gauge's
+    // first couple of seconds are when LVGL is drawing whole screens at once --
+    // its own most memory-hungry moment. Measured on the board: starting the
+    // radio at this point made the panel fail draws
+    // ("spi transmit (queue) color failed") for the first 13 seconds, which is
+    // a visibly torn gauge; started after the views have settled, there are
+    // none. Nothing is lost by waiting -- the car is not going anywhere, and
+    // the replay covers the gap.
+    constexpr int64_t kLiveStartUs = 5 * 1000 * 1000;
+    bool live_started = false;
     bool live_mode = false;
 
     // Replay a real drive out of flash rather than animating a sine wave.
@@ -231,6 +236,11 @@ extern "C" void app_main(void) {
     int64_t t0 = esp_timer_get_time();
 
     for (;;) {
+        if (!live_started && esp_timer_get_time() - t0 > kLiveStartUs) {
+            live_started = true;
+            live::start("vlinker");
+        }
+
         // The car wins over the replay the moment it has answered its
         // supported-PID sweep, and the switch is one-way: a dropped link
         // reconnects rather than falling back, because a replayed drive

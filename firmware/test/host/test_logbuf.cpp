@@ -258,6 +258,119 @@ static void test_duration_and_completeness() {
     check("closed drive is complete", got[0].complete, true);
 }
 
+static void test_half_erased_sector_is_not_data() {
+    FakeFlash f(8);
+    gauge::LogBuf log(f);
+    log.mount();
+    // Three drives, so sectors 1, 2 and 3 all hold real records -- half-
+    // erasing a sector that was already blank proves nothing.
+    for (int d = 0; d < 3; ++d) drive_of(log, 1756300000u + (uint32_t)d, 200);
+    // Power lost part-way through erasing sector 3: the first 512 bytes went
+    // to 0xFF, including the magic. The rest still looks like records.
+    f.half_erase(3, 512);
+    gauge::LogBuf after(f);
+    check("remount survives it", after.mount(), true);
+    gauge::DriveInfo got[4]{};
+    const size_t n = after.list(got, 4);
+    check("the two intact drives are listed", (int)n, 2);
+    check("the drive in the wrecked sector is gone", after.has_drive(3), false);
+    // The half-erased sector has no magic, so it is a free sector, and the
+    // next append must be willing to take it.
+    check("still writable", after.begin_drive(0), true);
+}
+
+static void test_seq_wraparound() {
+    FakeFlash f(4);
+    gauge::LogBuf log(f);
+    log.mount();
+    // Forge two sectors whose seq straddles the u32 rollover: 0xFFFFFFFE is
+    // OLDER than 2, and a plain `a > b` gets that backwards.
+    log.force_seq_for_test(0xFFFFFFFEu);
+    drive_of(log, 1756300000u, 150);      // seq FFFFFFFF
+    drive_of(log, 1756300100u, 150);      // seq 0, 1 ...
+    gauge::DriveInfo got[4]{};
+    const size_t n = log.list(got, 4);
+    check("both drives listed", (int)n, 2);
+    check("the later drive is first", (int)got[0].id, 2);
+}
+
+static void test_drive_spanning_the_wrap() {
+    FakeFlash f(4);
+    gauge::LogBuf log(f);
+    log.mount();
+    drive_of(log, 1756300000u, 100);      // uses a sector, will be overwritten
+    // A drive long enough to run off the end of the ring and back round.
+    log.begin_drive(1756300100u);
+    const int n = (int)gauge::kRecordsPerSector * 2 + 50;
+    for (int i = 0; i < n; ++i) log.append(rec((uint32_t)i, 12, (float)i));
+    log.end_drive();
+
+    Collect c;
+    check("read the wrapped drive", log.read_drive(2, collect, &c), true);
+    // Markers plus every reading, in order, across the wrap.
+    check("nothing lost across the wrap", (int)c.all.size(), n + 2);
+    for (size_t i = 1; i + 1 < c.all.size(); ++i) {
+        if (c.all[i].value != (float)(i - 1)) {
+            check("records are in order", false, true);
+            break;
+        }
+    }
+}
+
+static void test_records_survive_a_cut_mid_drive() {
+    FakeFlash f(8);
+    {
+        gauge::LogBuf log(f);
+        log.mount();
+        log.begin_drive(1756300000u);
+        for (int i = 0; i < 200; ++i) log.append(rec((uint32_t)i * 50u, 12, (float)i));
+        log.flush();
+        // No end_drive(): the power went out.
+    }
+    gauge::LogBuf after(f);
+    after.mount();
+    gauge::DriveInfo got[4]{};
+    check("the unfinished drive is still offered", (int)after.list(got, 4), 1);
+    check("marked incomplete", got[0].complete, false);
+    check("its records are all there", (int)got[0].records, 201);
+}
+
+// Task 2's review deferred this here: records_in() bisects on the invariant
+// "records are contiguous from the start of the sector, everything after is
+// erased". A power cut during an erase can break that invariant while
+// leaving the sector's magic intact -- not just as a truncated prefix (the
+// half-erase case above), but as a hole: bytes in the MIDDLE of the sector
+// return to 0xFF while real records both before and after the hole survive.
+// This builds that fixture directly (raw(), not half_erase(), because
+// half_erase() only clears from the start of the sector) and records what
+// the bisection actually returns, so the answer is established rather than
+// assumed.
+static void test_records_in_across_a_mid_sector_erase_hole() {
+    FakeFlash f(4);
+    gauge::LogBuf log(f);
+    log.mount();
+    log.begin_drive(1756300000u);
+    const int n = 300;
+    for (int i = 0; i < n; ++i) check("append", log.append(rec((uint32_t)i, 12, (float)i)), true);
+    check("flush", log.flush(), true);
+    // Sector 1 now holds indices 0..300 (the marker plus 300 readings) as
+    // real data, 301..339 still erased from mount.
+    uint8_t* p = f.raw(1);
+    const size_t rec_off = gauge::kSectorHeaderSize;
+    // Punch a hole: indices 100..149 go back to 0xFF, as if an interrupted
+    // erase touched the middle of the sector rather than a clean prefix.
+    // Indices 150..300 are untouched and still look like real records.
+    memset(p + rec_off + 100 * sizeof(gauge::Record), 0xFF, 50 * sizeof(gauge::Record));
+
+    gauge::LogBuf after(f);
+    check("remount survives a mid-sector hole", after.mount(), true);
+    // Bisection alone answers 301 here -- it never probes slots 100-149, so
+    // it reports a count that spans the hole (a genuine defect, fixed in
+    // records_in() by the grid-scan-plus-fallback below the bisection). The
+    // safe answer is the real first-erased index: 100.
+    check("stops exactly at the hole, not past it", (int)after.record_count(), 100);
+}
+
 int main() {
     test_layout();
     test_mount_empty();
@@ -270,5 +383,10 @@ int main() {
     test_wrap_drops_the_oldest();
     test_short_drives_are_not_offered();
     test_duration_and_completeness();
+    test_half_erased_sector_is_not_data();
+    test_seq_wraparound();
+    test_drive_spanning_the_wrap();
+    test_records_survive_a_cut_mid_drive();
+    test_records_in_across_a_mid_sector_erase_hole();
     return gauge_test::check_report();
 }

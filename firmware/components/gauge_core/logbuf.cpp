@@ -60,6 +60,31 @@ bool LogBuf::mount() {
 // instead of a linear scan: ~log2(kRecordsPerSector) reads (about 9) rather
 // than up to 340, which matters because mount() calls this for every
 // sector -- 2,544 of them on the real partition.
+//
+// That contiguity invariant can be false and still leave the sector's magic
+// intact: a power cut mid-erase can turn a chunk in the MIDDLE of the
+// sector back to 0xFF while real records survive on both sides of it, not
+// just the sector's tail. Pure bisection only ever visits O(log n) of the
+// 340 slots -- for a 340-slot sector its first three probes alone jump past
+// slot 150 -- so it can walk straight past a hole like that without ever
+// reading it, and report a count that includes the hole's erased bytes as
+// if they were committed records (see
+// test_records_in_across_a_mid_sector_erase_hole in test_logbuf.cpp, which
+// caught exactly this: bisection alone answered 301 for a sector whose
+// slots 100-149 were erased). Handing that count to read_drive() means
+// interpreting 0xFF bytes as a Record -- chan 0xFFFF among them, which
+// collides with kChanDriveStart.
+//
+// The grid scan below is cheap insurance against that, not a proof: it
+// reads every kStride'th slot up to the bisected boundary (~kStride extra
+// reads per sector, not the 340 a full scan would cost every sector,
+// corrupted or not) and falls back to one real linear scan -- only for the
+// one sector that actually needs it -- if any of those probes finds a hole.
+// A hole narrower than kStride can still land entirely between grid points
+// and slip through; kStride is chosen well under the >=100-record floor
+// that separates a real drive from noise (kMinDriveRecords) so a hole big
+// enough to matter is very likely to be sampled, but this is a bound, not a
+// guarantee.
 size_t LogBuf::records_in(size_t sector) {
     size_t lo = 0, hi = kRecordsPerSector;
     while (lo < hi) {
@@ -68,6 +93,24 @@ size_t LogBuf::records_in(size_t sector) {
         if (!flash_.read(sector * kSectorSize + kSectorHeaderSize + mid * sizeof x,
                           &x, sizeof x)) return lo;
         if (erased(&x, sizeof x)) hi = mid; else lo = mid + 1;
+    }
+
+    constexpr size_t kStride = 8;
+    for (size_t i = kStride; i < lo; i += kStride) {
+        Record x{};
+        const size_t off = sector * kSectorSize + kSectorHeaderSize + i * sizeof x;
+        if (!flash_.read(off, &x, sizeof x)) return i;
+        if (!erased(&x, sizeof x)) continue;
+        // The invariant is broken: something inside [0, lo) that bisection
+        // never visited is erased. Fall back to a genuine linear scan of
+        // just this sector to find the real boundary.
+        size_t n = 0;
+        for (; n < lo; ++n) {
+            const size_t o = sector * kSectorSize + kSectorHeaderSize + n * sizeof x;
+            if (!flash_.read(o, &x, sizeof x)) return n;
+            if (erased(&x, sizeof x)) break;
+        }
+        return n;
     }
     return lo;
 }

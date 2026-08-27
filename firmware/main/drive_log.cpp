@@ -91,6 +91,7 @@ void task(void*) {
     int64_t last_imu = 0;
     int64_t last_clock_save = esp_timer_get_time();
     double  drive_t0 = 0.0;
+    uint32_t drive_records = 0;    // this drive only -- record_count() is cumulative since mount
 
     for (;;) {
         const int64_t now = esp_timer_get_time();
@@ -98,11 +99,15 @@ void task(void*) {
         // Close a drive the car has stopped feeding.
         if (last_sample && now - last_sample > kSilenceUs) {
             xSemaphoreTake(g_lock, portMAX_DELAY);
+            // end_drive() zeroes current_drive() before returning, so the id
+            // to log has to be captured first, not read off the object after.
+            const uint32_t closed_id = g_log->current_drive();
             g_log->end_drive();
             xSemaphoreGive(g_lock);
-            flight_log("drive %u closed, %u records",
-                       (unsigned)g_log->current_drive(), (unsigned)g_log->record_count());
+            flight_log("drive %u closed, %u records", (unsigned)closed_id,
+                       (unsigned)drive_records);
             last_sample = 0;
+            drive_records = 0;
         }
 
         QSample s{};
@@ -110,6 +115,7 @@ void task(void*) {
             xSemaphoreTake(g_lock, portMAX_DELAY);
             if (!last_sample) {
                 drive_t0 = s.t_s;
+                drive_records = 0;
                 g_log->begin_drive(wall_now());
                 flight_log("drive %u opened, clock %s",
                            (unsigned)g_log->current_drive(),
@@ -121,6 +127,7 @@ void task(void*) {
             r.chan = s.chan;
             r.value = s.value;
             g_log->append(r);
+            ++drive_records;
             xSemaphoreGive(g_lock);
             last_sample = now;
         }

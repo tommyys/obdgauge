@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 #include "avail.h"
+#include "ease.h"
 #include "bar.h"
 #include "carousel.h"
 #include "face.h"
@@ -36,6 +37,13 @@ constexpr int kCellX    =   82;  // Grid: column offset from centre
 // rather than hung below where the hero would have been.
 constexpr int kGridNoHeroY = -24;
 
+// How long an instrument takes to reach a new reading. Chosen to sit just
+// under the gap between two readings from the car (about 8 a second, so 125ms)
+// -- long enough that the frames in between have somewhere to move to, short
+// enough that the needle is never telling you about an engine speed the car
+// left behind. Runtime-settable: see set_ease_tau_ms.
+constexpr uint32_t kEaseTauMs = 120;
+
 // 135 positions across a 270-degree sweep: one step is ~2 degrees.
 constexpr int kDialSteps = 135;
 // One swipe cannot reasonably produce two intended gestures inside this
@@ -63,6 +71,11 @@ struct ViewObjs {
     lv_obj_t* arc_mask = nullptr;
     lv_obj_t* rlabel[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* rvalue[4] = {nullptr, nullptr, nullptr, nullptr};
+    // The dial's drawn value as it chases the reading. Separate from the
+    // face's own ease and stepped in the same breath, so the shutter and the
+    // needle it sits under never describe two different readings -- see
+    // gauge_core/ease.h on why that holds exactly.
+    gauge::Ease dial_ease;
     Face face;                 // tacho, engine and power fill this in
     Bar  bar;                  // electrical only
     bool has_face = false;
@@ -73,6 +86,10 @@ struct ViewObjs {
     lv_obj_t* content = nullptr;   // parent of everything the na screen hides
     bool na_shown = false;
 };
+
+uint32_t g_ease_tau_ms = kEaseTauMs;
+// Set by the gesture callback, acted on by update(). See gesture_cb.
+int g_pending_step = 0;
 
 const ViewSpec* g_specs = nullptr;
 int g_count = 0;
@@ -358,13 +375,19 @@ void gesture_cb(lv_event_t* e) {
 
     // gauge::ring_index is host-tested (test_carousel.cpp), so the wrap is not
     // something to wonder about from the board.
-    const int step = (dir == LV_DIR_LEFT) ? +1 : -1;
-    int target = gauge::ring_index(g_cur, g_count, step);
-    switch_to(target, step);
+    // Queued, not run here. This callback is inside lv_timer_handler, and the
+    // slide's first act is to render the incoming view into a buffer -- which
+    // from inside a refresh cycle costs 258 ms, against 30 ms for the identical
+    // slide started from a task (measured on the board with the SWIPE console
+    // command, both landing on the tacho). The app loop picks this up on its
+    // next pass, a millisecond or two later, with LVGL idle.
+    g_pending_step = (dir == LV_DIR_LEFT) ? +1 : -1;
     ++g_gestures;
 }
 
 }  // namespace
+
+void queue_view_step(int step) { g_pending_step = step; }
 
 void advance_view(int step) {
     switch_to(gauge::ring_index(g_cur, g_count, step), step);
@@ -399,8 +422,9 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_event_cb(parent, gesture_cb, LV_EVENT_GESTURE, nullptr);
-    lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_presses; slide_prepare(); },
-                        LV_EVENT_PRESSED, nullptr);
+    // No LV_EVENT_PRESSED handler here on purpose: it never fired, and if it
+    // ever started to it would take a second snapshot for the same touch. The
+    // touch is watched at the input device instead -- see watch_for_touch().
     lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_releases; }, LV_EVENT_RELEASED, nullptr);
     g_cur = 0;
 
@@ -451,7 +475,39 @@ void set_text_if_changed(lv_obj_t* label, const std::string& text) {
     lv_label_set_text(label, text.c_str());
 }
 
+// Counts touches, and nothing else. Read at the input device rather than
+// through an event: LVGL sends the press to whichever small object is under
+// the finger, and the view roots deliberately do not pass it on (a root that
+// takes the press wedges the input device when switch_to() hides it), so the
+// screen's own LV_EVENT_PRESSED handler never fired once -- the board logged
+// 20 gestures against 0 presses.
+//
+// It DELIBERATELY does not start the outgoing view's snapshot here, which is
+// what slide_prepare() was written for. Tried on the board 2026-08-28: the
+// snapshot takes about 160 ms and runs with the display lock held, so the
+// touchscreen is not sampled for that whole time -- right in the middle of the
+// finger's travel, which is the part LVGL measures to decide a swipe happened.
+// Presses went from 0 to 5 and gestures from 20 to ZERO: swiping stopped
+// working altogether. The dead time before a slide has to come off somewhere
+// that is not the finger's own travel.
+void watch_for_touch() {
+    lv_indev_t* in = lv_indev_get_next(nullptr);
+    if (!in) return;
+    const bool down = lv_indev_get_state(in) == LV_INDEV_STATE_PRESSED;
+    static bool was_down = false;
+    if (down && !was_down) ++g_presses;
+    was_down = down;
+}
+
 void update(const Model& m) {
+    watch_for_touch();
+    // A swipe the gesture callback queued. Run before anything is formatted:
+    // the view it selects is the one this frame should be drawing.
+    if (g_pending_step) {
+        const int step = g_pending_step;
+        g_pending_step = 0;
+        advance_view(step);
+    }
     if (g_cur < 0 || g_cur >= g_count) return;
     const ViewSpec& s = g_specs[g_cur];
     ViewObjs& v = g_objs[static_cast<size_t>(g_cur)];
@@ -491,6 +547,10 @@ void update(const Model& m) {
         double val = 0.0;
         const bool tacho = s.face == Instrument::TachoDial;
         if (s.dial.value(m, &val)) {
+            // Eased before it is quantised, not after: the ease is what puts a
+            // new position under the needle on the frames between two
+            // readings, and quantising first would throw those away again.
+            val = v.dial_ease.step(val, m.dt_s, ease_tau_ms() / 1000.0);
             int lo = static_cast<int>(s.dial.lo(m));
             int hi = static_cast<int>(s.dial.hi(m));
             if (hi > lo) {
@@ -528,6 +588,7 @@ void update(const Model& m) {
             }
             if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else if (tacho) {
+            v.dial_ease.reset();
             // The shutter is not a reading, it is the absence of one: closed
             // over the whole band, so a car that is not reporting rpm shows a
             // cold dial rather than a dial pinned at the redline. Closed is the
@@ -536,6 +597,7 @@ void update(const Model& m) {
             if (v.arc_mask) lv_arc_set_value(v.arc_mask, kDialSteps);
             if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else {
+            v.dial_ease.reset();
             // No reading: hide the dial rather than draw it pinned at zero.
             lv_obj_add_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         }
@@ -553,6 +615,11 @@ void update(const Model& m) {
         set_text_if_changed(v.rvalue[i], s.rows[i].value(m));
     }
 }
+
+void set_ease_tau_ms(uint32_t ms) { g_ease_tau_ms = ms; }
+uint32_t ease_tau_ms()             { return g_ease_tau_ms; }
+
+void set_band_enabled(bool on) { face_set_band_enabled(on); }
 
 void set_dial_enabled(bool on) {
     if (g_dials_on == on) return;

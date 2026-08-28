@@ -4,6 +4,8 @@
 #include <cstring>
 
 #include "esp_cache.h"
+#include <utility>
+
 #include "esp_heap_caps.h"
 #include "esp_lv_adapter.h"
 #include "esp_timer.h"
@@ -213,6 +215,7 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // would make the outgoing view jump to old readings just as it starts to
     // move, which is more jarring than the delay it saves.
     bool got_from = g_prepared && (lv_tick_get() - g_prepared_ms) < 1200;
+    const bool carried = got_from;
     int64_t prep_us = got_from ? g_prep_us : 0;
     if (!got_from) {
         got_from = lv_snapshot_take_to_draw_buf(
@@ -330,14 +333,36 @@ bool slide_run(int dir, void (*flip)(void* ctx), void* ctx) {
     // widgets exactly where the last slide frame drew them.
     esp_lv_adapter_set_dummy_draw(disp, false);
 
+    // The view that just arrived is the one the NEXT swipe will slide away
+    // from, and it is already drawn: g_to holds it, byte-swapped and all.
+    // Handing it over costs a pointer swap and saves that swipe a full-screen
+    // render -- 160 ms of the 320 ms dead pause before a slide starts moving,
+    // and it lands where the pause is felt most, on a run of quick swipes
+    // through the carousel.
+    //
+    // This is the way round that WORKS. Rendering the outgoing view when the
+    // finger lands is the obvious alternative and it breaks the gauge: the
+    // render holds the display lock for 160 ms, the touchscreen is not sampled
+    // while it runs, and LVGL then never sees the finger travel that tells it
+    // a swipe happened. Measured on the board -- gestures went to zero.
+    //
+    // The freshness rule above throws this away once the readings have had
+    // time to move on, so a swipe minutes later still renders the real thing.
+    std::swap(g_from, g_to);
+    std::swap(g_from_db, g_to_db);
+    g_prepared = true;
+    g_prepared_ms = lv_tick_get();
+    g_prep_us = 0;
+
     // Latched, not just printed: a serial capture that misses the moment of the
     // swipe was losing this every time, which is why the same question kept
     // having to be asked again. main() repeats it on every status line.
     snprintf(g_note, sizeof g_note,
-             "slide: snap %lldms(prep %lldms) %dfr %lldms (%.0ffps) "
+             "slide: snap %lldms(from %s, prep %lldms) %dfr %lldms (%.0ffps) "
              "per-frame blit %lldms (compose %lldus send %lldus over %d bands) | %s %s "
              "from[t %d/%04x b %d/%04x] to[t %d/%04x b %d/%04x]",
-             snap_us / 1000, prep_us / 1000, frames, anim_us / 1000,
+             snap_us / 1000, carried ? "carried" : "rendered", prep_us / 1000,
+             frames, anim_us / 1000,
              frames * 1e6 / static_cast<double>(anim_us ? anim_us : 1),
              frames ? blit_us / frames / 1000 : 0,
              frames ? g_copy_us / frames : 0, frames ? g_send_us / frames : 0,

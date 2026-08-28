@@ -2,7 +2,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <optional>
 
+#include "esp_heap_caps.h"
 #include "glow.h"
 
 
@@ -159,30 +161,19 @@ void set_line(lv_obj_t* line, lv_point_precise_t* pts, lv_point_precise_t a,
 struct BandSeg { int16_t a0, a1; uint32_t colour; };
 BandSeg g_band[kHeatBands];
 int     g_band_n = 0;
+// Diagnostic handle. The band is 54 arcs and the only heavy object the tacho
+// has that no other view does -- see face_set_band_enabled.
+lv_obj_t* g_band_obj = nullptr;
 
 bool areas_overlap(const lv_area_t& a, const lv_area_t& b) {
     return a.x1 <= b.x2 && a.x2 >= b.x1 && a.y1 <= b.y2 && a.y2 >= b.y1;
 }
 
-// Paints the whole heat band. One object, so LVGL has one thing to walk no
-// matter how finely the ramp is divided; the per-segment skip below is what
-// keeps a small redraw small.
-void band_draw_cb(lv_event_t* e) {
-    lv_obj_t*   obj   = static_cast<lv_obj_t*>(lv_event_get_target(e));
-    lv_layer_t* layer = lv_event_get_layer(e);
-    lv_area_t   coords;
-    lv_obj_get_coords(obj, &coords);
-    // Centre exactly where lv_arc puts one, which is NOT the midpoint of the
-    // coordinates. lv_arc's get_center() uses x1 + min(w,h)/2; the midpoint
-    // (x1 + x2)/2 truncates half a pixel low, because x2 is the last pixel
-    // rather than one past it. For a 434-wide object at x1=16 that is 232 here
-    // against 233 there -- one pixel, but the band is UNDER the shutter and the
-    // redline, so a one-pixel offset uncovers one pixel of band along an edge
-    // for the entire sweep. Where the band is hot that edge is red, which is
-    // the red seen bleeding out of the grey rim.
-    const int32_t cx = coords.x1 + lv_area_get_width(&coords) / 2;
-    const int32_t cy = coords.y1 + lv_area_get_height(&coords) / 2;
-
+// Paints the whole heat band at `cx,cy` on `layer`. Called once into a canvas
+// on a board with PSRAM to spare (mk_band), and per redraw by band_draw_cb on
+// one without; the per-segment skip keeps that second case's small redraws
+// small.
+void paint_band(lv_layer_t* layer, int32_t cx, int32_t cy) {
     lv_draw_arc_dsc_t d;
     lv_draw_arc_dsc_init(&d);
     d.center.x = cx;
@@ -209,6 +200,86 @@ void band_draw_cb(lv_event_t* e) {
         d.end_angle   = g_band[i].a1;
         lv_draw_arc(layer, &d);
     }
+}
+
+// The fallback path, used only when the band could not be painted into a
+// buffer. Kept because a gauge that draws its dial slowly is still a gauge.
+void band_draw_cb(lv_event_t* e) {
+    lv_obj_t*   obj   = static_cast<lv_obj_t*>(lv_event_get_target(e));
+    lv_layer_t* layer = lv_event_get_layer(e);
+    lv_area_t   coords;
+    lv_obj_get_coords(obj, &coords);
+    // Centre exactly where lv_arc puts one, which is NOT the midpoint of the
+    // coordinates. lv_arc's get_center() uses x1 + min(w,h)/2; the midpoint
+    // (x1 + x2)/2 truncates half a pixel low, because x2 is the last pixel
+    // rather than one past it. For a 434-wide object at x1=16 that is 232 here
+    // against 233 there -- one pixel, but the band is UNDER the shutter and the
+    // redline, so a one-pixel offset uncovers one pixel of band along an edge
+    // for the entire sweep. Where the band is hot that edge is red, which is
+    // the red seen bleeding out of the grey rim.
+    paint_band(layer, coords.x1 + lv_area_get_width(&coords) / 2,
+               coords.y1 + lv_area_get_height(&coords) / 2);
+}
+
+// The band, painted ONCE into a buffer instead of on every redraw.
+//
+// The 54 segments never change: their colours come from the car's redline, not
+// from the reading, and the shutter arc on top is what shows the engine's
+// share of them. Drawing them live cost the tacho 210 ms of every full render
+// -- measured on the board by hiding the band, which took a slide into the
+// tacho from 283 ms to 73 ms while every other view sat at 56-96 ms. A swipe
+// onto the tacho renders the whole view into a buffer, so that 210 ms was paid
+// in full on every single one.
+//
+// Painted into a canvas, the same band costs one image blit, and a partial
+// redraw costs only the part of the blit it clips to. The buffer is 377 KB of
+// PSRAM, which this board has 8 MB of.
+//
+// Opaque RGB565 rather than ARGB8888: the band sits at the bottom of the
+// tacho's z-order over a black screen, so there is nothing underneath for it
+// to blend with, and the alpha format would cost twice the memory and a slower
+// blit. If the allocation fails the old live-drawing callback is used instead
+// -- slow, but the gauge still comes up, which matters more.
+uint16_t*      g_band_px = nullptr;
+lv_draw_buf_t  g_band_db{};
+
+lv_obj_t* mk_band(lv_obj_t* root) {
+    const size_t bytes = static_cast<size_t>(kRimPx) * kRimPx * 2;
+    if (!g_band_px)
+        g_band_px = static_cast<uint16_t*>(
+            heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM));
+
+    if (g_band_px &&
+        lv_draw_buf_init(&g_band_db, kRimPx, kRimPx, LV_COLOR_FORMAT_RGB565,
+                         LV_STRIDE_AUTO, g_band_px, bytes) == LV_RESULT_OK) {
+        lv_obj_t* canvas = lv_canvas_create(root);
+        lv_canvas_set_draw_buf(canvas, &g_band_db);
+        lv_obj_center(canvas);
+        lv_obj_remove_flag(canvas, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(canvas, LV_OBJ_FLAG_SCROLLABLE);
+        lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
+
+        lv_layer_t layer;
+        lv_canvas_init_layer(canvas, &layer);
+        // Canvas-local coordinates, and the centre lv_arc would use for an
+        // object of this size: x1 + min(w,h)/2 with x1 = 0. The one-pixel
+        // difference from the midpoint is load-bearing -- see band_draw_cb.
+        paint_band(&layer, kRimPx / 2, kRimPx / 2);
+        lv_canvas_finish_layer(canvas, &layer);
+        printf("tacho: heat band painted once into %u B of PSRAM\n",
+               (unsigned)bytes);
+        return canvas;
+    }
+
+    printf("tacho: no PSRAM for the heat band -- drawing it live every frame\n");
+    lv_obj_t* band = lv_obj_create(root);
+    lv_obj_remove_style_all(band);
+    lv_obj_set_size(band, kRimPx, kRimPx);
+    lv_obj_center(band);
+    lv_obj_remove_flag(band, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(band, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(band, band_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
+    return band;
 }
 
 lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa,
@@ -270,13 +341,7 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
             (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + (last ? 0 : 1)) % 360);
         ++g_band_n;
     }
-    lv_obj_t* band = lv_obj_create(root);
-    lv_obj_remove_style_all(band);
-    lv_obj_set_size(band, kRimPx, kRimPx);
-    lv_obj_center(band);
-    lv_obj_remove_flag(band, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(band, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(band, band_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
+    g_band_obj = mk_band(root);
 
     // Past the redline the band is unambiguous rather than merely hot, so the
     // top of the dial still reads as a limit and not just as more colour.
@@ -476,9 +541,24 @@ Face face_build_over(lv_obj_t* root, const gauge::Identity& id, FaceKind kind) {
     return f;
 }
 
+// The reading this face should draw: the reported one, eased.
+//
+// A channel that is absent resets the ease rather than easing toward zero. A
+// needle sweeping down the dial because the link dropped would read as the
+// engine stopping, and the same sweep back up when it returns would read as it
+// starting -- both are lies about the car.
+std::optional<double> ease_reading(Face& f, std::optional<double> raw, const Model& m) {
+    if (!raw) { f.ease.reset(); return raw; }
+    return f.ease.step(*raw, m.dt_s, ease_tau_ms() / 1000.0);
+}
+
 void update_tacho(Face& f, const Model& m) {
     if (!f.needle) return;
-    const auto rpm = m.st.get("rpm");
+    const auto raw = m.st.get("rpm");
+    // Eased, and everything below reads the eased figure -- including the
+    // colour, so that the needle's heat and its position never describe two
+    // different engine speeds.
+    const auto rpm = ease_reading(f, raw, m);
 
     // Recoloured, unlike the band, because a needle is small: the area this
     // invalidates is a fraction of the screen, and the needle is being
@@ -510,7 +590,7 @@ void update_tacho(Face& f, const Model& m) {
 // the cold end reads as waiting (SPEC.md section 4).
 void update_engine(Face& f, const Model& m) {
     if (!f.needle) return;
-    const auto c = m.st.get("coolant");
+    const auto c = ease_reading(f, m.st.get("coolant"), m);
     lv_obj_set_style_line_opa(f.needle, c ? LV_OPA_COVER : 64, 0);
 
     const double v = c ? *c : kTempLo;
@@ -530,7 +610,7 @@ void update_engine(Face& f, const Model& m) {
 void update_power(Face& f, const Model& m) {
     if (!f.needle) return;
     const double p_max = m.id.power_max > 0 ? m.id.power_max : 140.0;
-    const auto kw = m.st.get("power_kw");
+    const auto kw = ease_reading(f, m.st.get("power_kw"), m);
     lv_obj_set_style_line_opa(f.needle, kw ? LV_OPA_COVER : 64, 0);
 
     const double peak = m.st.peak_kw();
@@ -555,6 +635,15 @@ void update_power(Face& f, const Model& m) {
     set_line(f.needle, f.needle_pts,
              {static_cast<lv_value_precise_t>(kCx), static_cast<lv_value_precise_t>(kCy)},
              polar(kPwrNeedleR, kStartDeg + q));
+}
+
+// Diagnostic: hide the heat band. A slide INTO the tacho costs 283 ms against
+// 56-96 ms for every other view, and hiding the rim dial changed nothing --
+// this is what is left to blame.
+void face_set_band_enabled(bool on) {
+    if (!g_band_obj) return;
+    if (on) lv_obj_clear_flag(g_band_obj, LV_OBJ_FLAG_HIDDEN);
+    else    lv_obj_add_flag(g_band_obj, LV_OBJ_FLAG_HIDDEN);
 }
 
 void face_update(Face& f, const Model& m) {

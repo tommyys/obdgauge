@@ -1,4 +1,5 @@
 #include "serial_cmd.h"
+#include "sweep.h"
 
 #include <cstdio>
 #include <cstring>
@@ -10,8 +11,10 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 
+#include "bsp/esp-bsp.h"
 #include "crc32.h"
 #include "drive_log.h"
+#include "gauge_ui.h"
 #include "logbuf.h"
 
 // USB-Serial-JTAG blocking reads
@@ -213,6 +216,40 @@ void task(void*) {
             else if (!drive_log_lock(30000)) { printf("ERR busy\n"); }
             else { const bool ok = log->erase_all(); drive_log_unlock();
                    printf(ok ? "OK erased\n" : "ERR erase failed\n"); }
+        } else if (!strncmp(line, "EASE", 4)) {
+            // The needles chase their readings rather than jumping to them.
+            // How hard that is to see depends on the car's reporting rate, so
+            // the setting is live: "EASE 0" restores the old jump, "EASE 120"
+            // is the default, and the two can be compared on the glass in the
+            // same minute without a reflash.
+            if (line[4] == ' ')
+                gauge_ui::set_ease_tau_ms((uint32_t)strtoul(line + 5, nullptr, 10));
+            printf("OK ease %ums\n", (unsigned)gauge_ui::ease_tau_ms());
+        } else if (!strncmp(line, "SWIPE", 5)) {
+            // A real view change, slide and all, with no finger on the glass.
+            // The slide is where this firmware's timing and memory problems
+            // show up, and measuring it should not need a person in the room.
+            const int dir = (line[5] == ' ' && line[6] == '-') ? -1 : 1;
+            // Queued, so this runs where a real gesture's slide runs -- in the
+            // app loop. Calling advance_view() straight from this task was
+            // measuring a path no finger ever takes.
+            gauge_ui::queue_view_step(dir);
+            printf("OK swipe %d\n", dir);
+        } else if (!strncmp(line, "SWEEP", 5)) {
+            // "SWEEP" for a minute, "SWEEP 20" for twenty seconds.
+            const double secs = (line[5] == ' ') ? strtod(line + 6, nullptr) : 60.0;
+            sweep_start(secs > 0 ? secs : 60.0, 1000.0, 8000.0);
+            printf("OK sweep 1000-8000 rpm for %.0fs\n", secs > 0 ? secs : 60.0);
+        } else if (!strncmp(line, "BAND", 4)) {
+            if (line[4] == ' ') gauge_ui::set_band_enabled(line[5] != '0');
+            printf("OK band\n");
+        } else if (!strncmp(line, "DIALS", 5)) {
+            // The 434 px rim is the one object big enough that moving it
+            // repaints most of the panel. Turning it off says how much of a
+            // frame it is actually worth, on the glass, rather than by
+            // argument -- compare the fps in the ui: line either way.
+            if (line[5] == ' ') gauge_ui::set_dial_enabled(line[6] != '0');
+            printf("OK dials\n");
         } else if (!strcmp(line, "ERASE")) {
             printf("ERR say 'ERASE CONFIRM'\n");
         } else if (line[0]) {

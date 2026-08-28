@@ -19,6 +19,7 @@
 // rescued the boot clip, benched at 65 ms a frame, worse still. So the heat
 // lives on the rim, where it costs nothing; face.cpp explains how.
 #pragma once
+#include "ease.h"
 #include "gauge_ui.h"
 #include "lvgl.h"
 
@@ -66,6 +67,10 @@ struct Face {
     lv_obj_t*           peak       = nullptr;
     lv_point_precise_t* peak_pts   = nullptr;
     int                 peak_q     = -1;
+    // The drawn reading as it chases the reported one. The car answers about
+    // eight times a second; without this the needle moved eight times a second
+    // too, however fast the panel was. See gauge_core/ease.h.
+    gauge::Ease         ease;
 };
 
 // The face is built in two halves around the view's own arc, which for a
@@ -76,5 +81,6 @@ struct Face {
 void face_build_under(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 Face face_build_over(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 void face_update(Face& f, const Model& m);
+void face_set_band_enabled(bool on);
 
 }  // namespace gauge_ui

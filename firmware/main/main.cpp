@@ -33,6 +33,7 @@
 #include "flight_log.h"
 #include "drive_log.h"
 #include "serial_cmd.h"
+#include "sweep.h"
 #include "gauge_ui.h"
 #include "slide.h"
 #include "esp_lv_adapter.h"
@@ -252,6 +253,7 @@ extern "C" void app_main(void) {
     double synth = 45.0;
     bool synth_up = true;
     int64_t t0 = esp_timer_get_time();
+    int64_t last_frame_us = t0;
 
     for (;;) {
         if (!live_started && esp_timer_get_time() - t0 > kLiveStartUs) {
@@ -310,8 +312,22 @@ extern "C" void app_main(void) {
             else          { synth -= 0.5; if (synth <= 45.0) synth_up = true; }
         }
 
+        // A bench sweep overrides whatever the dial was being fed. Applied
+        // after the replay and the car, not instead of them: everything else
+        // on the view carries on reading the real drive, so a sweep changes
+        // the needle and nothing else.
+        double swept = 0.0;
+        if (sweep_rpm(&swept)) st.set("rpm", swept);
+
+        // What the last trip round this loop actually took, not what the delay
+        // below asked for: the instruments ease toward their readings and the
+        // ease is time-based, so a frame that ran long has to be told so.
+        const int64_t now_us = esp_timer_get_time();
+        const double dt_s = (now_us - last_frame_us) / 1e6;
+        last_frame_us = now_us;
+
         bsp_display_lock(-1);   // -1 is wait-forever; 0 would be a try-lock
-        gauge_ui::Model model{st, trip, score, id, supported};
+        gauge_ui::Model model{st, trip, score, id, supported, dt_s};
         gauge_ui::update(model);
         bsp_display_unlock();
 
@@ -402,6 +418,14 @@ extern "C" void app_main(void) {
                 bsp_display_unlock();
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(33));
+        // 33 ms here capped the whole gauge at 30 updates a second, and the
+        // needle only moves when this loop tells it to -- so the ease above had
+        // 30 frames a second to work with at best, and fewer whenever a frame
+        // ran long. 16 ms is one LVGL refresh period (CONFIG_LV_DEF_REFR_PERIOD
+        // is 15), which is as often as the display can accept a change anyway.
+        // Nothing else in this loop got more expensive: with no new readings
+        // and no needle movement, LVGL finds nothing invalidated and draws
+        // nothing.
+        vTaskDelay(pdMS_TO_TICKS(16));
     }
 }

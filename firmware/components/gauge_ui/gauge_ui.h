@@ -24,6 +24,11 @@ struct Model {
     // identified. Drives the not-available screens -- see gauge::view_available
     // for why nullptr must mean "show everything" rather than "show nothing".
     const std::set<std::string>* supported = nullptr;
+    // Seconds since the last update. The instruments ease toward their
+    // readings rather than jumping to them (gauge_core/ease.h), and the ease
+    // has to know how much time a frame took or it runs faster on a busy
+    // screen than on a quiet one.
+    double dt_s = 0.0;
 };
 
 // Build the carousel under `parent`. Call with the display lock held.
@@ -44,6 +49,12 @@ bool slide_selftest(int hold_ms);
 // trigger it from the app loop is what let the SPI bounce-buffer exhaustion be
 // measured rather than argued about. step is +1 or -1.
 void advance_view(int step);
+
+// Queue a view change for the app loop to run on its next pass, which is the
+// path a real swipe takes. Same slide, different caller: the console's SWIPE
+// uses it to reproduce a gesture exactly, because the two were costing wildly
+// different amounts of time and the difference had to be pinned on something.
+void queue_view_step(int step);
 int gesture_count();
 int press_count();
 int release_count();
@@ -52,9 +63,20 @@ int release_count();
 // device rather than only in a log. Pass 0 to hide it.
 void set_fps(uint32_t fps);
 
+// How long an instrument takes to reach a new reading, in milliseconds -- the
+// time for the remaining gap to close to about a third. 0 turns easing off, so
+// needles jump to each reading the way they did before. Settable from the
+// console (EASE) so the two can be compared on the same binary, on the bench,
+// without a reflash.
+void set_ease_tau_ms(uint32_t ms);
+uint32_t ease_tau_ms();
+
 // Diagnostic: hide every rim dial. The arc is 434px across, so it invalidates
 // nearly the whole screen whenever it moves -- this isolates that cost.
 void set_dial_enabled(bool on);
+
+// Diagnostic: hide the tacho's 54-segment heat band, for the same reason.
+void set_band_enabled(bool on);
 
 int view_count();
 int current_view();

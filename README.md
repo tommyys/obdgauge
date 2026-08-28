@@ -255,11 +255,24 @@ captures/      drop Car Scanner .brc files here to replay them
 
 ## Tests
 
+Every file in `tests/` is a standalone script. There is no test runner and no
+pytest — run one, or run them all:
+
 ```bash
 .venv/bin/python tests/test_pids.py
-.venv/bin/python tests/test_vehicle.py
-.venv/bin/python tests/test_library.py
+for t in tests/test_*.py; do .venv/bin/python "$t" || echo "FAILED $t"; done
 ```
+
+The firmware has its own host tests, built with the Mac's compiler and run off
+the board:
+
+```bash
+cd firmware/test/host && make
+```
+
+The three below are the ones worth knowing about; the other eight cover the
+boot splash, ignition edges, metrics, peaks, drive pulling, recording, log
+rotation and the data sources.
 
 `test_pids` covers the decode formulas against known byte inputs (e.g. RPM
 `1A F8` → 1726), response parsing including multi-ECU replies, the

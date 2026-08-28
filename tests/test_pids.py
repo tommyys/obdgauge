@@ -1,5 +1,4 @@
-"""Unit tests for the pure decode layer. Run: .venv/bin/python -m pytest -q
-   (or plain: .venv/bin/python tests/test_pids.py)"""
+"""Unit tests for the pure decode layer. Run: .venv/bin/python tests/test_pids.py"""
 import os
 import sys
 

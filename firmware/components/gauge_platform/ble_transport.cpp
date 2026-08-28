@@ -35,6 +35,12 @@ struct Link {
     // Radio brought up once per boot: NimBLE cannot be re-initialised cleanly,
     // and a retry after a failed scan must not try.
     bool radio_up = false;
+    // The radio is now brought up at boot (radio_init) but scanning must not
+    // start until connect() has been called and set a hint. Without this the
+    // host's sync callback began scanning with an empty hint, which matches
+    // every device in radio range -- the gauge would have picked whatever
+    // answered first.
+    bool want_scan = false;
     uint8_t own_addr_type = 0;
 
     uint16_t conn = BLE_HS_CONN_HANDLE_NONE;
@@ -314,7 +320,7 @@ void on_sync() {
         signal_ready(false);
         return;
     }
-    begin_scan();
+    if (g.want_scan) begin_scan();
 }
 
 void on_reset(int reason) {
@@ -330,6 +336,19 @@ void host_task(void*) {
 
 }  // namespace
 
+bool BleTransport::radio_init() {
+    if (g.radio_up) return true;
+    ble_hs_cfg.sync_cb = on_sync;
+    ble_hs_cfg.reset_cb = on_reset;
+    if (nimble_port_init() != ESP_OK) {
+        ESP_LOGE(TAG, "NimBLE would not start");
+        return false;
+    }
+    nimble_port_freertos_init(host_task);
+    g.radio_up = true;
+    return true;
+}
+
 bool BleTransport::connect(const char* name_hint, int timeout_ms) {
     if (!g.lock) {
         g.lock = xSemaphoreCreateMutex();
@@ -337,18 +356,15 @@ bool BleTransport::connect(const char* name_hint, int timeout_ms) {
         g.ready = xSemaphoreCreateBinary();
     }
     strncpy(g.hint, name_hint ? name_hint : "", sizeof g.hint - 1);
+    g.want_scan = true;
     g.ready_ok = false;
     xSemaphoreTake(g.ready, 0);   // drain a stale outcome from a past attempt
 
     if (!g.radio_up) {
-        ble_hs_cfg.sync_cb = on_sync;
-        ble_hs_cfg.reset_cb = on_reset;
-        if (nimble_port_init() != ESP_OK) {
-            ESP_LOGE(TAG, "NimBLE would not start");
-            return false;
-        }
-        nimble_port_freertos_init(host_task);
-        g.radio_up = true;        // one init per boot; a retry re-scans instead
+        // Normally already done by radio_init() at boot, which is the only
+        // point in the run where a contiguous 30 KB of internal RAM is
+        // reliably there. Kept as a fallback so connect() still works alone.
+        if (!radio_init()) return false;
     } else if (ble_hs_synced()) {
         begin_scan();
     }

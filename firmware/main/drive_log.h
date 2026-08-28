@@ -47,6 +47,12 @@ void drive_log_init(void);
 // blocks, never allocates, drops when the queue is full.
 void drive_log_sample(const char* key, float value, double t_s);
 
+// Smallest number of bytes ever left unused on the recorder task's stack.
+// 0xFFFFFFFF until the task has run once. Printed by the ui: line so the
+// stack can be trimmed from a measurement -- internal RAM here competes
+// directly with the BT controller's contiguous 30 KB.
+uint32_t drive_log_stack_headroom(void);
+
 // The Mac's clock, from `TIME <epoch>`. Applies to drives opened afterwards.
 void drive_log_set_epoch(uint32_t epoch_s);
 

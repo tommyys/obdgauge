@@ -129,6 +129,14 @@ uint16_t* band_buffer(int w) {
     return g_band;
 }
 
+}  // namespace
+
+// Declared in gauge_ui.h. Defined here, beside band_buffer, because the point
+// of it is *when* that allocation happens.
+bool reserve_slide_band(int width) { return band_buffer(width) != nullptr; }
+
+namespace {
+
 // Rows [y0,y1) of a full-width frame, in kBlitRows bands because one blit of
 // the whole thing returns ESP_ERR_NO_MEM (see kBlitRows above).
 esp_err_t blit_bands(lv_display_t* disp, const uint16_t* frame, int w,

@@ -24,6 +24,26 @@ class BleTransport : public gauge::ITransport {
     // only initialised once.
     bool connect(const char* name_hint, int timeout_ms = 20000);
 
+    // Brings up the controller and the NimBLE host WITHOUT scanning, and
+    // returns whether it worked. Call this from app_main before the display
+    // starts; connect() will then find the radio already up.
+    //
+    // It exists purely because of *when* the controller allocates. It asks the
+    // internal heap for one contiguous 30,720-byte block, and internal RAM is
+    // the only place it can come from. By the time the old code called
+    // connect() -- 10 s in, after bsp_display_start() and after the recorder's
+    // two task stacks (12 KB + 8 KB) -- the heap had 33,059 bytes free but its
+    // largest hole was 21,504, so the allocation failed with the heap looking
+    // healthy. Worse, the controller's failure path asserts ("BLE assert
+    // emi.c 164") and reboots the gauge, so the gauge boot-looped rather than
+    // simply running without a radio. Measured on the board 2026-08-28; the
+    // `ui:` line prints both the total and the largest block for exactly this
+    // reason.
+    //
+    // Called at the top of app_main the heap is still whole, the block is
+    // there, and everything else fits around it. Safe to call more than once.
+    static bool radio_init();
+
     // False once the peer drops the link. The poll loop watches this rather
     // than inferring a disconnect from read timeouts, which a merely slow car
     // also produces.

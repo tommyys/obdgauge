@@ -98,6 +98,13 @@ void save_clock() {
     nvs_close(h);
 }
 
+// Smallest stack headroom this task has ever had, in bytes, so its stack is
+// sized from a measurement. It matters because this stack cannot move to
+// PSRAM: the task writes flash, and a flash write disables the cache that
+// PSRAM is reached through. Internal RAM is also what the BT controller needs
+// a contiguous 30 KB of, so every KB here is a KB the radio may not get.
+volatile uint32_t g_stack_low = 0xFFFFFFFFu;
+
 void task(void*) {
     // Refreshed ONLY by a reading that came from the car. The IMU must never
     // touch this: it used to be fed back through the same queue, which meant
@@ -113,6 +120,10 @@ void task(void*) {
     uint32_t drive_records = 0;    // this drive only -- record_count() is cumulative since mount
 
     for (;;) {
+        const uint32_t head = uxTaskGetStackHighWaterMark(nullptr) *
+                              sizeof(StackType_t);
+        if (head < g_stack_low) g_stack_low = head;
+
         const int64_t now = esp_timer_get_time();
 
         // Close a drive the car has stopped feeding.
@@ -239,8 +250,18 @@ extern "C" void drive_log_init(void) {
 
     // Priority 3 -- below the UI and below live_link's 4. Core 0, beside the
     // radio, so LVGL's render on core 1 never waits behind a flash erase.
-    xTaskCreatePinnedToCore(task, "drivelog", 8192, nullptr, 3, nullptr, 0);
+    //
+    // 3072, down from 8192. Measured on the board 2026-08-28: this task's
+    // deepest ever use is 936 bytes (8192 with 7256 spare, reported as
+    // "stack spare drivelog" on the ui: line). It has no recursion and no
+    // large locals -- the buffer it appends through is LogBuf's 384-byte
+    // batch_, not a stack frame. The 5 KB this returns is internal RAM, which
+    // is the only memory the BT controller can use and the only memory the
+    // panel's DMA can use. Watch that ui: figure if this task grows a local.
+    xTaskCreatePinnedToCore(task, "drivelog", 3072, nullptr, 3, nullptr, 0);
 }
+
+extern "C" uint32_t drive_log_stack_headroom(void) { return g_stack_low; }
 
 extern "C" void drive_log_sample(const char* key, float value, double t_s) {
     if (!g_q) return;

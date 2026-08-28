@@ -29,6 +29,7 @@
 #include "vehicle.h"
 #include "drive_source.h"
 #include "live_link.h"
+#include "ble_transport.h"
 #include "imu.h"
 #include "flight_log.h"
 #include "drive_log.h"
@@ -150,6 +151,23 @@ extern "C" void app_main(void) {
     g_fb = static_cast<uint16_t*>(
         heap_caps_aligned_alloc(64, W * H * 2, MALLOC_CAP_SPIRAM));
     if (!g_fb) { printf("FATAL: no PSRAM\n"); return; }
+
+    // Before the display and before the recorder, because the BT controller
+    // needs one contiguous 30,720-byte block of internal RAM and this is the
+    // last moment the internal heap is whole. Started later it failed with
+    // 33 KB free and a 21.5 KB largest hole, then asserted and rebooted the
+    // gauge -- see BleTransport::radio_init(). Scanning still starts at 10 s;
+    // this only claims the memory.
+    const bool radio_up = gauge_platform::BleTransport::radio_init();
+    flight_log("radio %s", radio_up ? "up" : "FAILED");
+
+    // Second, and for the same reason: the carousel's blit buffer is another
+    // 29,824 bytes that must be DMA-capable internal RAM. Asked for on the
+    // first swipe it was refused -- 32,831 bytes free, largest hole 23,552 --
+    // and the swipe then slid nothing. Both big internal claims are made here,
+    // while the heap is whole, and everything after fits around them.
+    const bool band_ok = gauge_ui::reserve_slide_band(W);
+    flight_log("slide band %s", band_ok ? "reserved" : "FAILED");
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
     // Single-buffered, because that is all this panel offers: the adapter only
@@ -371,13 +389,23 @@ extern "C" void app_main(void) {
                 // draws with ESP_ERR_NO_MEM while lv pool sat at 33%.
                 size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA |
                                                           MALLOC_CAP_INTERNAL);
+                // The largest single block, printed next to the total because
+                // the two disagree in the way that matters: the BT controller
+                // wants one contiguous 30,720-byte piece, and on 2026-08-28 it
+                // failed with 33,059 bytes free. A total that looks sufficient
+                // says nothing until this figure is next to it.
+                size_t dma_big = heap_caps_get_largest_free_block(
+                        MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
                 printf("ui: %u fps, view %s, gest %d, press %d, rel %d, indev %s @%d,%d, "
-                       "lv pool %u%% used (%u free), dma free %u\n",
+                       "lv pool %u%% used (%u free), dma free %u (largest %u), "
+                       "stack spare drivelog %u serialcmd %u\n",
                        (unsigned)fps, gauge_ui::current_view_name(),
                        gauge_ui::gesture_count(), gauge_ui::press_count(),
                        gauge_ui::release_count(), st_s, (int)pt.x, (int)pt.y,
                        (unsigned)mm.used_pct, (unsigned)mm.free_size,
-                       (unsigned)dma_free);
+                       (unsigned)dma_free, (unsigned)dma_big,
+                       (unsigned)drive_log_stack_headroom(),
+                       (unsigned)serial_cmd_stack_headroom());
                 // Repeated rather than printed once at the swipe: a serial
                 // capture that opens after the swipe was losing it every time.
                 printf("     %s\n", gauge_ui::slide_note());

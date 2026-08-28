@@ -179,10 +179,20 @@ void cmd_get(uint32_t id) {
     printf(ok && g.sent == records ? "OK\n" : "ERR short read\n");
 }
 
+// Smallest stack headroom seen, in bytes. Sampled after each command rather
+// than before, because the peak this stack is sized for is inside cmd_get --
+// read_drive's 4,080-byte sector buffer plus printf.
+volatile uint32_t g_stack_low = 0xFFFFFFFFu;
+
 void task(void*) {
     install_blocking_console_reads();
     char line[64];
     for (;;) {
+        {
+            const uint32_t head = uxTaskGetStackHighWaterMark(nullptr) *
+                                  sizeof(StackType_t);
+            if (head < g_stack_low) g_stack_low = head;
+        }
         // Blocking now (see install_blocking_console_reads above): this task
         // sleeps here between commands rather than polling stdin. But
         // usb_serial_jtag_read() has its own unconditional early return --
@@ -260,6 +270,8 @@ void task(void*) {
 }
 
 }  // namespace
+
+extern "C" uint32_t serial_cmd_stack_headroom(void) { return g_stack_low; }
 
 extern "C" void serial_cmd_init(void) {
     // Priority 2: below the recorder, well below the UI. Nothing waits on it.

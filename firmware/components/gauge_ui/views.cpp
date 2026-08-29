@@ -87,7 +87,11 @@ const ViewSpec* view_table(int* count) {
         {
             "ENGINE",
             Instrument::Engine,
-            Layout::Grid,
+            // Rows, not Grid. Grid puts its cells at kSubY0 - 40, which is
+            // where the state word sits: COLD/WARMING/READY landed on top of
+            // the temperatures. Three small label/value lines start below the
+            // word and stay inside the empty bottom of the dial.
+            Layout::Rows,
             {"coolant,volts,ctrl_volt,intake,cat_b1s1,catalyst", "NO ENGINE DATA",
              "this car reports no temperatures and no voltage"},
             [](const Model& m) { return chan(m, "coolant", "%.0f\xC2\xB0"); },
@@ -101,12 +105,12 @@ const ViewSpec* view_table(int* count) {
             },
             { nullptr, nullptr, nullptr, nullptr },
             {
-                {"INTAKE AIR", [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
-                {"CATALYST",   [](const Model& m) {
+                {"IAT",  [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
+                {"CAT",  [](const Model& m) {
                     auto c = m.st.get("catalyst");
                     if (!c) c = m.st.get("cat_b1s1");
                     return num(c, "%.0f\xC2\xB0"); }},
-                {"BATT",       [](const Model& m) { return num(volts(m), "%.1fv"); }},
+                {"BATT", [](const Model& m) { return num(volts(m), "%.1fv"); }},
                 {nullptr, nullptr},
             },
         },

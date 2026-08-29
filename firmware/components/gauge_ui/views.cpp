@@ -29,6 +29,21 @@ namespace {
 // plausible-looking zero (SPEC.md section 4).
 std::string dash() { return "--"; }
 
+// One step of a two-colour blend, per channel. The rim arc is a single object
+// and restyling it repaints only that object, so a colour that moves with the
+// reading costs a ring repaint on the frames it actually changes -- not the
+// panel repaint a coloured backdrop would cost (5-20 fps, measured).
+uint32_t blend(uint32_t from, uint32_t to, double f) {
+    if (f < 0.0) f = 0.0;
+    if (f > 1.0) f = 1.0;
+    uint32_t out = 0;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        const double a = (from >> sh) & 0xFF, b = (to >> sh) & 0xFF;
+        out |= static_cast<uint32_t>(a + (b - a) * f + 0.5) << sh;
+    }
+    return out;
+}
+
 std::string num(std::optional<double> v, const char* fmt) {
     if (!v) return dash();
     char b[32];
@@ -182,12 +197,20 @@ const ViewSpec* view_table(int* count) {
                   if (!m.trip.econ_km_per_l()) return false;
                   *o = 1.0;
                   return true; },
+              // Blended, not stepped. Three fixed colours made the ring flip
+              // between them on a reading that drifts across a threshold, and
+              // a trip average moves slowly enough that a continuous ramp
+              // reads as a fade on its own -- no animation, and no repaint on
+              // a frame where the colour did not move.
               [](const Model& m, double) -> uint32_t {
                   auto e = m.trip.econ_km_per_l();
-                  if (!e)                        return 0x5A5F6A;
-                  if (*e >= gauge::kEconGoodKmL) return 0x35E06B;
-                  if (*e >= gauge::kEconPoorKmL) return 0xFFC53D;
-                  return 0xFF3B30; } },
+                  if (!e) return 0x5A5F6A;
+                  const double lo = gauge::kEconPoorKmL, hi = gauge::kEconGoodKmL;
+                  const double mid = (lo + hi) / 2.0;
+                  if (*e <= lo) return 0xFF3B30;
+                  if (*e >= hi) return 0x35E06B;
+                  return *e < mid ? blend(0xFF3B30, 0xFFC53D, (*e - lo) / (mid - lo))
+                                  : blend(0xFFC53D, 0x35E06B, (*e - mid) / (hi - mid)); } },
             {
                 {"TIME",  [](const Model& m) {
                     int s = static_cast<int>(m.trip.elapsed_s);

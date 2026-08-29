@@ -131,12 +131,14 @@ const ViewSpec* view_table(int* count) {
             nullptr,
             { nullptr, nullptr, nullptr, nullptr },
             {
+                // USED and COST were here and on TRIP, which is where they
+                // belong: they are trip totals, not economy readings, and a
+                // number shown on two views is a number you cannot trust
+                // yourself to have read on the right one.
                 {"avg",  [](const Model& m) { return num(m.trip.econ_km_per_l(), "%.1f"); }},
                 {"L/h",  [](const Model& m) { return chan(m, "fuel_rate", "%.1f"); }},
-                {"USED", [](const Model& m) {
-                    char b[24]; snprintf(b, sizeof b, "%.2f L", m.trip.fuel_l); return std::string(b); }},
-                {"COST", [](const Model& m) {
-                    char b[24]; snprintf(b, sizeof b, "RM %.2f", m.trip.cost_rm()); return std::string(b); }},
+                {nullptr, nullptr},
+                {nullptr, nullptr},
             },
         },
         // 4 --- Driving score. The weights are still untuned guesses (B3), so
@@ -237,17 +239,17 @@ const ViewSpec* view_table(int* count) {
                 // colour of its own to say it with. Same thresholds the bar
                 // used: below 12.2 the battery is going flat, below 13.0 the
                 // engine is not charging it.
-                {"VOLTS", [](const Model& m) { return num(volts(m), "%.1fv"); }},
-                // The word on its own line, directly under the number it
-                // describes, with no label of its own -- "VOLTS 13.4v CHARGING"
-                // on one line put three things in a column sized for two.
-                // An empty label, not a null one: null ends the row list.
-                {"", [](const Model& m) {
-                    auto v = volts(m);
-                    if (!v) return std::string("");
-                    if (*v < 12.2) return std::string("LOW");
-                    if (*v < 13.0) return std::string("RESTING");
-                    return std::string("CHARGING"); }},
+                // No word: the colour is the word. Green is charging, amber
+                // resting, red going flat -- the same thresholds the bar used,
+                // in the space the number already occupies.
+                {"VOLTS", [](const Model& m) { return num(volts(m), "%.1fv"); },
+                 [](const Model& m) -> uint32_t {
+                     auto v = volts(m);
+                     if (!v)        return 0xD0D0D0;
+                     if (*v < 12.2) return 0xFF6B4A;
+                     if (*v < 13.0) return 0xFFC24A;
+                     return 0x5BD97A; }},
+                {nullptr, nullptr},
             },
         },
         // 7 --- Drives. The one view that shows the past rather than the

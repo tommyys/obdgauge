@@ -11,6 +11,10 @@ namespace gauge_ui {
 struct Row {
     const char* label;
     std::string (*value)(const Model&);
+    // Optional: the value's colour, when the reading's meaning is a state
+    // rather than a number -- voltage is charging, resting or low. Null (the
+    // default, and what every other row leaves it) keeps the plain grey.
+    uint32_t (*colour)(const Model&) = nullptr;
 };
 
 // An optional dial around the rim: absent `value` means the view draws none.

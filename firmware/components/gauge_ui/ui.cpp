@@ -78,6 +78,9 @@ struct ViewObjs {
     gauge::Ease dial_ease;
     Face face;                 // tacho, engine and power fill this in
     bool has_face = false;
+    // Last colour written to each row's value, so a row that says its state in
+    // colour is not restyled on every frame. 0 means never set.
+    uint32_t row_colour[4] = {0, 0, 0, 0};
     // The "this car cannot drive this view" screen. Everything else in the
     // view is hidden behind it rather than left showing dashes.
     lv_obj_t* na_head = nullptr;
@@ -619,6 +622,13 @@ void update(const Model& m) {
 
     for (int i = 0; i < 4 && s.rows[i].label; ++i) {
         set_text_if_changed(v.rvalue[i], s.rows[i].value(m));
+        if (!s.rows[i].colour) continue;
+        // Only on change: setting a style invalidates the object, so writing
+        // the same colour every frame would repaint a line that did not move.
+        const uint32_t col = s.rows[i].colour(m);
+        if (col == v.row_colour[i]) continue;
+        v.row_colour[i] = col;
+        lv_obj_set_style_text_color(v.rvalue[i], lv_color_hex(col), 0);
     }
 }
 

@@ -31,7 +31,6 @@ enum class Instrument {
     Engine,      // a cold-to-hot gradient rim and a white mark, no fill
     Power,       // ticks and kW numbering, fill arc, amber peak mark, needle
     ScoreRing,   // a rim arc like the tacho's, but coloured by its own value
-    Bar,         // horizontal gradient bar with a sliding marker
 };
 
 // How the rows are arranged.

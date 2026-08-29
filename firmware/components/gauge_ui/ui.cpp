@@ -4,7 +4,6 @@
 #include <vector>
 #include "avail.h"
 #include "ease.h"
-#include "bar.h"
 #include "carousel.h"
 #include "drives.h"
 #include "face.h"
@@ -23,13 +22,6 @@ constexpr int kTitleY   = -142;  // view name, under the top of the rim
 constexpr int kHeroY    =  -60;  // the one big number
 constexpr int kUnitY    =  -18;  // its unit, directly beneath
 constexpr int kWordY    =   22;  // COLD / READY / the coach verdict
-// ELECTRICAL is the one view whose instrument lives in the middle of the panel
-// instead of on the rim, and the bar sits exactly across kWordY: the bar spans
-// 23..44 and its marker 14..53, while a 28 px word centred on 22 spans 7..37.
-// The word was drawn first, so the bar covered it. The simulator stacks hero,
-// bar, then status, so the word goes UNDER the bar here too -- clear of the
-// marker's bottom at 53, and still well above the make/model banner at 178.
-constexpr int kBarWordY =   78;  // CHARGING / RESTING / LOW, below the bar
 constexpr int kSubY0    =   66;  // first line of sub-text, Rows layout
 // A grid cell is a value over its own label, so two rows of them stand about
 // 96 px tall against the 62 px of four text lines. Anchoring both layouts at
@@ -85,7 +77,6 @@ struct ViewObjs {
     // gauge_core/ease.h on why that holds exactly.
     gauge::Ease dial_ease;
     Face face;                 // tacho, engine and power fill this in
-    Bar  bar;                  // electrical only
     bool has_face = false;
     // The "this car cannot drive this view" screen. Everything else in the
     // view is hidden behind it rather than left showing dashes.
@@ -270,13 +261,10 @@ ViewObjs build_view(const ViewSpec& spec) {
     // -- the coach verdict, the peak -- so it moves up into that slot rather
     // than leaving a gap the width of a line above it.
     if (spec.state_word) {
-        const int wy = face_k == Instrument::Bar ? kBarWordY
-                                                 : (spec.hero_unit ? kWordY : kUnitY) - hub_lift;
+        const int wy = (spec.hero_unit ? kWordY : kUnitY) - hub_lift;
         const lv_font_t* f = spec.hero_unit ? &lv_font_montserrat_28 : &lv_font_montserrat_20;
         v.word = mk_label(c, f, 0x808080, LV_ALIGN_CENTER, 0, wy);
     }
-
-    if (face_k == Instrument::Bar) v.bar = bar_build(c, 34);
 
     if (layout_k == Layout::Drives) {
         // Built by its own file: this view's content is the flash ring's, not
@@ -628,12 +616,6 @@ void update(const Model& m) {
     }
 
     if (v.has_face) face_update(v.face, m);
-
-    if (s.face == Instrument::Bar) {
-        auto volts = m.st.get("ctrl_volt");
-        if (!volts) volts = m.st.get("volts");
-        bar_update(v.bar, volts);
-    }
 
     for (int i = 0; i < 4 && s.rows[i].label; ++i) {
         set_text_if_changed(v.rvalue[i], s.rows[i].value(m));

@@ -23,6 +23,11 @@ struct Dial {
     double (*hi)(const Model&);
     std::string (*unused)(const Model&);   // reserved, keeps the struct POD-ish
     bool (*value)(const Model&, double* out);
+    // A VerdictRing's colour, from the value it is showing. The driving score
+    // had this rule written into ui.cpp, which meant the one view that judged
+    // its own reading kept its thresholds somewhere no view could see. Null
+    // for every plain dial, which keeps its fixed colour.
+    uint32_t (*colour)(double value) = nullptr;
 };
 
 // What the view draws to show its reading as a shape rather than a number.
@@ -34,7 +39,7 @@ enum class Instrument {
     TachoDial,   // heat band, ticks and numbering per 1000 rpm, needle
     Engine,      // a cold-to-hot gradient rim and a white mark, no fill
     Power,       // ticks and kW numbering, fill arc, amber peak mark, needle
-    ScoreRing,   // a rim arc like the tacho's, but coloured by its own value
+    VerdictRing, // a rim arc coloured by its own value -- see Dial::colour
 };
 
 // How the rows are arranged.

@@ -81,6 +81,9 @@ struct ViewObjs {
     // Last colour written to each row's value, so a row that says its state in
     // colour is not restyled on every frame. 0 means never set.
     uint32_t row_colour[4] = {0, 0, 0, 0};
+    // Same idea for a VerdictRing's arc: restyling invalidates the object, so
+    // the colour is written only when it actually changes.
+    uint32_t arc_colour = 0;
     // The "this car cannot drive this view" screen. Everything else in the
     // view is hidden behind it rather than left showing dashes.
     lv_obj_t* na_head = nullptr;
@@ -158,7 +161,7 @@ ViewObjs build_view(const ViewSpec& spec) {
     // fill arc at all; every other dial that has a value gets one.
     const bool wants_arc = spec.dial.value && face_k != Instrument::Engine;
     if (wants_arc) {
-        const bool score_ring = face_k == Instrument::ScoreRing;
+        const bool score_ring = face_k == Instrument::VerdictRing;
 
         // The tacho's shutter has to hide a bright redline arc lying directly
         // under it. At equal size it cannot: both are anti-aliased, so the
@@ -595,11 +598,14 @@ void update(const Model& m) {
                 // the redline's edge reappears for a frame at the seam.
                 if (v.arc_mask) lv_arc_set_value(v.arc_mask, steps - q);
             }
-            // The score ring carries its verdict as colour, the way the
-            // simulator's does: green from 85, amber from 70, red below.
-            if (s.face == Instrument::ScoreRing) {
-                const uint32_t col = val >= 85 ? 0x35E06B : val >= 70 ? 0xFFC53D : 0xFF3B30;
-                lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
+            // A ring that carries its verdict as colour says what the
+            // thresholds are in its own view, not here.
+            if (s.dial.colour) {
+                const uint32_t col = s.dial.colour(val);
+                if (col != v.arc_colour) {
+                    v.arc_colour = col;
+                    lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
+                }
             }
             if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
         } else if (tacho) {

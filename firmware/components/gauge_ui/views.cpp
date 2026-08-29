@@ -122,7 +122,7 @@ const ViewSpec* view_table(int* count) {
         // panel that diameter runs straight through the rows underneath.
         {
             "DRIVING",
-            Instrument::ScoreRing,
+            Instrument::VerdictRing,
             Layout::Rows,
             {"rpm,speed,throttle", "NO DRIVE DATA",
              "scoring needs rpm, speed or throttle"},
@@ -137,7 +137,9 @@ const ViewSpec* view_table(int* count) {
             },
             { [](const Model&) { return 0.0; }, [](const Model&) { return 100.0; }, nullptr,
               [](const Model& m, double* o) {
-                  auto v = m.score.total(); if (!v) return false; *o = *v; return true; } },
+                  auto v = m.score.total(); if (!v) return false; *o = *v; return true; },
+              [](double v) -> uint32_t {
+                  return v >= 85 ? 0x35E06B : v >= 70 ? 0xFFC53D : 0xFF3B30; } },
             {
                 {"sm",   [](const Model& m) { return num(m.score.smooth(), "%.0f"); }},
                 {"eco",  [](const Model& m) { return num(m.score.econ(), "%.0f"); }},
@@ -153,7 +155,12 @@ const ViewSpec* view_table(int* count) {
         // fuel used and cost were on both. Economy joins as the second cell.
         {
             "TRIP",
-            Instrument::None,
+            // A ring for the economy, on the rim where every other dial is.
+            // The hero is distance, so the ring is deliberately the only thing
+            // on the view carrying km/L as a shape: it fills as the average
+            // climbs and takes the same green/amber/red the KM/L cell does, so
+            // "how is this drive going" is answerable without reading a digit.
+            Instrument::VerdictRing,
             Layout::Grid,
             {"speed,fuel_rate", "NO TRIP DATA",
              "this car reports neither vehicle speed nor fuel rate"},
@@ -161,7 +168,15 @@ const ViewSpec* view_table(int* count) {
                 char b[24]; snprintf(b, sizeof b, "%.1f", m.trip.dist_km); return std::string(b); },
             "KM",
             nullptr,
-            { nullptr, nullptr, nullptr, nullptr },
+            // 0 to 20 km/L. This car averages about 11 and the best a gentle
+            // run has shown is in the mid teens, so 20 leaves headroom without
+            // making the useful part of the sweep a stub.
+            { [](const Model&) { return 0.0; }, [](const Model&) { return 20.0; }, nullptr,
+              [](const Model& m, double* o) {
+                  auto v = m.trip.econ_km_per_l(); if (!v) return false; *o = *v; return true; },
+              [](double v) -> uint32_t {
+                  return v >= gauge::kEconGoodKmL ? 0x35E06B
+                       : v >= gauge::kEconPoorKmL ? 0xFFC53D : 0xFF3B30; } },
             {
                 {"TIME",  [](const Model& m) {
                     int s = static_cast<int>(m.trip.elapsed_s);

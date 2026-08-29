@@ -93,7 +93,9 @@ struct ViewObjs {
     bool has_face = false;
     // Last colour written to each row's value, so a row that says its state in
     // colour is not restyled on every frame. 0 means never set.
-    uint32_t row_colour[4] = {0, 0, 0, 0};
+    // Grey, like the ring: a row that says its state in colour fades up from
+    // the same place the ring does, so the two arrive together.
+    uint32_t row_colour[4] = {kVerdictGrey, kVerdictGrey, kVerdictGrey, kVerdictGrey};
     // Same idea for a VerdictRing's arc: restyling invalidates the object, so
     // the colour is written only when it actually changes.
     // Starts grey. A verdict ring eases toward its colour rather than
@@ -147,6 +149,12 @@ int colour_gap(uint32_t a, uint32_t b) {
     return worst;
 }
 
+// One frame of a colour walk toward `want`, or `want` itself once the two are
+// close enough to stop. Shared by the verdict ring and by any row that says
+// its state in colour, so a ring and the number it describes fade together
+// rather than at two different speeds.
+uint32_t ease_colour(uint32_t cur, uint32_t want, double dt_s);
+
 uint32_t blend_colour(uint32_t from, uint32_t to, double f) {
     if (f <= 0.0) return from;
     if (f >= 1.0) return to;
@@ -170,6 +178,12 @@ lv_obj_t* mk_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour,
     lv_label_set_text(l, "");
     lv_obj_align(l, align, dx, dy);
     return l;
+}
+
+uint32_t ease_colour(uint32_t cur, uint32_t want, double dt_s) {
+    if (colour_gap(cur, want) <= kVerdictSnap) return want;
+    const double f = dt_s > 0 ? 1.0 - std::exp(-dt_s / kVerdictTauS) : 1.0;
+    return blend_colour(cur, want, f);
 }
 
 ViewObjs build_view(const ViewSpec& spec) {
@@ -650,14 +664,7 @@ void update(const Model& m) {
                 // Walk toward the target rather than jumping to it. The step
                 // is time-based, like the needle ease, so the fade takes the
                 // same 1.2 s on a busy screen as on a quiet one.
-                const uint32_t want = s.dial.colour(m, val);
-                const double f = m.dt_s > 0 ? 1.0 - std::exp(-m.dt_s / kVerdictTauS) : 1.0;
-                // Close enough is arrived. Without this the last few levels of
-                // every fade are walked one at a time, and each of those steps
-                // is a repaint of a 434 px ring for a shade nobody can see.
-                const uint32_t col = colour_gap(v.arc_colour, want) <= kVerdictSnap
-                                         ? want
-                                         : blend_colour(v.arc_colour, want, f);
+                const uint32_t col = ease_colour(v.arc_colour, s.dial.colour(m, val), m.dt_s);
                 if (col != v.arc_colour) {
                     v.arc_colour = col;
                     lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
@@ -687,7 +694,7 @@ void update(const Model& m) {
         if (!s.rows[i].colour) continue;
         // Only on change: setting a style invalidates the object, so writing
         // the same colour every frame would repaint a line that did not move.
-        const uint32_t col = s.rows[i].colour(m);
+        const uint32_t col = ease_colour(v.row_colour[i], s.rows[i].colour(m), m.dt_s);
         if (col == v.row_colour[i]) continue;
         v.row_colour[i] = col;
         lv_obj_set_style_text_color(v.rvalue[i], lv_color_hex(col), 0);

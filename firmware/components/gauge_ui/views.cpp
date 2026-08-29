@@ -46,6 +46,23 @@ uint32_t blend(uint32_t from, uint32_t to, double f) {
     return out;
 }
 
+// The economy verdict, as a colour. One function, used by TRIP's ring and by
+// its KM/L number, so the two can never disagree about how the drive is going.
+//
+// Quantised to a quarter of a km/L first: a trip average moves on every speed
+// sample, and an unquantised target moved the colour every frame.
+uint32_t econ_colour(const Model& m) {
+    auto e = m.trip.econ_km_per_l();
+    if (!e) return 0x5A5F6A;
+    const double v = std::round(*e * 4.0) / 4.0;
+    const double lo = gauge::kEconPoorKmL, hi = gauge::kEconGoodKmL;
+    const double mid = (lo + hi) / 2.0;
+    if (v <= lo) return 0xFF3B30;
+    if (v >= hi) return 0x35E06B;
+    return v < mid ? blend(0xFF3B30, 0xFFC53D, (v - lo) / (mid - lo))
+                   : blend(0xFFC53D, 0x35E06B, (v - mid) / (hi - mid));
+}
+
 std::string num(std::optional<double> v, const char* fmt) {
     if (!v) return dash();
     char b[32];
@@ -199,28 +216,7 @@ const ViewSpec* view_table(int* count) {
                   if (!m.trip.econ_km_per_l()) return false;
                   *o = 1.0;
                   return true; },
-              // Blended, not stepped. Three fixed colours made the ring flip
-              // between them on a reading that drifts across a threshold, and
-              // a trip average moves slowly enough that a continuous ramp
-              // reads as a fade on its own -- no animation, and no repaint on
-              // a frame where the colour did not move.
-              [](const Model& m, double) -> uint32_t {
-                  auto e = m.trip.econ_km_per_l();
-                  if (!e) return 0x5A5F6A;
-                  // Quantised to a quarter of a km/L before the colour is
-                  // computed. A trip average moves on every speed sample, so
-                  // an unquantised target moved every frame -- and each move
-                  // repainted a 434 px ring, which held this view at 6 fps
-                  // while the car was moving. A quarter is finer than the
-                  // colour difference the eye can find on the rim.
-                  const double q = std::round(*e * 4.0) / 4.0;
-                  e = q;
-                  const double lo = gauge::kEconPoorKmL, hi = gauge::kEconGoodKmL;
-                  const double mid = (lo + hi) / 2.0;
-                  if (*e <= lo) return 0xFF3B30;
-                  if (*e >= hi) return 0x35E06B;
-                  return *e < mid ? blend(0xFF3B30, 0xFFC53D, (*e - lo) / (mid - lo))
-                                  : blend(0xFFC53D, 0x35E06B, (*e - mid) / (hi - mid)); } },
+              [](const Model& m, double) { return econ_colour(m); } },
             {
                 {"TIME",  [](const Model& m) {
                     int s = static_cast<int>(m.trip.elapsed_s);
@@ -230,13 +226,10 @@ const ViewSpec* view_table(int* count) {
                 // The live km/L reading was FUEL ECONOMY's hero and is the one
                 // thing the merge drops -- the driving score is where live
                 // coaching belongs.
+                // The number takes the ring's colour, from the same function
+                // and through the same fade, so the two read as one thing.
                 {"KM/L",  [](const Model& m) { return num(m.trip.econ_km_per_l(), "%.1f"); },
-                 [](const Model& m) -> uint32_t {
-                     auto e = m.trip.econ_km_per_l();
-                     if (!e)                            return 0xD0D0D0;
-                     if (*e >= gauge::kEconGoodKmL)     return 0x5BD97A;
-                     if (*e >= gauge::kEconPoorKmL)     return 0xFFC24A;
-                     return 0xFF6B4A; }},
+                 econ_colour},
                 {"FUEL",  [](const Model& m) {
                     char b[24]; snprintf(b, sizeof b, "%.2f L", m.trip.fuel_l); return std::string(b); }},
                 {"COST",  [](const Model& m) {

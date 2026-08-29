@@ -288,8 +288,6 @@ extern "C" void app_main(void) {
     gauge::VehicleState st;
     gauge::Trip trip;
     gauge::DrivingScore score;
-    double synth = 45.0;
-    bool synth_up = true;
     int64_t t0 = esp_timer_get_time();
     int64_t last_frame_us = t0;
 
@@ -353,11 +351,12 @@ extern "C" void app_main(void) {
                 score = gauge::DrivingScore{};
                 t0 = esp_timer_get_time();
             }
-        } else {
-            st.set("coolant", synth);
-            if (synth_up) { synth += 0.5; if (synth >= 96.0) synth_up = false; }
-            else          { synth -= 0.5; if (synth <= 45.0) synth_up = true; }
         }
+        // There is no third case any more. A synthetic coolant used to ramp
+        // 45-96 C here whenever nothing else was feeding the gauge, which is
+        // exactly the state the gauge is in while it looks for the adapter:
+        // the engine view sat there sweeping a temperature for an engine it
+        // had not met. Nothing feeding it now means nothing moving on it.
 
         // A bench sweep overrides whatever the dial was being fed. Applied
         // after the replay and the car, not instead of them: everything else

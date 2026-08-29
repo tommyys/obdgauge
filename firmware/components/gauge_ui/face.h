@@ -62,6 +62,13 @@ struct Face {
     lv_point_precise_t* needle_pts = nullptr;
     int                 needle_q   = -1;
     int                 heat       = -1;   // last colour step the needle took
+    // The opacity each line was last SET to, not what it looks like. LVGL's
+    // style setters invalidate the object whether or not the value changed,
+    // so writing "still dim" every frame repaints the needle every frame --
+    // which is what left the engine view sweeping at 52 fps while the gauge
+    // was still looking for the adapter, with nothing feeding it at all.
+    int                 needle_opa = -1;
+    int                 peak_opa   = -1;
     // Power only: the amber high-water mark, which moves far more rarely than
     // the needle and so is tracked separately.
     lv_obj_t*           peak       = nullptr;

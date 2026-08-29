@@ -160,7 +160,13 @@ const ViewSpec* view_table(int* count) {
             Layout::Rows,
             {"rpm,speed,throttle", "NO DRIVE DATA",
              "scoring needs rpm, speed or throttle"},
-            [](const Model& m) { return num(m.score.total(), "%.0f"); },
+            // 0, not "--", when there is nothing to score. Every other view's
+            // dashes mean "this car does not report it"; the score is always
+            // reportable -- before a drive starts there is simply no good
+            // driving in it yet, and that is a zero.
+            [](const Model& m) {
+                auto t = m.score.total();
+                return t ? num(t, "%.0f") : std::string("0"); },
             nullptr,
             [](const Model& m, uint32_t* colour) -> std::string {
                 auto t = m.score.total();
@@ -175,9 +181,12 @@ const ViewSpec* view_table(int* count) {
               [](const Model&, double v) -> uint32_t {
                   return v >= 85 ? 0x35E06B : v >= 70 ? 0xFFC53D : 0xFF3B30; } },
             {
-                {"sm",   [](const Model& m) { return num(m.score.smooth(), "%.0f"); }},
-                {"eco",  [](const Model& m) { return num(m.score.econ(), "%.0f"); }},
-                {"calm", [](const Model& m) { return num(m.score.calm(), "%.0f"); }},
+                {"sm",   [](const Model& m) {
+                    auto v = m.score.smooth(); return v ? num(v, "%.0f") : std::string("0"); }},
+                {"eco",  [](const Model& m) {
+                    auto v = m.score.econ();   return v ? num(v, "%.0f") : std::string("0"); }},
+                {"calm", [](const Model& m) {
+                    auto v = m.score.calm();   return v ? num(v, "%.0f") : std::string("0"); }},
                 {nullptr, nullptr},
             },
         },
@@ -260,10 +269,13 @@ const ViewSpec* view_table(int* count) {
             nullptr,
             // The unit slot carries the peak, as the simulator does: a number
             // you are chasing belongs next to the one you are making.
+            // Dashes, like every other view's absent reading. "no torque data"
+            // explained itself where the peak goes, which is a sentence on an
+            // instrument -- the tacho just shows dashes and is understood.
             [](const Model& m, uint32_t* colour) -> std::string {
                 *colour = 0x9A9A9A;
-                if (!m.st.get("power_kw")) return "no torque data";
                 char b[32];
+                if (!m.st.get("power_kw")) return "kW \xE2\x80\xA2 peak --";
                 snprintf(b, sizeof b, "kW \xE2\x80\xA2 peak %.0f", m.st.peak_kw());
                 return b;
             },

@@ -592,6 +592,13 @@ std::optional<double> ease_reading(Face& f, std::optional<double> raw, const Mod
     return f.ease.step(*raw, m.dt_s, ease_tau_ms() / 1000.0);
 }
 
+// Writes a line's opacity only when it changes. See Face::needle_opa.
+void set_line_opa(lv_obj_t* line, int& last, int opa) {
+    if (!line || last == opa) return;
+    last = opa;
+    lv_obj_set_style_line_opa(line, static_cast<lv_opa_t>(opa), 0);
+}
+
 void update_tacho(Face& f, const Model& m) {
     if (!f.needle) return;
     const auto raw = m.st.get("rpm");
@@ -613,7 +620,7 @@ void update_tacho(Face& f, const Model& m) {
     // No reading: the needle stays parked at zero and dims, rather than being
     // hidden -- an instrument with no needle at all reads as broken, where a
     // dim one at rest reads as waiting (SPEC.md section 4).
-    lv_obj_set_style_line_opa(f.needle, rpm ? LV_OPA_COVER : 64, 0);
+    set_line_opa(f.needle, f.needle_opa, rpm ? LV_OPA_COVER : 64);
 
     const double v = rpm ? *rpm : 0.0;
     int q = static_cast<int>(std::lround(dial_angle(v, m.id.rpm_max) - kStartDeg));
@@ -631,7 +638,7 @@ void update_tacho(Face& f, const Model& m) {
 void update_engine(Face& f, const Model& m) {
     if (!f.needle) return;
     const auto c = ease_reading(f, m.st.get("coolant"), m);
-    lv_obj_set_style_line_opa(f.needle, c ? LV_OPA_COVER : 64, 0);
+    set_line_opa(f.needle, f.needle_opa, c ? LV_OPA_COVER : 64);
 
     const double v = c ? *c : kTempLo;
     int q = static_cast<int>(std::lround(range_angle(v, kTempLo, kTempHi) - kStartDeg));
@@ -651,11 +658,11 @@ void update_power(Face& f, const Model& m) {
     if (!f.needle) return;
     const double p_max = m.id.power_max > 0 ? m.id.power_max : 140.0;
     const auto kw = ease_reading(f, m.st.get("power_kw"), m);
-    lv_obj_set_style_line_opa(f.needle, kw ? LV_OPA_COVER : 64, 0);
+    set_line_opa(f.needle, f.needle_opa, kw ? LV_OPA_COVER : 64);
 
     const double peak = m.st.peak_kw();
     if (f.peak) {
-        lv_obj_set_style_line_opa(f.peak, (kw && peak > 0) ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+        set_line_opa(f.peak, f.peak_opa, (kw && peak > 0) ? LV_OPA_COVER : LV_OPA_TRANSP);
         int pq = static_cast<int>(std::lround(dial_angle(peak, p_max) - kStartDeg));
         if (pq < 0) pq = 0;
         if (pq > kNeedleSteps) pq = kNeedleSteps;

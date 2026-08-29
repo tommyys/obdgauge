@@ -182,6 +182,19 @@ lv_obj_t* mk_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour,
     return l;
 }
 
+// Shows or hides an object, but only writes when that is a change. LVGL's
+// flag setters invalidate whether or not the flag moved, so "still hidden"
+// written every frame is a repaint every frame -- the driving score's dial,
+// hidden because there is no score yet, was costing 7 fps of redraws to stay
+// invisible.
+void show_obj(lv_obj_t* o, bool visible) {
+    if (!o) return;
+    const bool hidden = lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN);
+    if (hidden != visible) return;
+    if (visible) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+    else         lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
 uint32_t ease_colour(uint32_t cur, uint32_t want, double dt_s) {
     if (colour_gap(cur, want) <= kVerdictSnap) return want;
     const double f = dt_s > 0 ? 1.0 - std::exp(-dt_s / kVerdictTauS) : 1.0;
@@ -682,7 +695,7 @@ void update(const Model& m) {
                     lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
                 }
             }
-            if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+            if (g_dials_on) show_obj(v.arc, true);
         } else if (tacho) {
             v.dial_ease.reset();
             // The shutter is not a reading, it is the absence of one: closed
@@ -691,11 +704,11 @@ void update(const Model& m) {
             // MAXIMUM here, for the inversion described above.
             lv_arc_set_value(v.arc, kDialSteps);
             if (v.arc_mask) lv_arc_set_value(v.arc_mask, kDialSteps);
-            if (g_dials_on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+            if (g_dials_on) show_obj(v.arc, true);
         } else {
             v.dial_ease.reset();
             // No reading: hide the dial rather than draw it pinned at zero.
-            lv_obj_add_flag(v.arc, LV_OBJ_FLAG_HIDDEN);
+            show_obj(v.arc, false);
         }
     }
 

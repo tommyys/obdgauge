@@ -207,7 +207,10 @@ const ViewSpec* view_table(int* count) {
         // to a missing torque PID would be the merge taking away a reading
         // that used to have a view of its own.
         {
-            "POWER",
+            // No title, for the tacho's reason: the dial's own kW numbering
+            // runs where the banner would sit, and a dial reading in kW does
+            // not need the word POWER over it.
+            nullptr,
             Instrument::Power,
             Layout::Rows,
             {"act_torque,ref_torque,ctrl_volt,volts", "NO TORQUE DATA",
@@ -234,13 +237,17 @@ const ViewSpec* view_table(int* count) {
                 // colour of its own to say it with. Same thresholds the bar
                 // used: below 12.2 the battery is going flat, below 13.0 the
                 // engine is not charging it.
-                {"VOLTS", [](const Model& m) {
+                {"VOLTS", [](const Model& m) { return num(volts(m), "%.1fv"); }},
+                // The word on its own line, directly under the number it
+                // describes, with no label of its own -- "VOLTS 13.4v CHARGING"
+                // on one line put three things in a column sized for two.
+                // An empty label, not a null one: null ends the row list.
+                {"", [](const Model& m) {
                     auto v = volts(m);
-                    if (!v) return std::string("--");
-                    const char* word = *v < 12.2 ? " LOW" : (*v < 13.0 ? " RESTING" : " CHARGING");
-                    char b[32]; snprintf(b, sizeof b, "%.1fv%s", *v, word);
-                    return std::string(b); }},
-                {nullptr, nullptr},
+                    if (!v) return std::string("");
+                    if (*v < 12.2) return std::string("LOW");
+                    if (*v < 13.0) return std::string("RESTING");
+                    return std::string("CHARGING"); }},
             },
         },
         // 7 --- Drives. The one view that shows the past rather than the

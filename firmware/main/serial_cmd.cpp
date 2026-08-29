@@ -318,6 +318,13 @@ void task(void*) {
             const double secs = (line[5] == ' ') ? strtod(line + 6, nullptr) : 60.0;
             sweep_start(secs > 0 ? secs : 60.0, 1000.0, 8000.0);
             printf("OK sweep 1000-8000 rpm for %.0fs\n", secs > 0 ? secs : 60.0);
+        } else if (!strncmp(line, "ECON", 4)) {
+            // "ECON" for a minute, "ECON 20" for twenty seconds. Walks the
+            // trip ring from 4 to 16 km/L and back, which is the only way to
+            // see its colour ramp without driving to both ends of it.
+            const double secs = (line[4] == ' ') ? strtod(line + 5, nullptr) : 60.0;
+            sweep_econ_start(secs > 0 ? secs : 60.0, 4.0, 16.0);
+            printf("OK econ 4-16 km/L for %.0fs\n", secs > 0 ? secs : 60.0);
         } else if (!strncmp(line, "BAND", 4)) {
             if (line[4] == ' ') gauge_ui::set_band_enabled(line[5] != '0');
             printf("OK band\n");

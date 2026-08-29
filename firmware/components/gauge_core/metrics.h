@@ -16,12 +16,14 @@ inline constexpr double kFuelPriceRm = 1.99;
 inline constexpr double kWSmooth     = 0.40;   // score weights, sum to 1.0
 inline constexpr double kWEcon       = 0.30;
 inline constexpr double kWCalm       = 0.30;
-// What counts as good economy on this car, in km/L. Measured average is about
-// 11, so the TRIP view's km/L reads green at or above it, amber within 2 of
-// it, and red below that. Not a physical constant -- change it when the car's
-// own average moves.
+// What counts as good economy on this car, in km/L, and where the ring's
+// colour ramp starts. Green is still 11, the measured average; the bottom of
+// the ramp moved from 9 to 6 because two km/L of range put the whole fade
+// inside the wobble of a trip average -- the ring read as green or red with
+// nothing in between. Not physical constants: change them when the car's own
+// average moves.
 inline constexpr double kEconGoodKmL = 11.0;
-inline constexpr double kEconPoorKmL = 9.0;
+inline constexpr double kEconPoorKmL = 6.0;
 inline constexpr double kEcoRpmLo    = 1200;   // efficient cruising band
 inline constexpr double kEcoRpmHi    = 2600;
 // Harsh-event thresholds (m/s^2). ~2.5 m/s^2 is a firm but normal stop.

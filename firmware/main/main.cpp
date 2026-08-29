@@ -358,8 +358,24 @@ extern "C" void app_main(void) {
         const double dt_s = (now_us - last_frame_us) / 1e6;
         last_frame_us = now_us;
 
+        // A swept economy is shown through a stand-in Trip rather than by
+        // writing into the real one: ECON is a bench command for looking at
+        // the ring's colour ramp, and it must not be able to corrupt the
+        // totals of a drive that is being recorded while it runs.
+        gauge::Trip demo_trip;
+        double swept_econ = 0;
+        const bool econ_demo = sweep_econ(&swept_econ);
+        if (econ_demo) {
+            // econ_km_per_l() is derived, so it is driven by giving the
+            // stand-in a distance and a litre: km/L is then the distance.
+            demo_trip.dist_km   = swept_econ;
+            demo_trip.fuel_l    = 1.0;
+            demo_trip.elapsed_s = trip.elapsed_s;
+            demo_trip.moving_s  = trip.moving_s;
+        }
+
         bsp_display_lock(-1);   // -1 is wait-forever; 0 would be a try-lock
-        gauge_ui::Model model{st, trip, score, id, supported, dt_s};
+        gauge_ui::Model model{st, econ_demo ? demo_trip : trip, score, id, supported, dt_s};
         gauge_ui::update(model);
         bsp_display_unlock();
 

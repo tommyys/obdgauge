@@ -47,6 +47,16 @@ struct Entry {
 // So a lent date is kept beside the ring in NVS, keyed by drive id, and
 // applied when the drive is listed. The records are never touched.
 constexpr const char* kDateNs = "drivedate";
+// Drives the owner has taken off the list.
+//
+// A drive cannot be erased from the ring on its own: the sectors are a ring,
+// and erasing one in the middle takes whatever else is living in it. So a
+// hidden drive is still on flash and still pullable over the console -- it is
+// simply not offered on the glass. The two 0.9 and 1.2 minute idles of
+// 2026-08-29 are what this is for: the gauge finding the adapter before
+// setting off is not a journey, and two of those per drive would bury the
+// list within a week.
+constexpr const char* kHideNs = "drivehide";
 
 void date_key(char* out, size_t n, uint32_t id) { snprintf(out, n, "%u", (unsigned)id); }
 
@@ -59,6 +69,17 @@ uint32_t lent_date(uint32_t id) {
     if (nvs_get_u32(h, key, &epoch) != ESP_OK) epoch = 0;
     nvs_close(h);
     return epoch;
+}
+
+bool is_hidden(uint32_t id) {
+    nvs_handle_t h;
+    if (nvs_open(kHideNs, NVS_READONLY, &h) != ESP_OK) return false;
+    char key[16];
+    date_key(key, sizeof key, id);
+    uint8_t hidden = 0;
+    if (nvs_get_u8(h, key, &hidden) != ESP_OK) hidden = 0;
+    nvs_close(h);
+    return hidden != 0;
 }
 
 SemaphoreHandle_t g_mutex = nullptr;
@@ -93,6 +114,7 @@ void relist(gauge::LogBuf* log) {
     for (Entry& e : next) e = Entry{};
     int count = 0;
     for (size_t i = 0; i < n && count < kMaxCached; ++i) {
+        if (is_hidden(found[i].id)) continue;
         next[count].info = found[i];
         // A drive that recorded with no clock can be given one afterwards.
         // Only ever fills a gap: a date the drive recorded for itself is the
@@ -232,6 +254,28 @@ bool drives_list_set_date(uint32_t id, uint32_t epoch_s) {
         xSemaphoreTake(g_mutex, portMAX_DELAY);
         for (int i = 0; i < g_count; ++i)
             if (g_cache[i].info.id == id) g_cache[i].info.epoch_s = epoch_s;
+        xSemaphoreGive(g_mutex);
+    }
+    return ok;
+}
+
+bool drives_list_hide(uint32_t id, bool hidden) {
+    nvs_handle_t h;
+    if (nvs_open(kHideNs, NVS_READWRITE, &h) != ESP_OK) return false;
+    char key[16];
+    date_key(key, sizeof key, id);
+    const bool ok = (hidden ? nvs_set_u8(h, key, 1) : nvs_erase_key(h, key)) == ESP_OK;
+    nvs_commit(h);
+    nvs_close(h);
+    if (ok) {
+        // Off the list now, not at the next five-second re-list.
+        xSemaphoreTake(g_mutex, portMAX_DELAY);
+        int out = 0;
+        for (int i = 0; i < g_count; ++i) {
+            if (hidden && g_cache[i].info.id == id) continue;
+            g_cache[out++] = g_cache[i];
+        }
+        g_count = out;
         xSemaphoreGive(g_mutex);
     }
     return ok;

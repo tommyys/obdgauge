@@ -273,6 +273,15 @@ void task(void*) {
             else if (drives_list_set_date(id, epoch)) printf("OK drive %u dated %u\n",
                                                             (unsigned)id, (unsigned)epoch);
             else printf("ERR could not store the date\n");
+        } else if (!strncmp(line, "HIDE ", 5) || !strncmp(line, "SHOW ", 5)) {
+            // HIDE <id> takes a drive off the DRIVES view; SHOW <id> puts it
+            // back. Neither touches the records: LIST and GET still see it.
+            const bool hide = line[0] == 'H';
+            const uint32_t id = (uint32_t)strtoul(line + 5, nullptr, 10);
+            if (!id) printf("ERR say '%s <id>'\n", hide ? "HIDE" : "SHOW");
+            else if (drives_list_hide(id, hide))
+                printf("OK drive %u %s\n", (unsigned)id, hide ? "hidden" : "shown");
+            else printf("ERR could not store it\n");
         } else if (!strcmp(line, "DRIVES")) {
             // What the Drives view is showing, in text. The panel cannot be
             // read from a tool call, so without this the only way to check the

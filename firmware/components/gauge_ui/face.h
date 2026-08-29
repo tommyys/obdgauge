@@ -49,7 +49,7 @@ constexpr int kRimShutterWidth = kRimWidth + 2;
 // the rest get a plain arc or nothing, which ui.cpp handles on its own.
 enum class FaceKind {
     Tacho,    // heat band, ticks per 1000 rpm, numbering, needle
-    Engine,   // four fixed temperature zones and a white mark
+    Engine,   // a cold-to-hot gradient rim and a white mark
     Power,    // ticks and kW numbering, fill arc, amber peak mark, needle
 };
 

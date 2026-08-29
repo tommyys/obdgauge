@@ -85,17 +85,25 @@ constexpr uint32_t kNumber    = 0xC9CCD4;
 constexpr uint32_t kNeedle    = 0xE1000A;
 constexpr uint32_t kHubFill   = 0x1A1C22;
 
-// The engine view's four temperature zones, copied from the simulator with
-// its alpha folded into the colour: LVGL would charge for a translucent arc
-// over the track, and the track is a known flat colour, so the blend is done
-// once here at build time instead of every repaint.
-struct TempZone { double lo, hi; uint32_t colour; double alpha; };
-constexpr TempZone kTempZones[] = {
-    { 40,  60, 0x4D96FF, 0.50},   // cold
-    { 60,  80, 0xFFC53D, 0.40},   // warming
-    { 80, 105, 0x35E06B, 0.55},   // ready
-    {105, 120, 0xFF3B30, 0.50},   // hot
-};
+// The engine rim's colour ramp: cold blue, through green where the engine is
+// happy, to red.
+//
+// This was four hard-edged zone arcs, blue/amber/green/red, and the seams
+// between them were the loudest thing on the view -- four colours meeting
+// rather than one temperature changing. The scale did not need four names; it
+// needed to look like heat.
+//
+// The alpha is folded in at build time, as the zones did it: LVGL would charge
+// for a translucent arc over the track on every repaint, and the track is a
+// known flat colour, so the blend is done once here.
+constexpr uint32_t kTempCold  = 0x4D96FF;
+constexpr uint32_t kTempReady = 0x35E06B;
+constexpr uint32_t kTempHot   = 0xFF3B30;
+// Where green sits on the 40-120 scale. 85 C is the middle of this engine's
+// normal running band -- today's drive sat at 89-92 -- so "in the green" still
+// means what it meant when green was a zone from 80 to 105.
+constexpr double   kTempReadyC = 85.0;
+constexpr double   kTempAlpha  = 0.55;
 constexpr uint32_t kEngMark   = 0xFFFFFF;
 
 // One channel of a two-colour mix.
@@ -156,11 +164,22 @@ void set_line(lv_obj_t* line, lv_point_precise_t* pts, lv_point_precise_t a,
     lv_obj_set_pos(line, static_cast<int32_t>(x0), static_cast<int32_t>(y0));
 }
 
-// The band, coloured once. Held here rather than on the object because there
-// is exactly one dial face and the draw callback has to be cheap.
+// A graded ring: 54 segments coloured once, painted as one object.
+//
+// There are two of these now. The tacho's runs cold-to-redline off the car's
+// own rev limit; the engine's runs cold-to-hot across the coolant scale, which
+// replaced four hard-edged zone arcs -- the same 54-segment machinery, so the
+// gradient costs what the zones cost and looks like one colour changing rather
+// than four colours meeting.
 struct BandSeg { int16_t a0, a1; uint32_t colour; };
-BandSeg g_band[kHeatBands];
-int     g_band_n = 0;
+struct Band {
+    BandSeg       seg[kHeatBands];
+    int           n  = 0;
+    uint16_t*     px = nullptr;      // its own PSRAM canvas, 377 KB
+    lv_draw_buf_t db{};
+};
+Band g_tacho_band;
+Band g_engine_band;
 // Diagnostic handle. The band is 54 arcs and the only heavy object the tacho
 // has that no other view does -- see face_set_band_enabled.
 lv_obj_t* g_band_obj = nullptr;
@@ -173,7 +192,7 @@ bool areas_overlap(const lv_area_t& a, const lv_area_t& b) {
 // on a board with PSRAM to spare (mk_band), and per redraw by band_draw_cb on
 // one without; the per-segment skip keeps that second case's small redraws
 // small.
-void paint_band(lv_layer_t* layer, int32_t cx, int32_t cy) {
+void paint_band(lv_layer_t* layer, int32_t cx, int32_t cy, const Band& b) {
     lv_draw_arc_dsc_t d;
     lv_draw_arc_dsc_init(&d);
     d.center.x = cx;
@@ -189,15 +208,15 @@ void paint_band(lv_layer_t* layer, int32_t cx, int32_t cy) {
     // segment gives the ring the same silhouette without touching the joins;
     // the rounding each of those two puts on its INNER end is painted over by
     // the neighbour that overlaps it.
-    for (int i = 0; i < g_band_n; ++i) {
-        d.rounded = (i == 0 || i == g_band_n - 1) ? 1 : 0;
+    for (int i = 0; i < b.n; ++i) {
+        d.rounded = (i == 0 || i == b.n - 1) ? 1 : 0;
         lv_area_t a;
-        lv_draw_arc_get_area(cx, cy, d.radius, g_band[i].a0, g_band[i].a1,
+        lv_draw_arc_get_area(cx, cy, d.radius, b.seg[i].a0, b.seg[i].a1,
                              d.width, d.rounded != 0, &a);
         if (!areas_overlap(a, layer->_clip_area)) continue;
-        d.color       = lv_color_hex(g_band[i].colour);
-        d.start_angle = g_band[i].a0;
-        d.end_angle   = g_band[i].a1;
+        d.color       = lv_color_hex(b.seg[i].colour);
+        d.start_angle = b.seg[i].a0;
+        d.end_angle   = b.seg[i].a1;
         lv_draw_arc(layer, &d);
     }
 }
@@ -217,8 +236,9 @@ void band_draw_cb(lv_event_t* e) {
     // redline, so a one-pixel offset uncovers one pixel of band along an edge
     // for the entire sweep. Where the band is hot that edge is red, which is
     // the red seen bleeding out of the grey rim.
+    const Band* b = static_cast<const Band*>(lv_event_get_user_data(e));
     paint_band(layer, coords.x1 + lv_area_get_width(&coords) / 2,
-               coords.y1 + lv_area_get_height(&coords) / 2);
+               coords.y1 + lv_area_get_height(&coords) / 2, *b);
 }
 
 // The band, painted ONCE into a buffer instead of on every redraw.
@@ -240,20 +260,17 @@ void band_draw_cb(lv_event_t* e) {
 // to blend with, and the alpha format would cost twice the memory and a slower
 // blit. If the allocation fails the old live-drawing callback is used instead
 // -- slow, but the gauge still comes up, which matters more.
-uint16_t*      g_band_px = nullptr;
-lv_draw_buf_t  g_band_db{};
-
-lv_obj_t* mk_band(lv_obj_t* root) {
+lv_obj_t* mk_band(lv_obj_t* root, Band& band, const char* who) {
     const size_t bytes = static_cast<size_t>(kRimPx) * kRimPx * 2;
-    if (!g_band_px)
-        g_band_px = static_cast<uint16_t*>(
+    if (!band.px)
+        band.px = static_cast<uint16_t*>(
             heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM));
 
-    if (g_band_px &&
-        lv_draw_buf_init(&g_band_db, kRimPx, kRimPx, LV_COLOR_FORMAT_RGB565,
-                         LV_STRIDE_AUTO, g_band_px, bytes) == LV_RESULT_OK) {
+    if (band.px &&
+        lv_draw_buf_init(&band.db, kRimPx, kRimPx, LV_COLOR_FORMAT_RGB565,
+                         LV_STRIDE_AUTO, band.px, bytes) == LV_RESULT_OK) {
         lv_obj_t* canvas = lv_canvas_create(root);
-        lv_canvas_set_draw_buf(canvas, &g_band_db);
+        lv_canvas_set_draw_buf(canvas, &band.db);
         lv_obj_center(canvas);
         lv_obj_remove_flag(canvas, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_flag(canvas, LV_OBJ_FLAG_SCROLLABLE);
@@ -264,22 +281,21 @@ lv_obj_t* mk_band(lv_obj_t* root) {
         // Canvas-local coordinates, and the centre lv_arc would use for an
         // object of this size: x1 + min(w,h)/2 with x1 = 0. The one-pixel
         // difference from the midpoint is load-bearing -- see band_draw_cb.
-        paint_band(&layer, kRimPx / 2, kRimPx / 2);
+        paint_band(&layer, kRimPx / 2, kRimPx / 2, band);
         lv_canvas_finish_layer(canvas, &layer);
-        printf("tacho: heat band painted once into %u B of PSRAM\n",
-               (unsigned)bytes);
+        printf("%s: band painted once into %u B of PSRAM\n", who, (unsigned)bytes);
         return canvas;
     }
 
-    printf("tacho: no PSRAM for the heat band -- drawing it live every frame\n");
-    lv_obj_t* band = lv_obj_create(root);
-    lv_obj_remove_style_all(band);
-    lv_obj_set_size(band, kRimPx, kRimPx);
-    lv_obj_center(band);
-    lv_obj_remove_flag(band, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(band, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(band, band_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
-    return band;
+    printf("%s: no PSRAM for the band -- drawing it live every frame\n", who);
+    lv_obj_t* obj = lv_obj_create(root);
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_size(obj, kRimPx, kRimPx);
+    lv_obj_center(obj);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(obj, band_draw_cb, LV_EVENT_DRAW_MAIN, &band);
+    return obj;
 }
 
 lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa,
@@ -317,7 +333,8 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
     // backdrop uses; rpm then only decides how much of it you can see. Nothing
     // ever changes colour, so nothing ever costs a repaint -- and what you read
     // at a glance, the dial getting hotter as you rev, is the same.
-    g_band_n = 0;
+    Band& band = g_tacho_band;
+    band.n = 0;
     for (int i = 0; i < kHeatBands; ++i) {
         const double f0 = static_cast<double>(i) / kHeatBands;
         const double f1 = static_cast<double>(i + 1) / kHeatBands;
@@ -326,8 +343,8 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
         // everything to lose -- the steps were the thing that looked wrong.
         const double h = gauge::glow_heat((f0 + f1) / 2 * id.rpm_max, id.rpm_red);
         const uint32_t hot = mix(gauge::kGlowEmber, gauge::kGlowRed, h);
-        g_band[g_band_n].colour = mix(kTrack, hot, h * gauge::kGlowMaxOpa);
-        g_band[g_band_n].a0 = static_cast<int16_t>(
+        band.seg[band.n].colour = mix(kTrack, hot, h * gauge::kGlowMaxOpa);
+        band.seg[band.n].a0 = static_cast<int16_t>(
             (static_cast<int>(kStartDeg) + i * kBandDeg) % 360);
         // One degree of overlap onto the next segment, because arcs that
         // merely abut leave a hairline of background between them the whole way
@@ -337,11 +354,11 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
         // that degree was never covered: a sliver of the hottest, reddest
         // segment showing past the end of the grey rim at bottom right.
         const bool last = (i == kHeatBands - 1);
-        g_band[g_band_n].a1 = static_cast<int16_t>(
+        band.seg[band.n].a1 = static_cast<int16_t>(
             (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + (last ? 0 : 1)) % 360);
-        ++g_band_n;
+        ++band.n;
     }
-    g_band_obj = mk_band(root);
+    g_band_obj = mk_band(root, band, "tacho");
 
     // Past the redline the band is unambiguous rather than merely hot, so the
     // top of the dial still reads as a limit and not just as more colour.
@@ -365,11 +382,34 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
 // the mark moves.
 void build_under_engine(lv_obj_t* root) {
     mk_rim_arc(root, static_cast<int>(kStartDeg), 45, kTrack, LV_OPA_COVER);
-    for (const TempZone& z : kTempZones) {
-        const int a0 = static_cast<int>(std::lround(range_angle(z.lo, kTempLo, kTempHi))) % 360;
-        const int a1 = static_cast<int>(std::lround(range_angle(z.hi, kTempLo, kTempHi))) % 360;
-        mk_rim_arc(root, a0, a1, mix(kTrack, z.colour, z.alpha), LV_OPA_COVER);
+    // The same 54-segment band the tacho uses, so the gradient costs one blit
+    // rather than 54 objects on the rim -- the lesson build_under_tacho paid
+    // for. Its own canvas: the two rings hold different colours and are on
+    // screen at different times.
+    Band& band = g_engine_band;
+    band.n = 0;
+    for (int i = 0; i < kHeatBands; ++i) {
+        // Read at the middle of the segment: the band never repaints, so
+        // stepping it would only make it look stepped.
+        const double f = (static_cast<double>(i) + 0.5) / kHeatBands;
+        const double c = kTempLo + f * (kTempHi - kTempLo);
+        const double mid = (kTempReadyC - kTempLo) / (kTempHi - kTempLo);
+        const uint32_t hue = (f <= mid)
+            ? mix(kTempCold, kTempReady, mid > 0 ? f / mid : 0.0)
+            : mix(kTempReady, kTempHot, (f - mid) / (1.0 - mid));
+        (void)c;
+        band.seg[band.n].colour = mix(kTrack, hue, kTempAlpha);
+        band.seg[band.n].a0 = static_cast<int16_t>(
+            (static_cast<int>(kStartDeg) + i * kBandDeg) % 360);
+        // One degree of overlap onto the next segment so no hairline of
+        // background shows through the seam -- but not on the last, which has
+        // no neighbour and would spill past the end of the sweep.
+        const bool last = (i == kHeatBands - 1);
+        band.seg[band.n].a1 = static_cast<int16_t>(
+            (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + (last ? 0 : 1)) % 360);
+        ++band.n;
     }
+    mk_band(root, band, "engine");
 }
 
 // Power's track only. The fill arc over it is the view's own lv_arc, built by
@@ -585,7 +625,7 @@ void update_tacho(Face& f, const Model& m) {
              polar(kNeedleR, kStartDeg + q));
 }
 
-// Engine: the mark tracks coolant across the four zones. It is never hidden --
+// Engine: the mark tracks coolant along the gradient. It is never hidden --
 // an instrument with nothing on it reads as broken, where a dim mark parked at
 // the cold end reads as waiting (SPEC.md section 4).
 void update_engine(Face& f, const Model& m) {

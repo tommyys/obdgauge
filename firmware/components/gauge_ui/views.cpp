@@ -77,14 +77,19 @@ const ViewSpec* view_table(int* count) {
             },
         },
         // 2 --- Engine (home). Coolant is the hero, not oil: section 2 says the
-        // car does not report oil temperature. The rim carries four fixed
-        // temperature zones, so "in the green" is readable without the number.
+        // car does not report oil temperature. The rim is a cold-to-hot
+        // gradient, so "in the green" is readable without the number.
+        //
+        // This view absorbed THERMALS on 2026-08-29. The two overlapped on
+        // coolant and intake, and a separate screen for three temperatures --
+        // one of which was already the hero here -- was a swipe to see a number
+        // that was one swipe away. Catalyst moved in as the third cell.
         {
             "ENGINE",
             Instrument::Engine,
-            Layout::Rows,
-            {"coolant,volts,ctrl_volt,intake", "NO ENGINE DATA",
-             "this car reports neither coolant nor voltage"},
+            Layout::Grid,
+            {"coolant,volts,ctrl_volt,intake,cat_b1s1,catalyst", "NO ENGINE DATA",
+             "this car reports no temperatures and no voltage"},
             [](const Model& m) { return chan(m, "coolant", "%.0f\xC2\xB0"); },
             "COOLANT \xE2\x80\xA2 \xC2\xB0" "C",
             [](const Model& m, uint32_t* colour) -> std::string {
@@ -96,9 +101,12 @@ const ViewSpec* view_table(int* count) {
             },
             { nullptr, nullptr, nullptr, nullptr },
             {
-                {"BATT", [](const Model& m) { return num(volts(m), "%.1fv"); }},
-                {"IAT",  [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
-                {nullptr, nullptr},
+                {"INTAKE AIR", [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
+                {"CATALYST",   [](const Model& m) {
+                    auto c = m.st.get("catalyst");
+                    if (!c) c = m.st.get("cat_b1s1");
+                    return num(c, "%.0f\xC2\xB0"); }},
+                {"BATT",       [](const Model& m) { return num(volts(m), "%.1fv"); }},
                 {nullptr, nullptr},
             },
         },
@@ -213,32 +221,7 @@ const ViewSpec* view_table(int* count) {
                 {nullptr, nullptr},
             },
         },
-        // 7 --- Thermals. Three real temperatures and no hero: the view IS the
-        // comparison between them, so promoting one would misrepresent it.
-        // Fuel rail temperature was dropped -- across every capture it returned
-        // 2 distinct values in 375 samples, and there is no standard OBD PID
-        // for rail TEMPERATURE anyway, only pressures (section 6).
-        {
-            "THERMALS",
-            Instrument::None,
-            Layout::Grid,
-            {"coolant,intake,cat_b1s1,catalyst", "NO TEMP SENSORS",
-             "this car reports none of the temperature channels"},
-            nullptr,
-            nullptr,
-            nullptr,
-            { nullptr, nullptr, nullptr, nullptr },
-            {
-                {"COOLANT",    [](const Model& m) { return chan(m, "coolant", "%.0f\xC2\xB0"); }},
-                {"INTAKE AIR", [](const Model& m) { return chan(m, "intake", "%.0f\xC2\xB0"); }},
-                {"CATALYST",   [](const Model& m) {
-                    auto c = m.st.get("catalyst");
-                    if (!c) c = m.st.get("cat_b1s1");
-                    return num(c, "%.0f\xC2\xB0"); }},
-                {nullptr, nullptr},
-            },
-        },
-        // 8 --- Electrical. A bar rather than a rim arc: charging is read as a
+        // 7 --- Electrical. A bar rather than a rim arc: charging is read as a
         // position between "flat" and "overcharging", which a line with two
         // ends says better than a ring that meets itself.
         {
@@ -260,7 +243,7 @@ const ViewSpec* view_table(int* count) {
             { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
         },
 
-        // 9 --- Drives. The one view that shows the past rather than the
+        // 8 --- Drives. The one view that shows the past rather than the
         // present: what the recorder wrote to flash, read back with no Mac in
         // the car. It has no hero, no dial and no rows, because none of those
         // come from the Model -- see Layout::Drives.

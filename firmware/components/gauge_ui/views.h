@@ -28,7 +28,7 @@ enum class Instrument {
     None,        // no dial at all -- ECONOMY, TRIP, THERMALS
     RimArc,      // plain progress arc on the 434 px rim
     TachoDial,   // heat band, ticks and numbering per 1000 rpm, needle
-    Engine,      // four fixed temperature zones and a white mark, no fill
+    Engine,      // a cold-to-hot gradient rim and a white mark, no fill
     Power,       // ticks and kW numbering, fill arc, amber peak mark, needle
     ScoreRing,   // a rim arc like the tacho's, but coloured by its own value
     Bar,         // horizontal gradient bar with a sliding marker

@@ -23,7 +23,6 @@ std::atomic<bool>  g_ready{false};
 std::set<std::string> g_keys;
 std::string        g_vin;
 char               g_status[64] = "idle";
-Phase              g_phase = Phase::Idle;
 char               g_hint[32] = "vlinker";
 
 void set_status(const char* fmt, ...) {
@@ -52,11 +51,9 @@ void task(void*) {
     double backoff = 1.0;
     for (;;) {
         gauge_platform::BleTransport bt;
-        g_phase = Phase::Scanning;
         set_status("scanning for '%s'", g_hint);
         if (bt.connect(g_hint, 20000)) {
             gauge::Elm327 elm(bt);
-            g_phase = Phase::Connecting;
             set_status("connected to %s, handshaking", bt.peer_name());
             if (elm.init()) {
                 g_vin = elm.read_vin();
@@ -70,7 +67,6 @@ void task(void*) {
                 for (int attempt = 1; attempt <= 5 && bt.connected(); ++attempt) {
                     supported = elm.discover();
                     if (!supported.empty()) break;
-                    g_phase = Phase::Waking;
                     set_status("no PIDs yet (try %d/5) -- is the ignition on?",
                                attempt);
                     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -79,7 +75,6 @@ void task(void*) {
                 keys.insert("volts");
                 g_keys = keys;
                 g_ready = true;
-                g_phase = Phase::Live;
                 set_status("live: %d PIDs, vin %s", (int)supported.size(),
                            g_vin.empty() ? "n/a" : g_vin.c_str());
                 // The car's actual capability, once, in full. Task 14 step 4
@@ -111,7 +106,6 @@ void task(void*) {
                         // BLE still claims connected but the adapter has
                         // stopped answering -- a state it does get into. Only a
                         // fresh link clears it, so drop out and reconnect.
-                        g_phase = Phase::Lost;
                         set_status("adapter stopped answering -- resetting");
                         break;
                     }
@@ -122,7 +116,6 @@ void task(void*) {
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
             } else {
-                g_phase = Phase::Lost;
                 set_status("'%s' would not handshake", bt.peer_name());
             }
             // Always hand the adapter back before retrying. See
@@ -157,20 +150,6 @@ bool next(Sample* out) {
 
 const std::set<std::string>& keys() { return g_keys; }
 const std::string& vin() { return g_vin; }
-Phase phase() { return g_phase; }
-
-const char* phase_text() {
-    switch (g_phase) {
-        case Phase::Idle:       return "starting up";
-        case Phase::Scanning:   return "looking for adapter";
-        case Phase::Connecting: return "connecting";
-        case Phase::Waking:     return "waiting for ignition";
-        case Phase::Live:       return "";        // the car's name takes over
-        case Phase::Lost:       return "lost the adapter";
-    }
-    return "";
-}
-
 const char* status() { return g_status; }
 
 }  // namespace live

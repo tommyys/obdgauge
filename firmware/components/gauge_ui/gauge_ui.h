@@ -43,11 +43,12 @@ void update(const Model& m);
 // switching worked only sometimes.
 const char* slide_note();
 
-// What the line under the views says. Until the car has answered, this is the
-// link's own state -- looking for the adapter, connecting, waiting for the
-// ignition. Passing null puts the car's name back, which is what the gauge
-// shows once there is a car to name.
-void set_banner_note(const char* note);
+// Whether the gauge is still looking for the car. While it is, the line under
+// the views is a small sliding bar rather than the car's name: the gauge does
+// not know what it is plugged into yet, and a bar that moves says "still
+// looking" without a sentence to read. Once the car answers, the bar goes and
+// the make and model take its place.
+void set_scanning(bool scanning);
 
 // Claims the slide's DMA band buffer now rather than on the first swipe.
 // Call it at boot, right after the radio, and before the display starts.

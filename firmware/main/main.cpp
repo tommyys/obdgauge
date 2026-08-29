@@ -486,10 +486,10 @@ extern "C" void app_main(void) {
                            v("throttle"), v("load"), v("volts"), v("fuel_rate"));
                 }
                 bsp_display_lock(-1);
-                // The banner says where the link has got to, and hands over to
-                // the car's name once there is a car. The frame rate stays in
+                // A sliding bar while the gauge is still looking for the car,
+                // the car's name once it has found it. The frame rate stays in
                 // this log line and is no longer written on the glass.
-                gauge_ui::set_banner_note(live_mode ? nullptr : live::phase_text());
+                gauge_ui::set_scanning(!live_mode);
                 bsp_display_unlock();
             }
         }

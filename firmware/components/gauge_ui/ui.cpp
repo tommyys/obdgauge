@@ -126,6 +126,11 @@ lv_obj_t* g_banner = nullptr;
 lv_obj_t* g_dots[16] = {nullptr};
 lv_obj_t* g_dot_active = nullptr;
 char g_banner_base[40] = {0};
+// The "still looking for the car" bar, and the block that slides along it.
+lv_obj_t* g_scan       = nullptr;
+lv_obj_t* g_scan_block = nullptr;
+lv_anim_t g_scan_anim{};
+bool      g_scanning   = false;
 bool g_dials_on = true;
 int  g_dot_x0 = 0;
 int  g_dot_spacing = 18;
@@ -559,6 +564,40 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_label_set_text(g_banner, "");
     lv_obj_align(g_banner, LV_ALIGN_CENTER, 0, 178);
 
+    // The scanning bar sits exactly where the car's name will: one line, one
+    // job, and no layout shift when the car finally answers.
+    //
+    // It is 140x4 with a 44 px block sliding inside it. LVGL animates the
+    // block from its own timer, so nothing in the UI loop touches this -- and
+    // the repaint is a 140x4 strip rather than anything on the dial.
+    g_scan = lv_obj_create(parent);
+    lv_obj_remove_style_all(g_scan);
+    lv_obj_set_size(g_scan, 140, 4);
+    lv_obj_align(g_scan, LV_ALIGN_CENTER, 0, 182);
+    lv_obj_remove_flag(g_scan, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(g_scan, 2, 0);
+    lv_obj_set_style_bg_color(g_scan, lv_color_hex(0x24262C), 0);
+    lv_obj_set_style_bg_opa(g_scan, LV_OPA_COVER, 0);
+
+    g_scan_block = lv_obj_create(g_scan);
+    lv_obj_remove_style_all(g_scan_block);
+    lv_obj_set_size(g_scan_block, 44, 4);
+    lv_obj_set_style_radius(g_scan_block, 2, 0);
+    lv_obj_set_style_bg_color(g_scan_block, lv_color_hex(0xFF9500), 0);
+    lv_obj_set_style_bg_opa(g_scan_block, LV_OPA_COVER, 0);
+    lv_obj_set_pos(g_scan_block, 0, 0);
+
+    lv_anim_init(&g_scan_anim);
+    lv_anim_set_var(&g_scan_anim, g_scan_block);
+    lv_anim_set_exec_cb(&g_scan_anim, [](void* obj, int32_t x) {
+        lv_obj_set_x(static_cast<lv_obj_t*>(obj), x);
+    });
+    lv_anim_set_values(&g_scan_anim, 0, 140 - 44);
+    lv_anim_set_duration(&g_scan_anim, 900);
+    lv_anim_set_playback_duration(&g_scan_anim, 900);
+    lv_anim_set_repeat_count(&g_scan_anim, LV_ANIM_REPEAT_INFINITE);
+    lv_obj_add_flag(g_scan, LV_OBJ_FLAG_HIDDEN);
+
     // Last, because it measures the screen and wants the PSRAM the boot clip
     // has just given back.
     slide_init(parent);
@@ -741,12 +780,17 @@ void set_dial_enabled(bool on) {
     }
 }
 
-void set_banner_note(const char* note) {
-    if (!g_banner) return;
-    // The frame rate used to live here, appended to the car's name. It was a
-    // developer's number on a driver's gauge; it is still in the serial log,
-    // where it is read by whoever is measuring.
-    set_text_if_changed(g_banner, note && *note ? note : g_banner_base);
+void set_scanning(bool scanning) {
+    if (!g_banner || !g_scan) return;
+    if (scanning == g_scanning) return;       // a flag write is a repaint
+    g_scanning = scanning;
+    // The frame rate used to live on this line, appended to the car's name. It
+    // was a developer's number on a driver's gauge; it is still in the serial
+    // log, where whoever is measuring can read it.
+    set_text_if_changed(g_banner, scanning ? "" : g_banner_base);
+    show_obj(g_scan, scanning);
+    if (scanning) lv_anim_start(&g_scan_anim);
+    else          lv_anim_delete(g_scan_block, nullptr);
 }
 
 int gesture_count() { return g_gestures; }

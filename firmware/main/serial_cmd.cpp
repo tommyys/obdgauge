@@ -14,6 +14,7 @@
 #include "bsp/esp-bsp.h"
 #include "crc32.h"
 #include "drive_log.h"
+#include "drives_list.h"
 #include "gauge_ui.h"
 #include "imu.h"
 #include "logbuf.h"
@@ -260,6 +261,11 @@ void task(void*) {
         if (!strncmp(line, "TIME ", 5)) {
             drive_log_set_epoch((uint32_t)strtoul(line + 5, nullptr, 10));
             printf("OK clock set\n");
+        } else if (!strcmp(line, "DRIVES")) {
+            // What the Drives view is showing, in text. The panel cannot be
+            // read from a tool call, so without this the only way to check the
+            // view is to be in front of the gauge.
+            drives_list_dump();
         } else if (!strcmp(line, "I2C")) {
             cmd_i2c();
         } else if (!strcmp(line, "STATS")) {

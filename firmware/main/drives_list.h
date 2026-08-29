@@ -8,6 +8,10 @@ extern "C" {
 
 void drives_list_init(void);
 
+// Prints the view's own cache -- one line per row it would draw, then OK.
+// The console's `DRIVES` command.
+void drives_list_dump(void);
+
 #ifdef __cplusplus
 }
 #endif

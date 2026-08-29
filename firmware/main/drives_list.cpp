@@ -86,8 +86,13 @@ void relist(gauge::LogBuf* log) {
 
     xSemaphoreTake(g_mutex, portMAX_DELAY);
     memcpy(g_cache, next, sizeof g_cache);
+    const bool changed = g_count != count;
     g_count = count;
     xSemaphoreGive(g_mutex);
+    // Only when it moves: this runs every five seconds for the life of the
+    // gauge. list() reporting fewer drives than the ring holds is the failure
+    // that would leave the view empty with the records still on flash.
+    if (changed) flight_log("drives: list has %d of %u held", count, (unsigned)n);
 }
 
 void scan_task(void*) {
@@ -185,6 +190,23 @@ const char* src_empty() { return g_empty; }
 const gauge_ui::DrivesSource kSource = { src_count, src_row, src_empty };
 
 }  // namespace
+
+void drives_list_dump(void) {
+    if (!g_mutex) { printf("ERR drives view not started\n"); return; }
+    xSemaphoreTake(g_mutex, portMAX_DELAY);
+    const int n = g_count;
+    for (int i = 0; i < n; ++i) {
+        const Entry& e = g_cache[i];
+        printf("ROW %d id=%u epoch=%u complete=%d table=%u ready=%d "
+               "km=%.2f rpm=%.0f kph=%.0f ms=%u\n",
+               i, (unsigned)e.info.id, (unsigned)e.info.epoch_s, e.info.complete ? 1 : 0,
+               (unsigned)e.info.table_version, e.ready ? 1 : 0,
+               e.stats.distance_km, e.stats.peak_rpm, e.stats.peak_kph,
+               (unsigned)(e.ready ? e.stats.duration_ms : e.info.duration_ms));
+    }
+    xSemaphoreGive(g_mutex);
+    printf("OK %d rows\n", n);
+}
 
 void drives_list_init(void) {
     g_mutex = xSemaphoreCreateMutex();

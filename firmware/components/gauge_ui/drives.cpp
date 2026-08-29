@@ -83,7 +83,13 @@ void card_clicked(lv_event_t*) { g_open = -1; }
 void drives_set_source(const DrivesSource* src) { g_src = src; }
 
 void drives_build(lv_obj_t* parent) {
-    const int w = lv_obj_get_width(parent);
+    // The panel's width, not the parent's. drives_build runs while the
+    // carousel is still being built, before LVGL has laid anything out, so
+    // lv_obj_get_width(parent) answers 0 -- and every row then came out
+    // 120 pixels narrower than nothing, which draws as an empty screen with
+    // the right text in it. The other views never hit this because they place
+    // everything by alignment rather than by measured size.
+    const int w = (int)lv_display_get_horizontal_resolution(lv_display_get_default());
 
     // The one place in this firmware that scrolls. ui.cpp takes
     // LV_OBJ_FLAG_SCROLLABLE off everything on purpose: when LVGL decides a
@@ -152,6 +158,7 @@ void drives_update() {
     if (!g_list) return;
 
     const int n = g_src ? g_src->count() : 0;
+
 
     // The card, when one is open. Its row may have rolled off the ring while
     // it was open -- the list is the authority, so fall back to it rather than

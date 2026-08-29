@@ -67,6 +67,11 @@ struct ViewSpec {
     std::string (*state_word)(const Model&, uint32_t* colour);
     Dial dial;
     Row  rows[4];
+    // What this view is called in the log, for the views that draw no title.
+    // Without it current_view_name() answered "TACHO" for every title-less
+    // view, so POWER appeared in the log as a second tacho -- and the fps
+    // figures for the two were being read off the same name.
+    const char* log_name = nullptr;
 };
 
 const ViewSpec* view_table(int* count);

@@ -663,10 +663,12 @@ int view_count() { return g_count; }
 int current_view() { return g_cur; }
 const char* current_view_name() {
     if (g_cur < 0 || g_cur >= g_count) return "";
-    // The tacho has no title of its own, so name it for the log rather than
-    // returning an empty string that reads as a bug.
-    const char* t = g_specs[g_cur].title;
-    return t ? t : "TACHO";
+    // A view that draws no title still has a name for the log -- returning
+    // an empty string reads as a bug, and hard-coding "TACHO" made every
+    // title-less view answer to the tacho's name.
+    const ViewSpec& s = g_specs[g_cur];
+    if (s.title) return s.title;
+    return s.log_name ? s.log_name : "?";
 }
 
 }  // namespace gauge_ui

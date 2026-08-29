@@ -38,6 +38,10 @@ constexpr int kRowStep  =   24;  // Rows: line to line
 constexpr uint32_t kVerdictGrey = 0x5A5F6A;
 // The page dots' row, below the views and above the banner.
 constexpr int kDotY = 205;
+// One length of the scanning bar. 1.6 s, not the 0.9 s it started at: this
+// runs for as long as the gauge is looking for the car, and a fast shuttle
+// reads as urgency where there is none to report.
+constexpr int kScanTravelMs = 1600;
 // How fast it gets to its verdict. 1.2 s of time constant: slow enough to read
 // as a fade rather than a switch, quick enough that a colour is not still
 // arriving after the reading behind it has moved on.
@@ -130,6 +134,7 @@ char g_banner_base[40] = {0};
 lv_obj_t* g_scan       = nullptr;
 lv_obj_t* g_scan_block = nullptr;
 lv_anim_t g_scan_anim{};
+lv_anim_t g_scan_fade{};
 bool      g_scanning   = false;
 bool g_dials_on = true;
 int  g_dot_x0 = 0;
@@ -583,19 +588,40 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_obj_remove_style_all(g_scan_block);
     lv_obj_set_size(g_scan_block, 44, 4);
     lv_obj_set_style_radius(g_scan_block, 2, 0);
-    lv_obj_set_style_bg_color(g_scan_block, lv_color_hex(0xFF9500), 0);
+    lv_obj_set_style_bg_color(g_scan_block, lv_color_hex(0x35E06B), 0);
     lv_obj_set_style_bg_opa(g_scan_block, LV_OPA_COVER, 0);
     lv_obj_set_pos(g_scan_block, 0, 0);
 
+    // Two animations on the one block: it travels, and it fades as it goes.
+    //
+    // The fade is opacity rather than a gradient across the block. This build
+    // has LV_GRADIENT_MAX_STOPS at 2, so a block that fades out at BOTH ends
+    // would need three stops and a rebuild of the whole gradient path -- and
+    // an opacity that swells in the middle of the travel and thins at the
+    // turns reads as the same thing for none of that cost.
     lv_anim_init(&g_scan_anim);
     lv_anim_set_var(&g_scan_anim, g_scan_block);
     lv_anim_set_exec_cb(&g_scan_anim, [](void* obj, int32_t x) {
         lv_obj_set_x(static_cast<lv_obj_t*>(obj), x);
     });
     lv_anim_set_values(&g_scan_anim, 0, 140 - 44);
-    lv_anim_set_duration(&g_scan_anim, 900);
-    lv_anim_set_playback_duration(&g_scan_anim, 900);
+    lv_anim_set_duration(&g_scan_anim, kScanTravelMs);
+    lv_anim_set_playback_duration(&g_scan_anim, kScanTravelMs);
     lv_anim_set_repeat_count(&g_scan_anim, LV_ANIM_REPEAT_INFINITE);
+
+    lv_anim_init(&g_scan_fade);
+    lv_anim_set_var(&g_scan_fade, g_scan_block);
+    lv_anim_set_exec_cb(&g_scan_fade, [](void* obj, int32_t opa) {
+        lv_obj_set_style_bg_opa(static_cast<lv_obj_t*>(obj),
+                                static_cast<lv_opa_t>(opa), 0);
+    });
+    lv_anim_set_values(&g_scan_fade, 40, LV_OPA_COVER);
+    // Half the travel each way, so the block is brightest mid-sweep and
+    // faintest at the two turns, where it changes direction.
+    lv_anim_set_duration(&g_scan_fade, kScanTravelMs / 2);
+    lv_anim_set_playback_duration(&g_scan_fade, kScanTravelMs / 2);
+    lv_anim_set_repeat_count(&g_scan_fade, LV_ANIM_REPEAT_INFINITE);
+
     lv_obj_add_flag(g_scan, LV_OBJ_FLAG_HIDDEN);
 
     // Last, because it measures the screen and wants the PSRAM the boot clip
@@ -789,8 +815,8 @@ void set_scanning(bool scanning) {
     // log, where whoever is measuring can read it.
     set_text_if_changed(g_banner, scanning ? "" : g_banner_base);
     show_obj(g_scan, scanning);
-    if (scanning) lv_anim_start(&g_scan_anim);
-    else          lv_anim_delete(g_scan_block, nullptr);
+    if (scanning) { lv_anim_start(&g_scan_anim); lv_anim_start(&g_scan_fade); }
+    else            lv_anim_delete(g_scan_block, nullptr);
 }
 
 int gesture_count() { return g_gestures; }

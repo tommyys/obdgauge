@@ -78,9 +78,11 @@ def compare(label, path, t):
     for field in ('dist_km', 'fuel_l', 'elapsed_s', 'moving_s'):
         near('%s: trip.%s' % (label, field),
              getattr(got.trip, field), getattr(ref.trip, field), tol=1e-9)
-    for field in ('total', 'smooth', 'econ', 'calm', 'harsh'):
+    for field in ('total', 'throttle', 'braking', 'cornering', 'care',
+                  'intensity', 'nice_s', 'spirited_s'):
         near('%s: score.%s' % (label, field),
              getattr(got.score, field), getattr(ref.score, field), tol=1e-9)
+    check('%s: score.pole' % label, got.score.pole, ref.score.pole)
     # Every high-water mark, not just rpm. A seek that skipped the frame a
     # peak was set on would leave the summary card quoting a milder drive than
     # the one on disk, and nothing else here would notice: peaks are maxima,

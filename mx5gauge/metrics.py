@@ -3,24 +3,89 @@
 Pure Python over a stream of samples — no I/O, so it is testable on the host
 and ports directly to the firmware.
 """
+import math
+
+from . import gforce as _gforce
 
 # Fuel price (RM per litre) used for the cost readouts. RM1.99 is the BUDI95
 # subsidised RON95 pump price from 30 September 2025; RM2.05 was the old
 # blanket-subsidy price this started life with.
 FUEL_PRICE_RM = 1.99
 
-# Driving-score tuning. All weights sum to 1.0.
-W_SMOOTH = 0.40
-W_ECON = 0.30
-W_CALM = 0.30
+# ---------------------------------------------------------------------------
+# Driving-score tuning (SPEC.md B3, decided 2026-08-29).
+#
+# The score answers one question: *how tidily did you do whatever you were
+# doing?* It deliberately does not answer "were you driving gently?", because
+# the old score did, and that made a good backroad drive look like bad driving.
+#
+# Two poles, one formula. Intensity -- built from revs, g and throttle -- picks
+# which pole is live, and the pole picks the bands. The weights never change,
+# only the thresholds, so there is one code path and one story.
+#
+# Fuel economy is not in here at all any more. It is a readout on the Trip
+# view. A score that marks you down for enjoying the car is the thing B3 was
+# opened to stop.
+# ---------------------------------------------------------------------------
 
-# Efficient cruising band for the Skyactiv-G 2.0 (rpm)
+W_THROTTLE = 0.30
+W_BRAKING = 0.30
+W_CORNERING = 0.25
+W_CARE = 0.15
+
+# Efficient cruising band for the Skyactiv-G 2.0 (rpm). Still used by the
+# Fuel economy view's readout; no longer part of the score.
 ECO_RPM_LO = 1200
 ECO_RPM_HI = 2600
 
-# Harsh-event thresholds (m/s^2). ~2.5 m/s^2 is a firm but normal stop.
-HARSH_ACCEL = 2.5
-HARSH_BRAKE = -3.0
+# --- the poles -------------------------------------------------------------
+# The gap between the two is deliberate. A single threshold would flutter every
+# time a number sat on it; a drive has to mean it to change pole.
+NICE_BELOW = 0.35
+SPIRITED_ABOVE = 0.55
+# ...and it has to mean it for this long. Same latch idea as the mood unit.
+POLE_HOLD_S = 5.0
+# Intensity is a rolling read of the last half-minute, not an instant one.
+# The dot on the g view is what you just did; the pole is how you have been
+# driving. They are supposed to move at different speeds.
+INTENSITY_TAU_S = 30.0
+
+# Fractions of redline that map intensity 0 -> 1 on the rev axis.
+RPM_CALM_FRAC = 0.30
+RPM_HOT_FRAC = 0.85
+# Horizontal g that counts as fully committed.
+G_HOT = 0.45
+# Throttle opening, in %, from "cruising" to "meaning it".
+THR_CALM = 25.0
+THR_HOT = 70.0
+
+# --- the bands -------------------------------------------------------------
+# Throttle movement, %/s, at which the demerit is full.
+THR_RATE_NICE = 12.0
+THR_RATE_SPIRITED = 40.0
+# A change of throttle direction bigger than this counts as a reversal:
+# on, off, on again. Cheap in a Nice segment, expensive in a Spirited one,
+# where it means you did not know what you wanted the car to do.
+THR_REVERSAL_PCT = 4.0
+THR_REVERSAL_COST_S = 0.5
+
+# Braking. Nice scores the size of it; Spirited scores how fast it arrives and
+# leaves, because a good hard stop ramps in and bleeds off.
+BRAKE_G_NICE = 0.25
+BRAKE_JERK_SPIRITED = 1.5        # g per second
+
+# Cornering. Same split: Nice scores the g, Spirited scores the sawing.
+CORNER_G_NICE = 0.30
+CORNER_JERK_SPIRITED = 1.2       # g per second
+CORNER_ACTIVE_G = 0.20           # below this there is no corner to spoil
+
+# Mechanical care. This is what replaced economy as the guard on the Spirited
+# pole: revving a cold engine is the one thing that is wrong however tidily
+# you do it.
+CARE_COLD_C = 80.0
+CARE_COLD_RPM = 3500.0
+CARE_COLD_RPM_FULL = 5500.0
+CARE_HOT_C = 105.0
 
 
 class Trip(object):
@@ -112,139 +177,259 @@ def km_per_l(l_per_100km):
 
 
 class DrivingScore(object):
-    """0-100 'am I driving well' score from three sub-scores.
+    """0-100 "how tidily am I driving" from four sub-scores.
 
-    smooth : penalises jerky throttle use
-    econ   : rewards efficient fuel use and time in the efficient rpm band
-    calm   : penalises harsh acceleration / braking events
+    throttle  : jerky or indecisive use of the right pedal
+    braking   : how hard you stop (Nice) or how abruptly (Spirited)
+    cornering : how much lateral g (Nice) or how much sawing (Spirited)
+    care      : revving the engine before it is warm, or cooking it
+
+    **Everything is measured in demerit-seconds.** Each sample contributes
+    `demerit * dt`, where demerit runs 0 (faultless) to 1 (as bad as the band
+    goes), and an event like a throttle reversal contributes a fixed number of
+    seconds outright. A sub-score is then `100 * (1 - demerit_s / observed_s)`.
+    One currency for rates and events alike means the maths is sample-rate
+    independent by construction, which is the bug this class was rewritten
+    around once already (see the note on per-channel clocks below) and the
+    reason the C++ port can be a line-for-line mirror.
 
     **Every rate here is measured against its own channel's clock.** The gauge
     feeds this on every sample of *any* channel, carrying the last-known value
     of the rest, so `t` advances far faster than any single channel updates: on
     a real 35-channel drive samples arrive every 0.077 s while speed refreshes
-    every 0.330 s. Dividing a speed change by the time since the last *sample*
-    rather than the last *speed* reading inflated acceleration roughly 4x and
-    turned every 1 km/h wiggle into a harsh event — 2285 of them on a drive
-    that really contained 4. It also made the score depend on how many channels
-    a car happens to report, so the same driving scored differently in
-    different cars. Rates are now per-channel and sample-rate independent.
+    every 0.330 s. Dividing a change by the time since the last *sample* rather
+    than the last *reading* inflated acceleration roughly 4x and turned every
+    1 km/h wiggle into a harsh event -- 2285 of them on a drive that really
+    contained 4. It also made the score depend on how many channels a car
+    happens to report, so the same driving scored differently in different
+    cars.
+
+    **Missing channel means missing sub-score**, not a zero. A car with no
+    coolant channel has no `care` score and the other three renormalise. This
+    is the same honesty rule as `gauge::view_available`: a convincing number
+    for data we do not have is worse than an em-dash.
     """
 
-    def __init__(self):
-        self._last_t = None          # any sample; used to integrate time
+    def __init__(self, gforce=None):
+        self.g = gforce if gforce is not None else _gforce.GForce()
+        self._last_t = None
         self._thr = None             # last throttle value and when it was seen
         self._thr_t = None
-        self._spd = None             # last speed value and when it was seen
-        self._spd_t = None
-        self.thr_travel = 0.0        # total throttle movement, %
-        self.thr_seconds = 0.0       # seconds of throttle observation
-        self.eco_s = 0.0
+        self._thr_dir = 0            # +1 opening, -1 closing, 0 unknown
+        self._thr_pivot = None       # where the pedal last changed direction
+        self._lon = None             # last longitudinal g and when
+        self._lon_t = None
+        self._lat = None
+        self._lat_t = None
+        # observed time and demerit-seconds, per sub-score
+        self.thr_s = 0.0
+        self.thr_bad = 0.0
+        self.brake_s = 0.0
+        self.brake_bad = 0.0
+        self.corner_s = 0.0
+        self.corner_bad = 0.0
+        self.care_s = 0.0
+        self.care_bad = 0.0
+        # the pole
+        self.intensity = 0.0
+        self.pole = 'NICE'
+        self._cand = 'NICE'
+        self._cand_since = None
+        self.nice_s = 0.0
+        self.spirited_s = 0.0
         self.rev_s = 0.0
-        self.econ_sum = 0.0          # economy weighted by time, not by sample
-        self.econ_s = 0.0
-        self.harsh = 0
+        self.rpm_red = 7000.0        # overwritten from the car profile
         self.events = []
 
-    def _rebase(self, t, speed_kph, throttle_pct):
+    # -- ingest --------------------------------------------------------------
+    def imu(self, t, ax, ay, az):
+        """Feed one accelerometer sample. Separate from `update` because the
+        IMU is read on its own clock -- on the board far faster than the OBD
+        channels, which is the whole point of using it for jerk."""
+        self.g.update(t, ax, ay, az)
+
+    def _rebase(self, t, throttle_pct):
         """Drop the derivative baselines. Used at the start and across gaps, so
         a pause in the recording is never read as violent driving."""
         self._last_t = t
         self._thr, self._thr_t = throttle_pct, t
-        self._spd, self._spd_t = speed_kph, t
+        self._thr_pivot = throttle_pct
+        self._thr_dir = 0
+        self._lon = self._lat = None
+        self._lon_t = self._lat_t = None
 
-    def update(self, t, speed_kph, rpm, throttle_pct, fuel_rate_lph):
+    def update(self, t, speed_kph, rpm, throttle_pct, fuel_rate_lph,
+               coolant_c=None):
+        self.g.speed(t, speed_kph)
         if self._last_t is None:
-            self._rebase(t, speed_kph, throttle_pct)
+            self._rebase(t, throttle_pct)
             return
         dt = t - self._last_t
         if dt == 0:
-            # Two channels sampled in the same millisecond — a tie, not a gap.
+            # Two channels sampled in the same millisecond -- a tie, not a gap.
             # Timestamps are written to 3 decimals and a 35-channel sweep fills
             # those easily. Rebasing here was the real defect: it dragged the
             # per-channel baseline timestamps forward while their values stayed
-            # put, so the next genuine speed change was divided by a fraction of
-            # the time it actually took. A 15->13 km/h lift became -4.6 m/s².
+            # put, so the next genuine change was divided by a fraction of the
+            # time it actually took.
             return
         if dt < 0 or dt > 5.0:
-            self._rebase(t, speed_kph, throttle_pct)
+            self._rebase(t, throttle_pct)
             return
         self._last_t = t
-
-        # Throttle movement per second. Total travel over total time rather than
-        # an average of per-sample jerk: holding a steady throttle correctly
-        # contributes time but no travel, whatever the sample rate.
-        if throttle_pct is not None:
-            if self._thr is None:
-                self._thr, self._thr_t = throttle_pct, t
-            else:
-                d = t - self._thr_t
-                if d > 0:
-                    self.thr_travel += abs(throttle_pct - self._thr)
-                    self.thr_seconds += d
-                    self._thr, self._thr_t = throttle_pct, t
-
-        # time in the efficient rev band — integrating time, so the every-sample
-        # dt is the right one to use here
         if rpm is not None and rpm > 400:
-            if ECO_RPM_LO <= rpm <= ECO_RPM_HI:
-                self.eco_s += dt
             self.rev_s += dt
 
-        # economy, weighted by time so a densely-sampled channel cannot
-        # outvote a sparse one
-        ie = instant_econ(speed_kph, fuel_rate_lph)
-        if ie is not None and ie < 40:
-            self.econ_sum += ie * dt
-            self.econ_s += dt
+        self._intensity(dt, rpm, throttle_pct)
+        self._pole(t, dt)
+        spirited = self.pole == 'SPIRITED'
+        self._throttle(t, throttle_pct, spirited)
+        self._braking(t, dt, spirited)
+        self._cornering(t, dt, spirited)
+        self._care(dt, rpm, coolant_c)
 
-        # Harsh accel / braking, from one speed reading to the next actual
-        # change — never from a stale value against a fresh timestamp.
-        if speed_kph is not None:
-            if self._spd is None:
-                self._spd, self._spd_t = speed_kph, t
-            elif speed_kph != self._spd:
-                d = t - self._spd_t
-                if d > 0:
-                    a = (speed_kph - self._spd) / 3.6 / d
-                    if a > HARSH_ACCEL:
-                        self.harsh += 1
-                        self.events.append((t, 'accel', round(a, 2)))
-                    elif a < HARSH_BRAKE:
-                        self.harsh += 1
-                        self.events.append((t, 'brake', round(a, 2)))
-                self._spd, self._spd_t = speed_kph, t
-
-    # --- sub-scores (each 0-100) -------------------------------------------
-    @property
-    def smooth(self):
-        if self.thr_seconds < 5:
-            return None
-        rate = self.thr_travel / self.thr_seconds  # %/s of throttle movement
-        # 0 %/s -> 100 ; 12 %/s -> 0
-        return _clamp(100.0 - rate * 8.0)
-
-    @property
-    def econ(self):
+    # -- the pole ------------------------------------------------------------
+    def _intensity(self, dt, rpm, throttle_pct):
+        """How hard the car is being driven, 0-1. Never scored, only used to
+        pick which yardstick the sub-scores are measured against."""
         parts = []
-        if self.rev_s > 5:
-            parts.append(self.eco_s / self.rev_s * 100.0)
-        if self.econ_s > 5:
-            avg = self.econ_sum / self.econ_s      # L/100km, time-weighted
-            # 5 L/100 -> 100 ; 15 L/100 -> 0
-            parts.append(_clamp((15.0 - avg) * 10.0))
+        if rpm is not None and self.rpm_red > 0:
+            lo = self.rpm_red * RPM_CALM_FRAC
+            hi = self.rpm_red * RPM_HOT_FRAC
+            parts.append((rpm - lo) / (hi - lo))
+        if throttle_pct is not None:
+            parts.append((throttle_pct - THR_CALM) / (THR_HOT - THR_CALM))
+        if self.g.ready:
+            parts.append(self.g.total / G_HOT)
         if not parts:
+            return
+        # The loudest signal wins. A car held at 6000 rpm through a long
+        # sweeper is spirited even at a steady throttle, and a car braked at
+        # 0.5 g is spirited at any rpm -- averaging would hide both.
+        raw = _clamp(max(parts), 0.0, 1.0)
+        k = 1.0 - math.exp(-dt / INTENSITY_TAU_S)
+        self.intensity += (raw - self.intensity) * k
+
+    def _pole(self, t, dt):
+        if self.intensity >= SPIRITED_ABOVE:
+            want = 'SPIRITED'
+        elif self.intensity <= NICE_BELOW:
+            want = 'NICE'
+        else:
+            want = self.pole          # in the gap, nothing changes
+        if want != self._cand:
+            self._cand, self._cand_since = want, t
+        if (want != self.pole and self._cand_since is not None
+                and t - self._cand_since >= POLE_HOLD_S):
+            self.pole = want
+            self.events.append((round(t, 2), 'pole', want))
+        if self.pole == 'SPIRITED':
+            self.spirited_s += dt
+        else:
+            self.nice_s += dt
+
+    # -- sub-scores ----------------------------------------------------------
+    def _throttle(self, t, throttle_pct, spirited):
+        if throttle_pct is None:
+            return
+        if self._thr is None:
+            self._thr, self._thr_t = throttle_pct, t
+            self._thr_pivot = throttle_pct
+            return
+        d = t - self._thr_t
+        if d <= 0:
+            return
+        move = throttle_pct - self._thr
+        self._thr, self._thr_t = throttle_pct, t
+        self.thr_s += d
+        # How fast the pedal is moving, against the band for this pole.
+        band = THR_RATE_SPIRITED if spirited else THR_RATE_NICE
+        self.thr_bad += _clamp(abs(move) / d / band, 0.0, 1.0) * d
+        # A reversal: the pedal turned round by more than the deadband. Big
+        # inputs are fine, changing your mind about them is not.
+        if abs(move) < 0.05:
+            return
+        direction = 1 if move > 0 else -1
+        if self._thr_dir == 0:
+            self._thr_dir, self._thr_pivot = direction, throttle_pct
+            return
+        if direction == self._thr_dir:
+            self._thr_pivot = throttle_pct
+            return
+        if abs(throttle_pct - self._thr_pivot) >= THR_REVERSAL_PCT:
+            self.thr_bad += THR_REVERSAL_COST_S
+            self.events.append((round(t, 2), 'reversal', round(throttle_pct, 1)))
+        self._thr_dir, self._thr_pivot = direction, throttle_pct
+
+    def _braking(self, t, dt, spirited):
+        """Nice scores the size of the stop. Spirited scores its edges."""
+        if not self.g.ready:
+            return
+        lon = self.g.lon
+        self.brake_s += dt
+        if spirited:
+            if self._lon is not None and t > self._lon_t:
+                jerk = abs(lon - self._lon) / (t - self._lon_t)
+                self.brake_bad += _clamp(jerk / BRAKE_JERK_SPIRITED,
+                                         0.0, 1.0) * dt
+        else:
+            self.brake_bad += _clamp(abs(lon) / BRAKE_G_NICE, 0.0, 1.0) * dt
+        self._lon, self._lon_t = lon, t
+
+    def _cornering(self, t, dt, spirited):
+        """Nice scores the lateral g. Spirited scores sawing at the wheel."""
+        if not self.g.ready:
+            return
+        lat = self.g.lat
+        self.corner_s += dt
+        if spirited:
+            if (self._lat is not None and t > self._lat_t
+                    and abs(lat) >= CORNER_ACTIVE_G):
+                jerk = abs(lat - self._lat) / (t - self._lat_t)
+                self.corner_bad += _clamp(jerk / CORNER_JERK_SPIRITED,
+                                          0.0, 1.0) * dt
+        else:
+            self.corner_bad += _clamp(abs(lat) / CORNER_G_NICE, 0.0, 1.0) * dt
+        self._lat, self._lat_t = lat, t
+
+    def _care(self, dt, rpm, coolant_c):
+        if coolant_c is None or rpm is None or rpm <= 400:
+            return
+        self.care_s += dt
+        if coolant_c >= CARE_HOT_C:
+            self.care_bad += dt
+            return
+        if coolant_c < CARE_COLD_C and rpm > CARE_COLD_RPM:
+            span = CARE_COLD_RPM_FULL - CARE_COLD_RPM
+            self.care_bad += _clamp((rpm - CARE_COLD_RPM) / span, 0.0, 1.0) * dt
+
+    @staticmethod
+    def _sub(bad, seconds, floor=5.0):
+        """A sub-score, or None when the channel never gave us enough to say."""
+        if seconds < floor:
             return None
-        return sum(parts) / len(parts)
+        return _clamp(100.0 * (1.0 - bad / seconds))
 
     @property
-    def calm(self):
-        mins = max(self.rev_s, 1.0) / 60.0
-        rate = self.harsh / mins                   # events per minute
-        return _clamp(100.0 - rate * 25.0)
+    def throttle(self):
+        return self._sub(self.thr_bad, self.thr_s)
+
+    @property
+    def braking(self):
+        return self._sub(self.brake_bad, self.brake_s)
+
+    @property
+    def cornering(self):
+        return self._sub(self.corner_bad, self.corner_s)
+
+    @property
+    def care(self):
+        return self._sub(self.care_bad, self.care_s)
 
     @property
     def total(self):
-        subs = [(self.smooth, W_SMOOTH), (self.econ, W_ECON), (self.calm, W_CALM)]
+        subs = [(self.throttle, W_THROTTLE), (self.braking, W_BRAKING),
+                (self.cornering, W_CORNERING), (self.care, W_CARE)]
         have = [(v, w) for v, w in subs if v is not None]
         if not have:
             return None
@@ -253,20 +438,36 @@ class DrivingScore(object):
 
     @property
     def coach(self):
-        """One-word feedback on the weakest area."""
+        """One word on the weakest area, in the language of the live pole."""
         t = self.total
         if t is None:
             return 'WARMING UP'
-        subs = [(self.smooth, 'JERKY'), (self.econ, 'THIRSTY'), (self.calm, 'HARSH')]
-        have = [(v, lbl) for v, lbl in subs if v is not None]
         if t >= 85:
-            return 'SMOOTH'
+            return 'CLEAN'
         if t >= 70:
-            return 'GOOD'
-        if have:
-            worst = min(have)[1]
-            return worst
-        return 'OK'
+            return 'TIDY'
+        spirited = self.pole == 'SPIRITED'
+        subs = [(self.throttle, 'INDECISIVE' if spirited else 'JERKY'),
+                (self.braking, 'SNATCHY' if spirited else 'HARSH'),
+                (self.cornering, 'SAWING' if spirited else 'FAST IN'),
+                (self.care, 'COLD REVS')]
+        have = [(v, lbl) for v, lbl in subs if v is not None]
+        return min(have)[1] if have else 'OK'
+
+    def snapshot(self):
+        return {
+            'total': self.total,
+            'throttle': self.throttle,
+            'braking': self.braking,
+            'cornering': self.cornering,
+            'care': self.care,
+            'coach': self.coach,
+            'pole': self.pole,
+            'intensity': self.intensity,
+            'nice_s': self.nice_s,
+            'spirited_s': self.spirited_s,
+            'g': self.g.snapshot(),
+        }
 
 
 def _clamp(v, lo=0.0, hi=100.0):

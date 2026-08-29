@@ -157,6 +157,30 @@
   .tgrid-lg .wide{grid-column:1 / -1;margin-top:5cqw;}
   .stale{opacity:0.35;}
 
+  /* --- the g-ball ------------------------------------------------------- */
+  /* Fills the whole round screen rather than sitting inside it: the panel's
+     own bezel becomes the outer ring of the traction circle, which is the one
+     piece of industrial design this gauge gets for free. */
+  .gwrap{position:absolute;inset:0;}
+  .gwrap svg{width:100%;height:100%;display:block;}
+  /* The score sits low, out of the dot's way. The dot lives in the middle
+     third of the circle for all normal driving, so anything printed there
+     would be struck through every time the car stops. */
+  .gscore{position:absolute;left:0;right:0;bottom:7cqw;text-align:center;
+    font-family:var(--mono);line-height:1;pointer-events:none;}
+  .gscore span{font-size:13cqw;color:var(--phos);}
+  .gscore i{display:block;font-style:normal;font-size:2.9cqw;margin-top:1.4cqw;
+    letter-spacing:0.16em;color:var(--muted);}
+  /* The tally goes above the circle's centre, not below it. The score already
+     owns the bottom, and stacking the two there put a line of small text
+     straight through the middle of a 13cqw number. */
+  .gtop{position:absolute;left:0;right:0;top:22cqw;text-align:center;
+    font-size:2.8cqw;color:var(--muted);pointer-events:none;}
+  .gtop b{color:var(--phos);font-weight:600;}
+  /* Slow, because the pole itself is slow. A word that snaps between two
+     colours reads as an alarm; this one is a mood. */
+  #g_pole{transition:color 800ms linear;top:15cqw;}
+
   /* drive picker. Inset well inside the circle: a rectangular list in a round
      screen loses its corners, so the scroll area sits within the inscribed
      square rather than the full width. */
@@ -309,19 +333,19 @@
           · <b id="f_cost">--</b></div>
       </div>
 
-      <!-- 3 SCORE -->
+      <!-- 3 DRIVING — the g-ball.
+           The screen is round, so it already is a traction circle: the dot is
+           where the car is being pushed right now, left/right for cornering
+           and up/down for braking. The background is not the dot's colour —
+           it is the 30-second intensity that decides which pole you are being
+           scored against, and it moves slowly on purpose. One is what you
+           just did, the other is how you have been driving. -->
       <div class="view" data-needs="rpm,speed,throttle">
         <div class="na"><div class="nat">NO DRIVE DATA</div><div class="nas">scoring needs rpm, speed or throttle</div></div>
-        <div class="vtitle">DRIVING</div>
-        <svg id="scoreSvg" viewBox="0 0 200 200"
-             style="position:absolute;inset:0;margin:auto;width:68cqw;height:68cqw"></svg>
-        <div class="center-abs" style="top:-3cqw">
-          <div class="big" style="font-size:21cqw" id="s_total">--</div>
-          <div class="unit" id="s_coach">—</div>
-        </div>
-        <div class="sub"><span style="color:var(--faint)">sm</span> <b id="s_sm">-</b>
-          · <span style="color:var(--faint)">eco</span> <b id="s_ec">-</b>
-          · <span style="color:var(--faint)">calm</span> <b id="s_ca">-</b></div>
+        <div class="gwrap"><svg id="gSvg" viewBox="0 0 200 200"></svg></div>
+        <div class="vtitle" id="g_pole">DRIVING</div>
+        <div class="gtop" id="g_foot">&nbsp;</div>
+        <div class="gscore"><span id="g_total">--</span><i id="g_coach">—</i></div>
       </div>
 
       <!-- 4 TRIP -->
@@ -514,17 +538,177 @@ pwrSvg.appendChild(pwrNeedle);
 const pwrHub=mk('circle',{cx:CX,cy:CY,r:7,fill:'#1a1c22',stroke:'#e1000a','stroke-width':2.4});
 pwrSvg.appendChild(pwrHub);
 
-/* ---- score ring ---- */
-const scoreSvg=document.getElementById('scoreSvg');
-scoreSvg.appendChild(mk('path',{d:arc(100,100,82,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':12,'stroke-linecap':'round'}));
-const scoreArc=mk('path',{fill:'none',stroke:'#35e06b','stroke-width':12,'stroke-linecap':'round',d:''});
-scoreSvg.appendChild(scoreArc);
+/* ---- the g-ball ----
+   Two clocks on one screen. The dot is instant: where the car is being pushed
+   this frame. The background is the last half-minute: the intensity that
+   decides whether you are being scored as Nice or as Spirited. Reading them
+   together is the whole point — a red background with a calm dot is a fast
+   road driven well, and that is a thing the old single score could not say. */
+const gSvg=document.getElementById('gSvg');
+/* Full radius is 0.8 g. The mounted 2026-08-29 drive sat 95% under 0.24 g and
+   peaked at 0.56 g braking, so 0.8 keeps ordinary driving visible in the
+   middle of the circle instead of pinned to a dot in the centre, and still
+   leaves headroom above anything that drive produced. */
+/* The circle is smaller than the screen on purpose. At full radius the dot
+   under a hard stop climbs to the very top of the panel, straight through the
+   pole word and the car banner, and a hard stop is the one moment you must be
+   able to read. 56 of the 100-unit viewBox keeps the dot inside the band
+   between the title above and the score below at any g the car can make. */
+const G_FULL=0.8, G_R=56;
+const GRINGS=[0.2,0.4,0.6];
+/* ~3 s of trail at the 10 Hz poll. Long enough to draw the shape of a corner,
+   short enough that it is gone before the next one starts. */
+const GTRAIL=30;
+
+/* There is no background gradient of this view's own. The screen already has
+   one: the rpm backdrop from SPEC.md section 11, red at the rim and black in
+   the middle so the readout in the centre stays crisp. Drawing a second tinted
+   disc on top of it produced a flat orange floodlight with the score, the
+   coach word and the ring labels all washed out of it -- two backdrops
+   fighting, and the one underneath winning.
+   So this view borrows that backdrop instead, and feeds it intensity in place
+   of rpm (see drawGlow's `override`). Same ramp, same shape, same decision
+   already made and tested; the only change is what it is a picture of. That
+   matters, because intensity is not rpm -- it is the loudest of revs, g and
+   throttle, which is why a car held at 0.5 g through a corner reads as hot
+   even off the throttle. */
+
+/* Rings and cross-hairs, drawn once. Labelled only on the g axis a driver
+   actually judges by — a ring with a number on every one of them turns the
+   middle of the screen into a table. */
+for(const g of GRINGS)
+  gSvg.appendChild(mk('circle',{cx:100,cy:100,r:G_R*g/G_FULL,fill:'none',
+    stroke:'rgba(255,255,255,0.11)','stroke-width':0.7}));
+gSvg.appendChild(mk('line',{x1:100-G_R,y1:100,x2:100+G_R,y2:100,
+  stroke:'rgba(255,255,255,0.09)','stroke-width':0.7}));
+gSvg.appendChild(mk('line',{x1:100,y1:100-G_R,x2:100,y2:100+G_R,
+  stroke:'rgba(255,255,255,0.09)','stroke-width':0.7}));
+/* One number, on the ring a driver judges by. Labelling all three would turn
+   the middle of the screen into a table; labelling none leaves the rings as
+   decoration. 0.4 g is the one worth knowing: past it you are committed. */
+gSvg.appendChild(mk('text',{x:100+G_R*0.4/G_FULL+2.5,y:97,fill:'rgba(255,255,255,0.26)',
+  'font-size':4.5,'font-family':'ui-monospace,monospace'})).textContent='0.4g';
+/* The rim. Lights up when the car goes past the full-scale g rather than
+   letting the dot vanish off the edge — a dot you cannot see is the one
+   moment you most want to know about. */
+const gRim=mk('circle',{cx:100,cy:100,r:G_R,fill:'none',
+  stroke:'rgba(255,255,255,0.10)','stroke-width':1.4});
+gSvg.appendChild(gRim);
+
+/* Peak ghosts: the hardest stop and the hardest corner of the drive so far,
+   left where they happened. */
+const gPeakBrake=mk('circle',{cx:100,cy:100,r:2,fill:'none',
+  stroke:'rgba(255,255,255,0.28)','stroke-width':1,visibility:'hidden'});
+const gPeakCorner=mk('circle',{cx:100,cy:100,r:2,fill:'none',
+  stroke:'rgba(255,255,255,0.28)','stroke-width':1,visibility:'hidden'});
+gSvg.appendChild(gPeakBrake);gSvg.appendChild(gPeakCorner);
+
+/* The trail, oldest first. Fixed-size and allocated once: the firmware has a
+   hard no-allocation-on-the-draw-path rule (the panel DMA trap), and keeping
+   the simulator to the same shape is what makes the port a transcription. */
+const gDots=[];
+for(let i=0;i<GTRAIL;i++){
+  const c=mk('circle',{cx:100,cy:100,r:1.6,fill:'#8fe3ff',opacity:0,
+    visibility:'hidden'});
+  gSvg.appendChild(c);gDots.push(c);
+}
+const gDot=mk('circle',{cx:100,cy:100,r:5.2,fill:'#eaf6ff',
+  stroke:'rgba(0,0,0,0.5)','stroke-width':1.2,visibility:'hidden'});
+gSvg.appendChild(gDot);
+/* Shown instead of the dot while the mounting angle is still being worked
+   out. A blank circle with no explanation reads as a broken gauge. */
+const gLearn=mk('text',{x:100,y:103,'text-anchor':'middle',fill:'#5b6470',
+  'font-size':7,'font-family':'ui-monospace,monospace','letter-spacing':1.5,
+  visibility:'hidden'});
+gSvg.appendChild(gLearn);
+
+const gHist=[];   // {lat,lon}, newest last
+
+function drawG(S){
+  const g=S.g||{};
+  const inten=S.intensity==null?0:S.intensity;
+  /* Only while this view is the one being looked at. The other eight are
+     instruments and their backdrop must stay tied to the revs. */
+  GLOW_OVERRIDE = (idx===DRIVING_VIEW) ? inten : null;
+
+  const pole=S.pole||'NICE';
+  const poleEl=$('g_pole');
+  poleEl.textContent=pole==='SPIRITED'?'SPIRITED':'NICE';
+  poleEl.style.color=pole==='SPIRITED'?'var(--accent)':'var(--green)';
+
+  $('g_total').textContent=S.total==null?'--':fmt(S.total);
+  $('g_coach').textContent=S.coach||'—';
+
+  if(!g.ready){
+    /* Honest about not knowing yet. The axes are learned from the car's own
+       speed changes, so this clears itself after a few minutes of driving —
+       and after the first drive it is restored and never seen again. */
+    gDot.setAttribute('visibility','hidden');
+    for(const c of gDots)c.setAttribute('visibility','hidden');
+    gPeakBrake.setAttribute('visibility','hidden');
+    gPeakCorner.setAttribute('visibility','hidden');
+    gLearn.setAttribute('visibility','visible');
+    gLearn.textContent='LEARNING '+Math.round((g.confidence||0)*100)+'%';
+    gHist.length=0;
+    $('g_foot').innerHTML='<span style="color:var(--faint)">finding which way the car points</span>';
+    return;
+  }
+  gLearn.setAttribute('visibility','hidden');
+
+  gHist.push({lat:g.lat||0,lon:g.lon||0});
+  while(gHist.length>GTRAIL+1)gHist.shift();
+
+  /* Right-hand cornering pushes you left in the seat, and the dot goes the
+     way the car is loaded — right on the screen for a right-hander. Braking
+     throws the dot forward, which is up. Both match what your body feels,
+     which is the only convention a driver can read without thinking. */
+  const px=(d)=>100+Math.max(-1,Math.min(1,d.lat/G_FULL))*G_R;
+  const py=(d)=>100-Math.max(-1,Math.min(1,d.lon/G_FULL))*G_R;
+
+  for(let i=0;i<GTRAIL;i++){
+    const h=gHist[gHist.length-2-i];
+    const c=gDots[i];
+    if(!h){c.setAttribute('visibility','hidden');continue;}
+    c.setAttribute('visibility','visible');
+    c.setAttribute('cx',px(h).toFixed(1));
+    c.setAttribute('cy',py(h).toFixed(1));
+    c.setAttribute('opacity',(0.42*(1-i/GTRAIL)).toFixed(3));
+    c.setAttribute('r',(1.8*(1-i/GTRAIL*0.6)).toFixed(2));
+  }
+  const now=gHist[gHist.length-1];
+  gDot.setAttribute('visibility','visible');
+  gDot.setAttribute('cx',px(now).toFixed(1));
+  gDot.setAttribute('cy',py(now).toFixed(1));
+
+  const over=Math.hypot(now.lat,now.lon)>=G_FULL;
+  gRim.setAttribute('stroke',over?'var(--accent)':'rgba(255,255,255,0.10)');
+  gRim.setAttribute('stroke-width',over?3:1.4);
+
+  if(g.peak_brake>0.05){
+    gPeakBrake.setAttribute('visibility','visible');
+    gPeakBrake.setAttribute('cx',100);
+    gPeakBrake.setAttribute('cy',py({lon:g.peak_brake}).toFixed(1));
+  }
+  if(g.peak_lat>0.05){
+    gPeakCorner.setAttribute('visibility','visible');
+    gPeakCorner.setAttribute('cx',px({lat:g.peak_lat}).toFixed(1));
+    gPeakCorner.setAttribute('cy',100);
+  }
+
+  const mins=(s)=>s==null?'--':(s/60).toFixed(0)+'m';
+  $('g_foot').innerHTML=
+    '<span style="color:var(--faint)">nice</span> <b>'+mins(S.nice_s)+
+    '</b> · <span style="color:var(--faint)">spirited</span> <b>'+mins(S.spirited_s)+
+    '</b> · <span style="color:var(--faint)">peak</span> <b>'+
+    Math.max(g.peak_lat||0,g.peak_brake||0,g.peak_accel||0).toFixed(2)+'g</b>';
+}
 
 /* ---- carousel ---- */
 const track=document.getElementById('track'),screenEl=document.getElementById('screen');
 const N=track.children.length;let idx=0;
-const names=['Tacho','Engine','Fuel economy','Driving score','Trip','Power','Thermals','Electrical','Drives'];
+const names=['Tacho','Engine','Fuel economy','Driving','Trip','Power','Thermals','Electrical','Drives'];
 const DRIVES_VIEW=names.indexOf('Drives');
+const DRIVING_VIEW=names.indexOf('Driving');
 const dotsEl=document.getElementById('dots');
 for(let i=0;i<N;i++){const b=document.createElement('button');b.className='dot';b.dataset.i=i;
   b.setAttribute('aria-label','View '+(i+1));dotsEl.appendChild(b);}
@@ -578,7 +762,9 @@ screenEl.addEventListener('pointermove',e=>{
 const endDrag=()=>{if(!down)return;down=false;capturing=false;
   if(moved<-32)go(idx+1);else if(moved>32)go(idx-1);moved=0;};
 screenEl.addEventListener('pointerup',endDrag);screenEl.addEventListener('pointercancel',endDrag);
-go(0, false);          // initial placement must not animate from nowhere
+/* ?view=3 opens straight onto one view. Only useful off the car -- for
+   screenshots and for judging a single design without eight swipes first. */
+go(parseInt(new URLSearchParams(location.search).get('view'), 10) || 0, false);
 
 /* ---- drive picker ------------------------------------------------------
    Rows are built with textContent rather than innerHTML: the text comes from
@@ -1037,16 +1223,8 @@ async function tick(){
   $('f_used').textContent=fmt(D.fuel_l,2)+' L';
   $('f_cost').textContent='RM '+fmt(D.cost_rm,2);
 
-  // 3 score
-  const tot=S.total;
-  $('s_total').textContent=tot==null?'--':fmt(tot);
-  $('s_coach').textContent=S.coach||'—';
-  const col=tot==null?'#23262e':(tot>=85?'#35e06b':tot>=70?'#ffc53d':'#ff3b30');
-  scoreArc.setAttribute('stroke',col);
-  scoreArc.setAttribute('d',arc(100,100,82,START,START+SWEEP*Math.max(0,Math.min(100,tot||0))/100));
-  $('s_sm').textContent=S.smooth==null?'-':fmt(S.smooth);
-  $('s_ec').textContent=S.econ==null?'-':fmt(S.econ);
-  $('s_ca').textContent=S.calm==null?'-':fmt(S.calm);
+  // 3 driving -- the g-ball
+  drawG(S);
 
   // 4 trip
   $('t_dist').innerHTML=fmt(D.dist_km,2)+'<span style="font-size:5.5cqw"> km</span>';
@@ -1089,7 +1267,7 @@ async function tick(){
   setStatus($('el_status'),D.charge,cc);
 
   $('raw').textContent=`rpm ${fmt(L.rpm)} · spd ${fmt(L.speed)} · thr ${fmt(L.throttle)}% · `+
-    `harsh ${S.harsh} · moving ${mmss(D.moving_s)} · peak ${fmt(D.peak_rpm)} rpm`;
+    `${S.pole} ${fmt(S.intensity*100)}% · moving ${mmss(D.moving_s)} · peak ${fmt(D.peak_rpm)} rpm`;
 }
 /* ---- tacho animation --------------------------------------------------
    OBD can only answer so fast: each PID is a separate round trip to the ECU
@@ -1110,6 +1288,11 @@ let tachShown  = 0;         // what the needle is currently showing
    carries the big readout, and tinting behind it would cost legibility. */
 const GLOW_EMBER = [104, 26, 12];   // low intensity, deep ember
 const GLOW_RED   = [255, 34, 22];   // full intensity, hot red
+/* The cool end, used only when the Driving view drives this backdrop with
+   intensity instead of rpm. The rev ramp has no calm end because a tacho at
+   idle should show nothing; a pole indicator must show something, or a gentle
+   drive is indistinguishable from a gauge that has died. */
+const GLOW_CALM  = [24, 132, 78];   // deep green: driving nicely
 const GLOW_START = 0.22;            // fraction of redline before any tint
 /* Fraction of redline at which the glow is already fully hot. Tying full
    intensity to the redline itself meant the top of the ramp was somewhere you
@@ -1146,8 +1329,29 @@ function glowGradient(c){
   return 'radial-gradient(circle at 50% 46%,rgba(0,0,0,0) 24%,'
     + 'rgba('+c+',0.50) 72%,rgba('+c+',0.96) 100%)';
 }
+/* Set by the Driving view while it is on screen, to hand the backdrop a
+   0-1 intensity instead of a rev count. Null means the tacho owns it again. */
+let GLOW_OVERRIDE = null;
 function drawGlow(rpm, has){
   let f = 0;
+  if (GLOW_OVERRIDE !== null){
+    f = Math.max(0, Math.min(1, GLOW_OVERRIDE));
+    // Green -> ember over the first half, ember -> red over the second, so
+    // the handover sits near the pole threshold rather than at either end.
+    const c = (f < 0.5)
+      ? GLOW_CALM.map((v,i)=>Math.round(v+(GLOW_EMBER[i]-v)*(f/0.5)))
+      : GLOW_EMBER.map((v,i)=>Math.round(v+(GLOW_RED[i]-v)*((f-0.5)/0.5)));
+    const key = -1 - Math.round(f*40);      // never collides with a rev step
+    if (key !== glowPaintedAt){
+      glowPaintedAt = key;
+      glowEl.style.background = glowGradient(c.join(','));
+    }
+    // A floor, so a calm drive still reads as green rather than as black.
+    // 0.20 was not enough: the rim shape puts its colour in the outer quarter
+    // of the disc, so a fifth of very little is nothing at all.
+    glowEl.style.opacity = (0.42 + f*0.52).toFixed(3);
+    return;
+  }
   if (has && RPM_RED > 0){
     f = (rpm/RPM_RED - GLOW_START) / (GLOW_FULL - GLOW_START);
     f = Math.max(0, Math.min(1, f));
@@ -1170,7 +1374,8 @@ function setGlowMode(m){
 /* Design-preview switches, used by compare.html and handy at the desk:
      ?glow=centre  pick the glow shape
      ?rpm=6800     pin rpm, since a desk capture rarely revs past 2000
-     ?bare=1       hide the browser chrome, leaving just the round display   */
+     ?bare=1       hide the browser chrome, leaving just the round display
+     ?view=3       open straight onto one view, counting from 0             */
 const QS = new URLSearchParams(location.search);
 
 /* ?rpm=6800        pin one value

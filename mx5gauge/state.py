@@ -38,6 +38,14 @@ RANGES = {
     'evap_press': (-9000, 9000),
     'o2_b1s1': (0, 1.3),
     'o2_b1s2': (0, 1.3),
+    # Accelerometer, in g. +-8 is the part's full scale; anything past 4 g in
+    # a road car is the gauge being dropped, not the car cornering.
+    'imu_ax': (-8, 8),
+    'imu_ay': (-8, 8),
+    'imu_az': (-8, 8),
+    'imu_gx': (-2100, 2100),
+    'imu_gy': (-2100, 2100),
+    'imu_gz': (-2100, 2100),
 }
 
 # Percent-style channels all share the same bounds.
@@ -160,6 +168,10 @@ CATALYST_KEYS = ('catalyst', 'cat_b1s1', 'cat_b2s1', 'cat_b1s2', 'cat_b2s2')
 # channel folds into one figure; the rest stand for themselves. These are the
 # readings a drive is remembered by: how hard it was revved, how fast it went,
 # and how hot it got doing it.
+# The three accelerometer channels. A g reading only means anything when all
+# three have arrived, so the score is nudged whenever any of them lands.
+IMU_KEYS = ('imu_ax', 'imu_ay', 'imu_az')
+
 PEAK_FIELDS = dict([(k, k) for k in ('rpm', 'speed', 'coolant', 'intake')] +
                    [(k, 'catalyst') for k in CATALYST_KEYS])
 
@@ -213,7 +225,12 @@ class Gauge(object):
             self.values.clear()
             self.updated.clear()
             self.trip = metrics.Trip()
+            # The mounting angle survives. It is a property of the bracket, not
+            # of the drive: an ignition rotation mid-session must not throw
+            # away six minutes of learning and blank the g view on the road.
+            axes = self.score.g.export_axes()
             self.score = metrics.DrivingScore()
+            self.score.g.restore_axes(axes)
             self.boot.reset()
             self.ignition = ignition.Ignition()
             self.peaks = {}
@@ -280,8 +297,15 @@ class Gauge(object):
             if self._t0 is None:
                 self._t0 = t
             self.trip.update(t, v.get('speed'), v.get('fuel_rate'))
+            # The IMU is fed on its own arrival, not folded into the OBD
+            # update: on the board it is read far faster than any OBD channel,
+            # and jerk is the whole reason for using it.
+            if key in IMU_KEYS:
+                self.score.imu(t, v.get('imu_ax'), v.get('imu_ay'),
+                               v.get('imu_az'))
             self.score.update(t, v.get('speed'), v.get('rpm'),
-                              v.get('throttle'), v.get('fuel_rate'))
+                              v.get('throttle'), v.get('fuel_rate'),
+                              v.get('coolant'))
             self.boot.update(t)
             event = (self.ignition.update(t, key, value)
                      if self.on_ignition is not None else None)
@@ -363,14 +387,7 @@ class Gauge(object):
                     'peak_intake': self.peaks.get('intake'),
                     'peak_catalyst': self.peaks.get('catalyst'),
                 },
-                'score': {
-                    'total': self.score.total,
-                    'smooth': self.score.smooth,
-                    'econ': self.score.econ,
-                    'calm': self.score.calm,
-                    'coach': self.score.coach,
-                    'harsh': self.score.harsh,
-                },
+                'score': self.score.snapshot(),
                 'fresh': fresh,
                 'supported': v.get('_supported'),
                 # what car this is, and which channels it can actually feed —

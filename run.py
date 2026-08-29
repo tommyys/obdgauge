@@ -12,6 +12,7 @@ Then open http://127.0.0.1:8420
 import argparse
 import asyncio
 import glob
+import json
 import os
 import sys
 import webbrowser
@@ -19,6 +20,33 @@ import webbrowser
 from mx5gauge import library, recorder, server, sources, state
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Where the learned mounting angle lives between drives. The gauge works out
+# which way it is pointing from the car's own speed changes, which takes a few
+# minutes of driving -- see mx5gauge/gforce.py. A bracket does not move
+# between drives, so that cost is paid once and remembered here. Learning
+# continues regardless, so a mount that really was moved corrects itself.
+MOUNT_FILE = os.path.join(HERE, 'logs', 'mount.json')
+
+
+def load_mount(g):
+    try:
+        with open(MOUNT_FILE) as fh:
+            g.score.g.restore_axes(json.load(fh))
+    except (IOError, OSError, ValueError):
+        pass          # no saved mount yet, or it is unreadable: just learn it
+
+
+def save_mount(g):
+    axes = g.score.g.export_axes()
+    if axes is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(MOUNT_FILE), exist_ok=True)
+        with open(MOUNT_FILE, 'w') as fh:
+            json.dump(axes, fh)
+    except (IOError, OSError):
+        pass          # never let a failed cache write take a drive down
 
 
 def print_sessions():
@@ -108,6 +136,7 @@ def finish_drive(g, rec, here, quiet=False):
         return None
     summary = drive_summary(g)
     d, s = summary['derived'], summary['score']
+    save_mount(g)
     path = rec.close(summary=summary)
     if not path:
         return None
@@ -318,6 +347,7 @@ async def main():
         return 0
 
     g = state.Gauge()
+    load_mount(g)
 
     if args.live:
         src = sources.LiveSource(name_hint=args.name, address=args.address,

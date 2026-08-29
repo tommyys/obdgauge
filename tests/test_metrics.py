@@ -45,26 +45,69 @@ def drive(speed_series, filler_per_step=0, throttle=None, rpm=2000, step=0.33):
     return sc
 
 
-# --- the bug this file exists for -----------------------------------------
-# A gentle 1 km/h-per-sample deceleration is not harsh driving. It used to be
-# counted as harsh once other channels were interleaved, because the speed
-# delta was divided by the gap to the last sample of ANY channel.
-gentle = [40 - i for i in range(20)]                     # -0.84 m/s^2 per step
-check('gentle decel, speed only          -> no events',
-      drive(gentle).harsh, 0)
-check('gentle decel, 4 other channels    -> still none',
-      drive(gentle, filler_per_step=4).harsh, 0)
-check('gentle decel, 20 other channels   -> still none',
-      drive(gentle, filler_per_step=20).harsh, 0)
+# --- a stub g source -------------------------------------------------------
+# The real GForce learns its axes from the car. These tests are about the
+# score's arithmetic, so they hand it g directly.
+class FakeG(object):
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.lat = 0.0
+        self.lon = 0.0
+        self.peak_lat = 0.0
+        self.peak_lon_brake = 0.0
+        self.peak_lon_accel = 0.0
 
-# a genuinely hard stop must still be caught, whatever else is being polled
-hard = [60, 55, 48, 40, 31, 21, 10, 0]                   # ~-4 to -8 m/s^2
-check('hard stop is caught, speed only',
-      drive(hard).harsh > 0, True)
-check('hard stop is caught with 20 channels interleaved',
-      drive(hard, filler_per_step=20).harsh > 0, True)
-check('and reports the same count either way',
-      drive(hard).harsh == drive(hard, filler_per_step=20).harsh, True)
+    @property
+    def total(self):
+        return (self.lat ** 2 + self.lon ** 2) ** 0.5
+
+    def update(self, *a):
+        pass
+
+    def speed(self, *a):
+        pass
+
+    def snapshot(self):
+        return {'ready': self.ready}
+
+
+def g_drive(series, pole='NICE', step=0.25, rpm=2000, throttle=20.0):
+    """Replay a series of (lat, lon) through the score, with the pole forced.
+
+    Forcing it keeps these tests about the bands. Whether the intensity
+    latch picks the right pole is tested separately, below."""
+    fake = FakeG()
+    sc = metrics.DrivingScore(gforce=fake)
+    sc.update(0.0, 30.0, rpm, throttle, 6.0)
+    t = 0.0
+    for lat, lon in series:
+        t += step
+        fake.lat, fake.lon = lat, lon
+        sc.pole = pole
+        sc.update(t, 30.0, rpm, throttle, 6.0)
+        sc.pole = pole
+    return sc
+
+
+# --- the bug this file exists for -----------------------------------------
+# The score is fed on every sample of *any* channel. Its rates must therefore
+# be measured against each channel's own clock, or a car that reports more
+# PIDs scores differently for identical driving. This used to inflate throttle
+# and acceleration rates roughly 4x on a real 35-channel drive.
+steady = drive([50] * 30, throttle=[20.0] * 30)
+near('steady throttle -> throttle 100', steady.throttle, 100.0)
+steady_dense = drive([50] * 30, filler_per_step=10, throttle=[20.0] * 30)
+near('steady throttle, densely sampled -> still 100',
+     steady_dense.throttle, 100.0)
+
+saw = [20.0 if i % 2 else 40.0 for i in range(40)]       # 20% every 0.33s
+a = drive([50] * 40, throttle=saw)
+b = drive([50] * 40, filler_per_step=9, throttle=saw)
+check('jerky throttle scores the same at both sample rates',
+      a.throttle is not None and b.throttle is not None
+      and abs(a.throttle - b.throttle) < 1.0, True)
+check('jerky throttle scores worse than steady',
+      a.throttle < steady.throttle, True)
 
 # --- ties: two channels in the same millisecond ---------------------------
 # Timestamps are written to 3 decimals, so a fast sweep produces exact ties.
@@ -74,29 +117,130 @@ sc = metrics.DrivingScore()
 sc.update(0.000, 15.0, 2000, 20.0, 6.0)
 for _ in range(6):
     sc.update(0.100, 15.0, 2000, 20.0, 6.0)     # six samples, identical stamp
-sc.update(0.430, 13.0, 2000, 20.0, 6.0)         # -2 km/h over 0.43s = -1.3
-check('a tied timestamp invents no harsh event', sc.harsh, 0)
+sc.update(0.430, 13.0, 2000, 20.0, 6.0)
+near('a tied timestamp costs no throttle demerit', sc.thr_bad, 0.0, tol=1e-9)
 
 # --- gaps -----------------------------------------------------------------
 # A pause in the recording is not the car teleporting.
 sc = metrics.DrivingScore()
 sc.update(0.0, 100.0, 3000, 50.0, 12.0)
 sc.update(30.0, 0.0, 800, 0.0, 1.0)             # 30s gap, 100 -> 0 km/h
-check('a 30s gap invents no harsh event', sc.harsh, 0)
+near('a 30s gap costs no demerit at all', sc.thr_bad, 0.0, tol=1e-9)
 
-# --- smoothness is a rate over time, not a per-sample average ------------
-steady = drive([50] * 30, throttle=[20.0] * 30)
-near('steady throttle -> smooth 100', steady.smooth, 100.0)
-steady_dense = drive([50] * 30, filler_per_step=10, throttle=[20.0] * 30)
-near('steady throttle, densely sampled -> still 100', steady_dense.smooth, 100.0)
+# --- throttle reversals ---------------------------------------------------
+# Big inputs are fine. Changing your mind about them is not: on-off-on means
+# you did not know what you wanted the car to do.
+# Both of these move the pedal 5% every half second, so they earn exactly the
+# same rate demerit. The only difference is direction, which is what isolates
+# the reversal cost.
+one_way = metrics.DrivingScore()
+for i in range(21):                             # 0 -> 100% in one movement
+    one_way.update(i * 0.5, 30.0, 3000, i * 5.0, 6.0)
+check('a big single-direction input is not a reversal',
+      [e for e in one_way.events if e[1] == 'reversal'], [])
+flutter = metrics.DrivingScore()
+for i in range(21):                             # +-5% about 45%
+    flutter.update(i * 0.5, 30.0, 3000, 45.0 + (5.0 if i % 2 else -5.0), 6.0)
+check('fluttering the pedal is caught as reversals',
+      len([e for e in flutter.events if e[1] == 'reversal']) > 5, True)
+check('a reversal costs throttle score',
+      flutter.throttle < one_way.throttle, True)
 
-saw = [20.0 if i % 2 else 40.0 for i in range(40)]       # 20% every 0.33s
-a = drive([50] * 40, throttle=saw)
-b = drive([50] * 40, filler_per_step=9, throttle=saw)
-check('jerky throttle scores the same at both sample rates',
-      a.smooth is not None and b.smooth is not None
-      and abs(a.smooth - b.smooth) < 1.0, True)
-check('jerky throttle scores worse than steady', a.smooth < steady.smooth, True)
+# --- braking: Nice scores the size, Spirited scores the edges -------------
+soft = g_drive([(0.0, 0.10)] * 40, pole='NICE')
+firm = g_drive([(0.0, 0.50)] * 40, pole='NICE')
+check('a nice segment marks down a hard stop',
+      firm.braking < soft.braking, True)
+near('0.5g held is past the nice band, so braking bottoms out',
+     firm.braking, 0.0, tol=0.5)
+
+# The same 0.5g, judged as a spirited segment: sustained is fine, snatched is
+# not. This is the whole point of the two poles.
+held = g_drive([(0.0, 0.5)] * 40, pole='SPIRITED')
+snatch = g_drive([(0.0, 0.5 if i % 2 else 0.0) for i in range(40)],
+                 pole='SPIRITED')
+near('a spirited segment does not punish sustained 0.5g braking',
+     held.braking, 100.0, tol=1.0)
+check('but it does punish snatching the same 0.5g on and off',
+      snatch.braking < held.braking - 20, True)
+check('...and the nice band would have failed the sustained one',
+      g_drive([(0.0, 0.5)] * 40, pole='NICE').braking < held.braking, True)
+
+# --- cornering ------------------------------------------------------------
+gentle_turn = g_drive([(0.15, 0.0)] * 40, pole='NICE')
+hard_turn = g_drive([(0.60, 0.0)] * 40, pole='NICE')
+check('a nice segment marks down a fast corner',
+      hard_turn.cornering < gentle_turn.cornering, True)
+smooth_fast = g_drive([(0.60, 0.0)] * 40, pole='SPIRITED')
+sawing = g_drive([(0.60 if i % 2 else 0.25, 0.0) for i in range(40)],
+                 pole='SPIRITED')
+near('a spirited segment does not punish a steady 0.6g corner',
+     smooth_fast.cornering, 100.0, tol=1.0)
+check('but sawing at the wheel inside one is punished',
+      sawing.cornering < smooth_fast.cornering - 20, True)
+
+# --- missing channel means missing sub-score ------------------------------
+# The same honesty rule as gauge::view_available. A convincing number for data
+# we do not have is worse than an em-dash.
+no_g = metrics.DrivingScore(gforce=FakeG(ready=False))
+for i in range(60):
+    no_g.update(i * 0.25, 40.0, 2500, 25.0, 6.0, coolant_c=90.0)
+check('no g axes yet -> no braking score', no_g.braking, None)
+check('no g axes yet -> no cornering score', no_g.cornering, None)
+check('...but the score still exists on what is left',
+      no_g.total is not None, True)
+no_cool = metrics.DrivingScore(gforce=FakeG(ready=False))
+for i in range(60):
+    no_cool.update(i * 0.25, 40.0, 2500, 25.0, 6.0)
+check('no coolant channel -> no care score', no_cool.care, None)
+check('with only throttle left, the total is the throttle score',
+      abs(no_cool.total - no_cool.throttle) < 1e-9, True)
+
+# --- the pole -------------------------------------------------------------
+# Intensity is a rolling read of the last half-minute, so a pole has to be
+# earned over time, not by one loud sample.
+calm = metrics.DrivingScore()
+for i in range(600):                            # 150s of 2000rpm, 20% throttle
+    calm.update(i * 0.25, 40.0, 2000, 20.0, 6.0)
+check('a gentle drive stays nice', calm.pole, 'NICE')
+
+hot = metrics.DrivingScore()
+for i in range(600):                            # 150s of 6000rpm, 80% throttle
+    hot.update(i * 0.25, 90.0, 6000, 80.0, 20.0)
+check('a hard drive earns the spirited pole', hot.pole, 'SPIRITED')
+check('...and banks its seconds there',
+      hot.spirited_s > 60 and hot.nice_s < hot.spirited_s, True)
+check('a gentle drive banks none', calm.spirited_s, 0.0)
+
+blip = metrics.DrivingScore()
+for i in range(600):
+    r, th = (6500, 90.0) if 100 <= i < 104 else (1800, 15.0)
+    blip.update(i * 0.25, 40.0, r, th, 6.0)
+check('one blip of throttle does not flip the pole', blip.pole, 'NICE')
+
+# --- economy is out of the score -----------------------------------------
+# B3's decision: a score that marks you down for enjoying the car is the thing
+# it was opened to stop. km/L is a readout on the Trip view now.
+thirsty = metrics.DrivingScore()
+frugal = metrics.DrivingScore()
+for i in range(200):
+    thirsty.update(i * 0.25, 40.0, 2500, 25.0, 30.0, coolant_c=90.0)
+    frugal.update(i * 0.25, 40.0, 2500, 25.0, 3.0, coolant_c=90.0)
+check('fuel rate no longer moves the score',
+      abs(thirsty.total - frugal.total) < 1e-9, True)
+
+# --- mechanical care ------------------------------------------------------
+cold_revs = metrics.DrivingScore()
+warm_revs = metrics.DrivingScore()
+for i in range(200):
+    cold_revs.update(i * 0.25, 60.0, 5000, 60.0, 12.0, coolant_c=45.0)
+    warm_revs.update(i * 0.25, 60.0, 5000, 60.0, 12.0, coolant_c=90.0)
+check('revving a cold engine costs care', cold_revs.care < 50, True)
+near('the same revs warm cost nothing', warm_revs.care, 100.0)
+overheat = metrics.DrivingScore()
+for i in range(200):
+    overheat.update(i * 0.25, 60.0, 2000, 20.0, 8.0, coolant_c=110.0)
+near('cooking the engine bottoms out care', overheat.care, 0.0, tol=0.5)
 
 # --- trip accumulators ---------------------------------------------------
 tr = metrics.Trip()

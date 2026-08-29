@@ -8,10 +8,20 @@
 namespace gauge {
 
 // --- tunables (SPEC.md section 5). B3 changes these, in one place. ---------
-inline constexpr double kFuelPriceRm = 2.05;   // RM per litre
+// RM per litre. 1.99 is BUDI95's subsidised RON95 price from 30 September
+// 2025, replacing the 2.05 of the old blanket subsidy -- every cost this gauge
+// has ever shown was about 3% high. Must match FUEL_PRICE_RM in
+// mx5gauge/metrics.py: tools/verify_port.sh cross-checks the derived cost.
+inline constexpr double kFuelPriceRm = 1.99;
 inline constexpr double kWSmooth     = 0.40;   // score weights, sum to 1.0
 inline constexpr double kWEcon       = 0.30;
 inline constexpr double kWCalm       = 0.30;
+// What counts as good economy on this car, in km/L. Measured average is about
+// 11, so the TRIP view's km/L reads green at or above it, amber within 2 of
+// it, and red below that. Not a physical constant -- change it when the car's
+// own average moves.
+inline constexpr double kEconGoodKmL = 11.0;
+inline constexpr double kEconPoorKmL = 9.0;
 inline constexpr double kEcoRpmLo    = 1200;   // efficient cruising band
 inline constexpr double kEcoRpmHi    = 2600;
 // Harsh-event thresholds (m/s^2). ~2.5 m/s^2 is a firm but normal stop.

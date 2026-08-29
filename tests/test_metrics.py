@@ -104,7 +104,7 @@ for i in range(101):                            # 100s at a steady 36 km/h
     tr.update(i * 1.0, 36.0, 7.2)
 near('100s at 36km/h -> 1.0 km', tr.dist_km, 1.0, tol=0.02)
 near('7.2 L/h for 100s -> 0.2 L', tr.fuel_l, 0.2, tol=0.01)
-near('cost at RM2.05/L', tr.cost_rm, 0.2 * metrics.FUEL_PRICE_RM, tol=0.01)
+near('cost is litres x the pump price', tr.cost_rm, 0.2 * metrics.FUEL_PRICE_RM, tol=0.01)
 near('avg speed', tr.avg_speed_kph, 36.0, tol=0.5)
 
 tr = metrics.Trip()

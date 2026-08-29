@@ -171,7 +171,13 @@ const ViewSpec* view_table(int* count) {
                 // The live km/L reading was FUEL ECONOMY's hero and is the one
                 // thing the merge drops -- the driving score is where live
                 // coaching belongs.
-                {"KM/L",  [](const Model& m) { return num(m.trip.econ_km_per_l(), "%.1f"); }},
+                {"KM/L",  [](const Model& m) { return num(m.trip.econ_km_per_l(), "%.1f"); },
+                 [](const Model& m) -> uint32_t {
+                     auto e = m.trip.econ_km_per_l();
+                     if (!e)                            return 0xD0D0D0;
+                     if (*e >= gauge::kEconGoodKmL)     return 0x5BD97A;
+                     if (*e >= gauge::kEconPoorKmL)     return 0xFFC24A;
+                     return 0xFF6B4A; }},
                 {"FUEL",  [](const Model& m) {
                     char b[24]; snprintf(b, sizeof b, "%.2f L", m.trip.fuel_l); return std::string(b); }},
                 {"COST",  [](const Model& m) {

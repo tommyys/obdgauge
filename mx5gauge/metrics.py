@@ -4,8 +4,10 @@ Pure Python over a stream of samples — no I/O, so it is testable on the host
 and ports directly to the firmware.
 """
 
-# Fuel price (RM per litre) used for the cost readouts. Adjust to taste.
-FUEL_PRICE_RM = 2.05
+# Fuel price (RM per litre) used for the cost readouts. RM1.99 is the BUDI95
+# subsidised RON95 pump price from 30 September 2025; RM2.05 was the old
+# blanket-subsidy price this started life with.
+FUEL_PRICE_RM = 1.99
 
 # Driving-score tuning. All weights sum to 1.0.
 W_SMOOTH = 0.40

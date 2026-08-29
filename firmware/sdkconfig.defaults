@@ -80,7 +80,20 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 # full-screen lv_snapshot (which the carousel slide takes) needs more than that
 # for its arc masks: the tacho's heat band alone is 54 arcs, each allocating a
 # radius mask, across two draw-unit threads. That is what hung every swipe.
-CONFIG_LV_MEM_SIZE_KILOBYTES=128
+#
+# 96, down from 128 on 2026-08-28, because three things now want the same
+# internal RAM and this pool is the only one with measured slack:
+#   - the BT controller's contiguous 30,720 bytes (radio_init, at boot),
+#   - the slide's 29,824-byte DMA band buffer (slide.cpp, on first swipe),
+#   - the panel driver's own SPI transfers.
+# With the pool at 128 KB the radio started but only 6,207 bytes of DMA RAM
+# were left, so the first swipe would have printed "band buffer UNAVAILABLE".
+# The pool reports 33% used with 84 KB free at rest, so 32 KB of it is slack;
+# at 96 KB there is still ~52 KB free at rest, against the ~19 KB that was
+# actually hanging swipes at 64 KB. That margin is the reason for 96 and not
+# 64. The "lv pool %% used" figure on the ui: line is how to tell if this was
+# cut too far -- if it climbs toward 100%, swipes hang with no message.
+CONFIG_LV_MEM_SIZE_KILOBYTES=96
 
 # --- Task 14: BLE link to the vLinker -------------------------------------
 # The ESP32-S3 has no Bluetooth Classic, so the adapter is reached over BLE
@@ -108,3 +121,67 @@ CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 # can only come from internal RAM; the BLE host's buffers have no such
 # requirement, so they are the ones that move.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+# --- The BT controller could not start once the recorder took its RAM -------
+# Symptom on the board (2026-08-28, drive-recording merged): every 10 s
+#   E BLE_INIT: Malloc failed / esp_bt_controller_init -4 / NimBLE would not
+#   start, with the ui: line reporting "dma free 20143".
+# The same sdkconfig linked and ran in the car on 2026-08-27, so nothing here
+# regressed -- the recorder simply added ~30 KB of permanently-held internal
+# DRAM on top of it (two task stacks, the flight log's twin 3 KB buffers, the
+# sample queue, the LIST table), and the controller's own allocation is
+# internal-only and cannot move to PSRAM.
+#
+# The LVGL pool is the biggest internal object in the image, but it is NOT the
+# one to cut: see CONFIG_LV_MEM_SIZE_KILOBYTES above -- 64 KB is what hung
+# every swipe. So the internal RAM comes from two places instead.
+#
+# 1. Stop sending mid-size allocations to internal RAM. The default sends
+#    everything under 16 KB internal first; at 4 KB, anything larger goes to
+#    PSRAM. Callers that genuinely need internal or DMA memory (the panel's SPI
+#    buffers) ask for it explicitly with heap_caps_malloc and are unaffected.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+# 2. Reserve more internal RAM for the callers that can only use internal --
+#    which is exactly what the BT controller is.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+#
+# And shrink what the controller asks for. This is a central with one link to
+# one adapter, not a scanner of crowds:
+# - MAX_ACT 6 -> 2: one scan activity plus one connection is all it ever runs.
+# - the duplicate-scan cache and the advert flow-control queue are sized for a
+#   busy room; a garage has the vLinker in it.
+# - 50 alarms and a 12-entry whitelist are likewise for a device with peers.
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE=20
+CONFIG_BT_CTRL_BLE_ADV_REPORT_FLOW_CTRL_NUM=20
+CONFIG_BT_ALARM_MAX_NUM=20
+CONFIG_BT_NIMBLE_WHITELIST_SIZE=1
+
+# Still 1 KB short after the above: the controller asks for 0x7800 = 30,720
+# bytes and only 29,711 were free, and on failure it now asserts
+# ("BLE assert emi.c 164") and reboots the gauge instead of returning -4. So
+# cut what the controller is asked to support. None of these are used by a
+# central that talks to one ELM327 adapter:
+# - BLE 5.0 / extended scanning: the vLinker advertises legacy. Ext adv and
+#   ext scan carry their own controller buffers.
+# - Direct Test Mode is a radio-certification feature.
+# - the advert-report flow-control queue cannot be sized below 100 entries, so
+#   it goes off entirely rather than being trimmed.
+CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT=n
+CONFIG_BT_NIMBLE_EXT_SCAN=n
+CONFIG_BT_CTRL_DTM_ENABLE=n
+CONFIG_BT_CTRL_BLE_ADV_REPORT_FLOW_CTRL_SUPP=n
+
+# The UI loop moves to core 1, away from the radio. app_main defaults to core 0,
+# which is also where the BT controller and the NimBLE host run
+# (CONFIG_BT_NIMBLE_PINNED_TO_CORE=0, and the controller cannot move). Measured
+# on the board 2026-08-28, the moment the radio actually started working: while
+# scanning, the display fell from 40 fps to 0-2 fps and stayed there. The UI
+# loop takes bsp_display_lock() to update its widgets, the NimBLE host at its
+# much higher priority then preempts it on the same core, and the LVGL task --
+# which needs that same lock to render -- waits behind a task that is not being
+# allowed to run. So the gauge froze while looking for the adapter, which in the
+# car is every drive until it connects, and forever if it never does.
+# The recorder's task and live_link's poll task stay on core 0 deliberately: a
+# flash erase must not land on the display's core.
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y

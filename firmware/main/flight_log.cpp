@@ -13,7 +13,14 @@
 
 namespace {
 
-constexpr size_t kCap = 3000;      // fits NVS comfortably, ~40 lines
+// 1500, halved from 3000 on 2026-08-28. Two of these live in internal .bss
+// (the current run and the previous one), and internal RAM is what the BT
+// controller needs a contiguous 30 KB of -- see BleTransport::radio_init().
+// A boot-to-live run writes about 10 lines of ~40 bytes, so 1500 still holds
+// roughly 35 lines; the cap has never been reached in a real run. If a future
+// run does fill it, the oldest lines are what is lost, and the boot reason
+// plus the failure at the end are what matter.
+constexpr size_t kCap = 1500;      // fits NVS comfortably, ~35 lines
 const char* kNs = "flight";
 const char* kKey = "log";
 

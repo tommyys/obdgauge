@@ -14,7 +14,9 @@
 #include "bsp/esp-bsp.h"
 #include "crc32.h"
 #include "drive_log.h"
+#include "drives_list.h"
 #include "gauge_ui.h"
+#include "imu.h"
 #include "logbuf.h"
 
 // USB-Serial-JTAG blocking reads
@@ -102,6 +104,53 @@ bool emit(const gauge::Record* r, size_t n, void* ctx) {
     return true;
 }
 
+// What is actually on the board's I2C bus.
+//
+// The BSP header says the bus is shared by "touch, audio, IMU, RTC, and
+// power-management devices", but that comment covers a family of boards and
+// Waveshare's page for this one does not list a clock chip at all. A drive
+// recorded with no clock is stamped `drive-unknown-N` for ever (SPEC.md s15),
+// so whether a PCF85063 is sitting there unused is worth one command to
+// settle rather than an argument. Addresses only -- this identifies parts, it
+// does not talk to them.
+void cmd_i2c() {
+    // Three passes, and only an address that answered in all three counts.
+    // One pass on this board reports 12-18 devices and a different set every
+    // time: the bus is shared with the touch controller and the IMU, which
+    // are being polled while the scan runs, and a probe that collides with
+    // their traffic reads as an ACK from an address with nothing on it. The
+    // real parts answer every pass; the ghosts never repeat.
+    uint8_t seen[3][32];
+    int count[3] = {0, 0, 0};
+    for (int pass = 0; pass < 3; ++pass) {
+        count[pass] = imu_i2c_scan(seen[pass], (int)(sizeof seen[pass]));
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    int n = 0;
+    for (int i = 0; i < count[0]; ++i) {
+        const uint8_t a = seen[0][i];
+        bool in_all = true;
+        for (int pass = 1; pass < 3 && in_all; ++pass) {
+            bool hit = false;
+            for (int j = 0; j < count[pass]; ++j) hit = hit || seen[pass][j] == a;
+            in_all = hit;
+        }
+        if (!in_all) continue;
+        ++n;
+        const char* part = "?";
+        switch (a) {
+            case 0x18: case 0x19: part = "ES8311 audio codec"; break;
+            case 0x34:            part = "AXP2101 power management"; break;
+            case 0x40: case 0x41: part = "ES7210 echo cancellation"; break;
+            case 0x51:            part = "PCF85063 REAL-TIME CLOCK"; break;
+            case 0x5a:            part = "CST9217 touch"; break;
+            case 0x6a: case 0x6b: part = "QMI8658 IMU"; break;
+        }
+        printf("I2C 0x%02x %s\n", a, part);
+    }
+    printf("OK %d devices\n", n);
+}
+
 void cmd_stats() {
     drive_log_stats_t s{};
     if (!drive_log_stats(&s)) { printf("ERR no recorder\n"); return; }
@@ -179,10 +228,20 @@ void cmd_get(uint32_t id) {
     printf(ok && g.sent == records ? "OK\n" : "ERR short read\n");
 }
 
+// Smallest stack headroom seen, in bytes. Sampled after each command rather
+// than before, because the peak this stack is sized for is inside cmd_get --
+// read_drive's 4,080-byte sector buffer plus printf.
+volatile uint32_t g_stack_low = 0xFFFFFFFFu;
+
 void task(void*) {
     install_blocking_console_reads();
     char line[64];
     for (;;) {
+        {
+            const uint32_t head = uxTaskGetStackHighWaterMark(nullptr) *
+                                  sizeof(StackType_t);
+            if (head < g_stack_low) g_stack_low = head;
+        }
         // Blocking now (see install_blocking_console_reads above): this task
         // sleeps here between commands rather than polling stdin. But
         // usb_serial_jtag_read() has its own unconditional early return --
@@ -202,6 +261,25 @@ void task(void*) {
         if (!strncmp(line, "TIME ", 5)) {
             drive_log_set_epoch((uint32_t)strtoul(line + 5, nullptr, 10));
             printf("OK clock set\n");
+        } else if (!strncmp(line, "DATE ", 5)) {
+            // DATE <drive id> <epoch> -- for a drive recorded before anything
+            // ever set the board's clock. It cannot be fixed on flash (the
+            // marker's zeroed bits cannot be written back up), so it is kept
+            // beside the ring instead.
+            char* end = nullptr;
+            const uint32_t id = (uint32_t)strtoul(line + 5, &end, 10);
+            const uint32_t epoch = end ? (uint32_t)strtoul(end, nullptr, 10) : 0;
+            if (!id) printf("ERR say 'DATE <id> <epoch>'\n");
+            else if (drives_list_set_date(id, epoch)) printf("OK drive %u dated %u\n",
+                                                            (unsigned)id, (unsigned)epoch);
+            else printf("ERR could not store the date\n");
+        } else if (!strcmp(line, "DRIVES")) {
+            // What the Drives view is showing, in text. The panel cannot be
+            // read from a tool call, so without this the only way to check the
+            // view is to be in front of the gauge.
+            drives_list_dump();
+        } else if (!strcmp(line, "I2C")) {
+            cmd_i2c();
         } else if (!strcmp(line, "STATS")) {
             cmd_stats();
         } else if (!strcmp(line, "LIST")) {
@@ -260,6 +338,8 @@ void task(void*) {
 }
 
 }  // namespace
+
+extern "C" uint32_t serial_cmd_stack_headroom(void) { return g_stack_low; }
 
 extern "C" void serial_cmd_init(void) {
     // Priority 2: below the recorder, well below the UI. Nothing waits on it.

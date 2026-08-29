@@ -259,6 +259,26 @@ const ViewSpec* view_table(int* count) {
             { nullptr, nullptr, nullptr, nullptr },
             { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
         },
+
+        // 9 --- Drives. The one view that shows the past rather than the
+        // present: what the recorder wrote to flash, read back with no Mac in
+        // the car. It has no hero, no dial and no rows, because none of those
+        // come from the Model -- see Layout::Drives.
+        //
+        // No `avail` entry either. Every other view can be made useless by a
+        // car that does not report its channel; this one is about drives on
+        // flash, so an empty list is a real answer and says so itself.
+        {
+            "DRIVES",
+            Instrument::None,
+            Layout::Drives,
+            {nullptr, nullptr, nullptr},
+            nullptr,
+            nullptr,
+            nullptr,
+            { nullptr, nullptr, nullptr, nullptr },
+            { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
+        },
     };
     *count = static_cast<int>(sizeof views / sizeof views[0]);
     return views;

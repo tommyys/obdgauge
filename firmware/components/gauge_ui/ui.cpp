@@ -6,6 +6,7 @@
 #include "ease.h"
 #include "bar.h"
 #include "carousel.h"
+#include "drives.h"
 #include "face.h"
 #include "slide.h"
 #include "views.h"
@@ -22,6 +23,13 @@ constexpr int kTitleY   = -142;  // view name, under the top of the rim
 constexpr int kHeroY    =  -60;  // the one big number
 constexpr int kUnitY    =  -18;  // its unit, directly beneath
 constexpr int kWordY    =   22;  // COLD / READY / the coach verdict
+// ELECTRICAL is the one view whose instrument lives in the middle of the panel
+// instead of on the rim, and the bar sits exactly across kWordY: the bar spans
+// 23..44 and its marker 14..53, while a 28 px word centred on 22 spans 7..37.
+// The word was drawn first, so the bar covered it. The simulator stacks hero,
+// bar, then status, so the word goes UNDER the bar here too -- clear of the
+// marker's bottom at 53, and still well above the make/model banner at 178.
+constexpr int kBarWordY =   78;  // CHARGING / RESTING / LOW, below the bar
 constexpr int kSubY0    =   66;  // first line of sub-text, Rows layout
 // A grid cell is a value over its own label, so two rows of them stand about
 // 96 px tall against the 62 px of four text lines. Anchoring both layouts at
@@ -262,12 +270,20 @@ ViewObjs build_view(const ViewSpec& spec) {
     // -- the coach verdict, the peak -- so it moves up into that slot rather
     // than leaving a gap the width of a line above it.
     if (spec.state_word) {
-        const int wy = (spec.hero_unit ? kWordY : kUnitY) - hub_lift;
+        const int wy = face_k == Instrument::Bar ? kBarWordY
+                                                 : (spec.hero_unit ? kWordY : kUnitY) - hub_lift;
         const lv_font_t* f = spec.hero_unit ? &lv_font_montserrat_28 : &lv_font_montserrat_20;
         v.word = mk_label(c, f, 0x808080, LV_ALIGN_CENTER, 0, wy);
     }
 
     if (face_k == Instrument::Bar) v.bar = bar_build(c, 34);
+
+    if (layout_k == Layout::Drives) {
+        // Built by its own file: this view's content is the flash ring's, not
+        // the Model's, so it has nothing this builder knows how to lay out.
+        drives_build(c);
+        return v;
+    }
 
     int n = 0;
     while (n < 4 && spec.rows[n].label) ++n;
@@ -511,6 +527,14 @@ void update(const Model& m) {
     if (g_cur < 0 || g_cur >= g_count) return;
     const ViewSpec& s = g_specs[g_cur];
     ViewObjs& v = g_objs[static_cast<size_t>(g_cur)];
+
+    if (s.layout == Layout::Drives) {
+        // No hero, no dial, no rows, and no availability screen -- an empty
+        // list is this view's own answer. Formatting it every frame is cheap:
+        // drives_update() writes a label only when its text actually changed.
+        drives_update();
+        return;
+    }
 
     // Can this car drive this view at all? The rule is host-tested in
     // test_avail.cpp; the part that matters here is that it is checked BEFORE

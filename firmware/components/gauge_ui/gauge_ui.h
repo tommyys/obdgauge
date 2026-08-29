@@ -42,6 +42,22 @@ void update(const Model& m);
 // swipe could begin and end between two polls and never be seen, which is why
 // switching worked only sometimes.
 const char* slide_note();
+
+// Claims the slide's DMA band buffer now rather than on the first swipe.
+// Call it at boot, right after the radio, and before the display starts.
+//
+// The buffer is 466 * 32 * 2 = 29,824 bytes and it must be DMA-capable
+// internal RAM, which is the same scarce pool the BT controller takes a
+// contiguous 30,720 bytes from. Allocated lazily it was refused: measured on
+// the board 2026-08-28 there were 32,831 bytes free but the largest hole was
+// 23,552, so the first swipe would have printed "band buffer UNAVAILABLE" and
+// slid nothing. Claimed at boot, while the heap is still whole, it is there
+// for the rest of the run -- which is what the comment in slide.cpp always
+// intended by "reserved up front".
+//
+// Returns false if it could not be had, which is a real failure worth logging
+// rather than discovering at the first swipe.
+bool reserve_slide_band(int width);
 bool slide_selftest(int hold_ms);
 // Runs a real view change -- the same slide a swipe produces -- without a
 // finger on the glass. Kept for the same reason slide_selftest() is: the swipe

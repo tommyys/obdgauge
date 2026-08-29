@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 from pull_drives import (  # noqa: E402
     REC, CHAN_DRIVE_START, CHAN_DRIVE_END, TABLE_VERSION,
     chan_name, page_drives, parse_stats, parse_drives, parse_truncated,
-    reassemble, write_csv,
+    is_terminator, reassemble, write_csv,
 )
 
 FAILED = []
@@ -173,6 +173,31 @@ check('reassemble: decodes extras record', got[2],
 got_noisy = reassemble(get_stream(sample_records, with_log_noise=True), 7)
 check('reassemble: tolerates a board log line mid-stream',
       len(got_noisy), len(sample_records))
+
+# A payload line that starts with the letters `OK`. Base64 is free to spell
+# them, and in a 19,000-line drive it does -- this is the shape that cut a real
+# 57,107-record pull off at 8,367 records and blamed the board for it.
+def records_whose_b64_starts_with(prefix, per_line=3):
+    for t in range(200000):
+        trio = [(t, 9, 0, 850.0), (t + 1, 10, 0, 40.0), (t + 2, 5, 0, 89.0)]
+        if b64_lines(trio, per_line)[0].startswith(prefix):
+            return trio
+    raise AssertionError('no %r line found' % prefix)
+
+
+check('is_terminator: bare OK', is_terminator('OK'), True)
+check('is_terminator: OK with fields', is_terminator('OK 3 drives truncated=0'), True)
+check('is_terminator: bare ERR', is_terminator('ERR'), True)
+check('is_terminator: ERR with fields', is_terminator('ERR no drive 999'), True)
+check('is_terminator: base64 payload starting OK',
+      is_terminator('OKIDAAMCAAAAgGm/OKIDAAQCAAAAAHBASqIDADQAAAAAAMA/'), False)
+check('is_terminator: base64 payload starting ERR',
+      is_terminator('ERRDAAMCAAAAgGm/OKIDAAQCAAAAAHBASqIDADQAAAAAAMA/'), False)
+
+okish = records_whose_b64_starts_with('OK')
+got_okish = reassemble(get_stream(sample_records + okish), 7)
+check('reassemble: payload line starting OK is data, not the end',
+      len(got_okish), len(sample_records) + len(okish))
 
 check_exits('reassemble: crc32 mismatch -> exits',
             reassemble, get_stream(sample_records, corrupt_crc=True), 7)

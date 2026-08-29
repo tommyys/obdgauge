@@ -56,6 +56,26 @@ CHAN_DRIVE_START = 0xFFFF
 CHAN_DRIVE_END = 0xFFFE
 
 
+def is_terminator(line):
+    """Pure: is this line the reply's `OK`/`ERR` terminator, or payload?
+
+    GET's body is base64, and a base64 line is free to start with the letters
+    `OK` -- one in roughly four thousand does, and a 57,107-record drive is
+    19,000 lines long, so it is not a rare case, it is the normal case. A bare
+    `startswith('OK')` cut those pulls off in the middle of the drive and
+    reported it as `got 8367 records, board said 57107`, which reads like the
+    board losing data when nothing was ever wrong with the board.
+
+    The terminator is `OK`, `ERR`, or those followed by a space (`OK 3 drives
+    truncated=0`, `ERR no drive 999`). Base64's alphabet has no space in it,
+    so a payload line can never take either shape.
+    """
+    for word in ('OK', 'ERR'):
+        if line == word or line.startswith(word + ' '):
+            return True
+    return False
+
+
 def chan_name(chan):
     if chan >= EXTRAS_BASE:
         i = chan - EXTRAS_BASE
@@ -103,7 +123,7 @@ class Gauge:
                 continue
             # Board log lines are prefixed (I/W/E or "flight:"/"live:"); the
             # protocol's are not. Anything unrecognised is logging, not data.
-            if line.startswith(('OK', 'ERR')):
+            if is_terminator(line):
                 yield line
                 return
             yield line
@@ -218,7 +238,7 @@ def reassemble(lines, drive_id):
             expect = int(line.split()[2])
         elif line.startswith('END '):
             crc = int(line.split('=', 1)[1], 16)
-        elif line.startswith(('OK', 'ERR')):
+        elif is_terminator(line):
             if line.startswith('ERR'):
                 sys.exit('GET %d -> %s' % (drive_id, line))
         elif expect is not None and crc is None:

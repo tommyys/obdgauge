@@ -23,11 +23,13 @@ struct Dial {
     double (*hi)(const Model&);
     std::string (*unused)(const Model&);   // reserved, keeps the struct POD-ish
     bool (*value)(const Model&, double* out);
-    // A VerdictRing's colour, from the value it is showing. The driving score
-    // had this rule written into ui.cpp, which meant the one view that judged
-    // its own reading kept its thresholds somewhere no view could see. Null
-    // for every plain dial, which keeps its fixed colour.
-    uint32_t (*colour)(double value) = nullptr;
+    // A VerdictRing's colour. Takes the model as well as the swept value,
+    // because a ring does not have to be showing the reading it is judging:
+    // TRIP's is full at all times and says the economy in colour alone. The
+    // driving score had this rule written into ui.cpp, which meant the one
+    // view that judged its own reading kept its thresholds somewhere no view
+    // could see. Null for every plain dial, which keeps its fixed colour.
+    uint32_t (*colour)(const Model&, double value) = nullptr;
 };
 
 // What the view draws to show its reading as a shape rather than a number.

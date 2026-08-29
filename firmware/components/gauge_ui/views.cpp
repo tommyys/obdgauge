@@ -138,7 +138,7 @@ const ViewSpec* view_table(int* count) {
             { [](const Model&) { return 0.0; }, [](const Model&) { return 100.0; }, nullptr,
               [](const Model& m, double* o) {
                   auto v = m.score.total(); if (!v) return false; *o = *v; return true; },
-              [](double v) -> uint32_t {
+              [](const Model&, double v) -> uint32_t {
                   return v >= 85 ? 0x35E06B : v >= 70 ? 0xFFC53D : 0xFF3B30; } },
             {
                 {"sm",   [](const Model& m) { return num(m.score.smooth(), "%.0f"); }},
@@ -155,11 +155,16 @@ const ViewSpec* view_table(int* count) {
         // fuel used and cost were on both. Economy joins as the second cell.
         {
             "TRIP",
-            // A ring for the economy, on the rim where every other dial is.
-            // The hero is distance, so the ring is deliberately the only thing
-            // on the view carrying km/L as a shape: it fills as the average
-            // climbs and takes the same green/amber/red the KM/L cell does, so
-            // "how is this drive going" is answerable without reading a digit.
+            // A full ring on the rim that says the economy in colour alone.
+            // It does not sweep: a part-filled ring invites you to read how
+            // full it is, and the length of it means nothing here -- the hero
+            // is distance. Green, amber or red is the whole message.
+            //
+            // Colouring the BACKGROUND instead was the other idea and is not
+            // an option on this board: a backdrop covers the panel, so every
+            // change to it repaints the panel. Measured at 5-20 fps however it
+            // was drawn (build_under_tacho), which is why the tacho puts its
+            // heat on the rim as well.
             Instrument::VerdictRing,
             Layout::Grid,
             {"speed,fuel_rate", "NO TRIP DATA",
@@ -168,15 +173,21 @@ const ViewSpec* view_table(int* count) {
                 char b[24]; snprintf(b, sizeof b, "%.1f", m.trip.dist_km); return std::string(b); },
             "KM",
             nullptr,
-            // 0 to 20 km/L. This car averages about 11 and the best a gentle
-            // run has shown is in the mid teens, so 20 leaves headroom without
-            // making the useful part of the sweep a stub.
-            { [](const Model&) { return 0.0; }, [](const Model&) { return 20.0; }, nullptr,
+            // Always full: lo 0, hi 1, value 1. It reports false until there is
+            // an economy figure at all, which is what hides the ring on a
+            // stationary car rather than drawing a green circle for a drive
+            // that has not started.
+            { [](const Model&) { return 0.0; }, [](const Model&) { return 1.0; }, nullptr,
               [](const Model& m, double* o) {
-                  auto v = m.trip.econ_km_per_l(); if (!v) return false; *o = *v; return true; },
-              [](double v) -> uint32_t {
-                  return v >= gauge::kEconGoodKmL ? 0x35E06B
-                       : v >= gauge::kEconPoorKmL ? 0xFFC53D : 0xFF3B30; } },
+                  if (!m.trip.econ_km_per_l()) return false;
+                  *o = 1.0;
+                  return true; },
+              [](const Model& m, double) -> uint32_t {
+                  auto e = m.trip.econ_km_per_l();
+                  if (!e)                        return 0x5A5F6A;
+                  if (*e >= gauge::kEconGoodKmL) return 0x35E06B;
+                  if (*e >= gauge::kEconPoorKmL) return 0xFFC53D;
+                  return 0xFF3B30; } },
             {
                 {"TIME",  [](const Model& m) {
                     int s = static_cast<int>(m.trip.elapsed_s);

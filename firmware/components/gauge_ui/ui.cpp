@@ -601,7 +601,7 @@ void update(const Model& m) {
             // A ring that carries its verdict as colour says what the
             // thresholds are in its own view, not here.
             if (s.dial.colour) {
-                const uint32_t col = s.dial.colour(val);
+                const uint32_t col = s.dial.colour(m, val);
                 if (col != v.arc_colour) {
                     v.arc_colour = col;
                     lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);

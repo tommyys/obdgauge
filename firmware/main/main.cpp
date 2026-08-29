@@ -286,12 +286,23 @@ extern "C" void app_main(void) {
     // not-available screens while the gauge is still looking for the car.
     const std::set<std::string>* supported = nullptr;
 
-    gauge::VehicleState st;
-    gauge::Trip trip;
-    gauge::DrivingScore score;
+    // Static, not stack. These three live for the whole run, and DrivingScore
+    // is 592 bytes on its own now that it carries the g solver -- adding that
+    // to app_main's frame overflowed the 8 KB main task stack and put the
+    // board in a boot loop ("A stack overflow in task main has been
+    // detected", 2026-08-29). Raising the stack would have hidden it; the
+    // objects were never stack-shaped in the first place. Reassignment at the
+    // end of a drive still works exactly as it did.
+    static gauge::VehicleState st;
+    static gauge::Trip trip;
+    static gauge::DrivingScore score;
     // Which way the gauge points, if a previous drive worked it out. Without
     // this the g view says LEARNING for the first six minutes of every drive.
     mount_cache_load(score.g);
+    // The headroom that overflow ate, printed so the next thing to grow a
+    // frame here shows up as a number rather than as a boot loop.
+    printf("main: %u bytes of stack headroom\n",
+           (unsigned)uxTaskGetStackHighWaterMark(nullptr));
     int64_t t0 = esp_timer_get_time();
     int64_t last_frame_us = t0;
     double  last_imu_t = -1.0;      // so the first published sample is taken

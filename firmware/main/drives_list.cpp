@@ -10,6 +10,7 @@
 #include "drives_list.h"
 
 #include <cstring>
+#include <ctime>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -242,9 +243,18 @@ void drives_list_dump(void) {
     const int n = g_count;
     for (int i = 0; i < n; ++i) {
         const Entry& e = g_cache[i];
-        printf("ROW %d id=%u epoch=%u complete=%d table=%u ready=%d "
+        // The same local time the view puts on the row, so a timezone fault
+        // shows up here rather than only on the glass.
+        char when[32] = "date unknown";
+        if (e.info.epoch_s) {
+            const time_t t = (time_t)e.info.epoch_s;
+            struct tm tm_v;
+            localtime_r(&t, &tm_v);
+            strftime(when, sizeof when, "%d %b %H:%M", &tm_v);
+        }
+        printf("ROW %d id=%u epoch=%u when='%s' complete=%d table=%u ready=%d "
                "km=%.2f rpm=%.0f kph=%.0f ms=%u\n",
-               i, (unsigned)e.info.id, (unsigned)e.info.epoch_s, e.info.complete ? 1 : 0,
+               i, (unsigned)e.info.id, (unsigned)e.info.epoch_s, when, e.info.complete ? 1 : 0,
                (unsigned)e.info.table_version, e.ready ? 1 : 0,
                e.stats.distance_km, e.stats.peak_rpm, e.stats.peak_kph,
                (unsigned)(e.ready ? e.stats.duration_ms : e.info.duration_ms));

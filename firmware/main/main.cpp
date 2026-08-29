@@ -32,6 +32,8 @@
 #include "ble_transport.h"
 #include "imu.h"
 #include "flight_log.h"
+#include <cstdlib>
+#include <ctime>
 #include "drive_log.h"
 #include "drives_list.h"
 #include "serial_cmd.h"
@@ -214,6 +216,14 @@ extern "C" void app_main(void) {
     printf("imu: %s (addr 0x%02x, whoami 0x%02x)\n",
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
     flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
+    // The board has no timezone until it is given one, so strftime() renders
+    // every drive in UTC -- the 2026-08-29 drive listed as 03:24 for a drive
+    // that started at 11:24. The clock the Mac lends over TIME is epoch
+    // seconds and is unaffected; this is only how it is shown. POSIX gets the
+    // sign backwards on purpose: -8 means eight hours EAST of UTC.
+    setenv("TZ", "MYT-8", 1);
+    tzset();
+
     drive_log_init();
     // After the recorder: the Drives view reads what it wrote, and its scan
     // task asks drive_log_buf() for the mounted ring.

@@ -176,13 +176,7 @@ void drives_update() {
         fmt_when(buf, sizeof buf, info.epoch_s);
         set_text_if_changed(g_card_when, buf);
         fmt_dur(buf, sizeof buf, info.stats.duration_ms);
-        if (!info.complete) {
-            char note[64];
-            snprintf(note, sizeof note, "%s  (unfinished)", buf);
-            set_text_if_changed(g_card_dur, note);
-        } else {
-            set_text_if_changed(g_card_dur, buf);
-        }
+        set_text_if_changed(g_card_dur, buf);
 
         if (!info.table_ok) {
             set_text_if_changed(g_card_dist, "--");
@@ -236,9 +230,12 @@ void drives_update() {
         } else if (!d.ready) {
             set_text_if_changed(r.stats, "reading...");
         } else {
-            snprintf(buf, sizeof buf, "%.1f km   %.0f rpm   %.0f km/h%s",
-                     d.stats.distance_km, d.stats.peak_rpm, d.stats.peak_kph,
-                     d.complete ? "" : "   unfinished");
+            // No "unfinished" marker. A drive missing its end marker -- the
+            // gauge unplugged before the 20 s of silence that closes one --
+            // still holds every record it recorded, so the word said nothing
+            // about the drive and only invited the question.
+            snprintf(buf, sizeof buf, "%.1f km   %.0f rpm   %.0f km/h",
+                     d.stats.distance_km, d.stats.peak_rpm, d.stats.peak_kph);
             set_text_if_changed(r.stats, buf);
         }
     }

@@ -131,10 +131,13 @@ that ruled one out no longer holds.
 
 Recording the reasoning so it isn't relitigated:
 
-- **No dedicated g-force view.** OBD exposes no accelerometer. The
-  "acceleration" channel in Car Scanner logs is just speed differentiated —
-  coarse and laggy. The IMU stays (it's free on the board) and feeds the
-  driving score instead.
+- **No dedicated g-force view — reversed 2026-08-29.** It was right that OBD
+  exposes no accelerometer, and that the "acceleration" channel in Car Scanner
+  logs is just speed differentiated, coarse and laggy. What changed is that
+  the board's own QMI8658 now works: it learns which way it is mounted from
+  the drive itself (B3), so real lateral and longitudinal g are available. The
+  Driving view *is* the g view now — the round screen is the traction circle.
+  The IMU still feeds the driving score; it just draws as well.
 - **Tacho was dropped, then added back as view 1.** The factory dash has a big
   RPM meter, so it was originally excluded. It returned because seeing live RPM
   is the clearest confirmation the link is working.
@@ -215,7 +218,8 @@ real life has no console attached.
 ### Tunables
 
 - `metrics.FUEL_PRICE_RM` — fuel price for cost readouts (currently 2.05)
-- `metrics.W_SMOOTH / W_ECON / W_CALM` — driving-score weights (0.40 / 0.30 / 0.30)
+- `metrics.W_THROTTLE / W_BRAKING / W_CORNERING / W_CARE` — driving-score
+  weights (0.30 / 0.30 / 0.25 / 0.15). Economy is not among them: see B3.
 - `metrics.ECO_RPM_LO/HI` — efficient rev band (1200–2600)
 - `metrics.HARSH_ACCEL / HARSH_BRAKE` — harsh-event thresholds (m/s²)
 - `state.RANGES` — per-channel plausibility bounds
@@ -229,7 +233,7 @@ real life has no console attached.
 | 1 | Tacho | rpm, speed, throttle |
 | 2 | Engine (home) | coolant + COLD/WARMING/READY, battery, intake |
 | 3 | Fuel economy | fuel rate ÷ speed, trip totals, RM cost |
-| 4 | Driving score | smoothness + economy + calm, coach word |
+| 4 | Driving | the g-ball: real lateral/longitudinal g, the tidiness score, the pole |
 | 5 | Trip | distance, time, avg speed, fuel, cost |
 | 6 | Power | actual torque % × reference torque × rpm |
 | 7 | Thermals | coolant, intake, catalyst |
@@ -284,9 +288,10 @@ than a rewind of the whole strip.
    dropped becomes possible in the same change.
 2. **Capture a proper drive** — 15–20 min with variety (town, open road, a few
    pulls), now recordable from the board itself rather than the Mac.
-3. **B3 — decide what "spirited" means** (§7.5). Not a build task. Nothing in
-   the driving score should be tuned before it is settled, or the constants get
-   tuned twice.
+3. **B3 — settled and built 2026-08-29** (§7.5). "Spirited" is a pole the
+   gauge picks from the data, not a mode; the score judges how tidily you
+   drove rather than how gently. What is left is tuning the Spirited bands
+   against a real spirited drive, which does not exist on file yet.
 4. **Mount the board**, then identify the IMU axes in that orientation. Gravity
    is known to read on Z; longitudinal versus lateral is not, and cannot be
    until the board is fixed in place.
@@ -294,7 +299,9 @@ than a rewind of the whole strip.
    3D-printed enclosure.
 
 **Open questions**
-- Driving-score weights are untuned guesses — needs a real drive log *and* B3.
+- The Spirited bands are reasoned, not tuned — no real spirited drive is on
+  file yet. The Nice bands and the g solver are measured against
+  `logs/drive-20260829-211900.csv`.
 - Whether to fit a physical oil-temp sender.
 - Mounting position and enclosure design.
 - ~~Exact ignition-switched 12 V tap point~~ — **moot**: the USB socket is
@@ -313,7 +320,7 @@ first so nothing gets lost, then graduates into section 5/6/7 once built.
 |---|---|---|
 | B1 | Boot splash on ignition on (shutdown dropped — see below) | **shipped (simulator) — §14** |
 | B2 | In-UI view to browse and pick a past drive to replay | **shipped (simulator) — §12** |
-| B3 | Define the driving score: what is "spirited", what is "harsh"? | **open question — see below** |
+| B3 | Define the driving score: what is "spirited", what is "harsh"? | **decided and built 2026-08-29 — see below** |
 | B4 | Does OBD expose convertible-roof up/down? | **answered: NO — see below** |
 | B5 | Make it a *universal* gauge; show car make/model at the top | **shipped in the simulator — §10** |
 
@@ -333,33 +340,56 @@ an **on-screen** way to scroll a list of recorded drives (date, duration,
 distance, score) and pick one to replay — the touch-carousel equivalent of the
 sessions list. Simulator-first; on hardware it reads the SD-card log index.
 
-### B3 — Driving-score definition (open — needs a decision)
+### B3 — Driving-score definition — **DECIDED AND BUILT, 2026-08-29**
 
-**Current logic** (`metrics.py`, all host-tested) blends three 0–100 sub-scores:
+Design: `docs/superpowers/specs/2026-08-29-driving-score-design.md`.
 
-- **smooth (0.40):** average throttle jerk (%/s); 0 → 100, 12 %/s → 0.
-- **econ (0.30):** time in the 1200–2600 rpm band + average instant
-  consumption. The display quotes **km/L**; the score keeps working in L/100km,
-  where its 5→100 / 15→0 band is tuned. `metrics.km_per_l` is the only place
-  the two units meet.
-- **calm (0.30):** harsh events per minute; each event drops it 25 pts/min.
+**The problem it was open on.** The old score blended smoothness 0.40,
+economy 0.30 and calm 0.30, and all three rewarded driving gently. A good
+backroad drive scored as bad driving. Nothing could be tuned until that was
+settled.
 
-**"Harsh" today** = longitudinal acceleration from the *speed delta*
-(`Δspeed / dt`), thresholds **> +2.5 m/s² (accel)** and **< −3.0 m/s² (brake)**.
-This is coarse and laggy — speed differentiated at ~1 Hz — and it is the *only*
-input to "calm".
+**The decision.** The score answers one question: *how tidily did you do
+whatever you were doing?* Not *were you driving gently?*
 
-**What's missing:**
-- **"Spirited" is not defined at all.** The score only rewards calm/economical
-  driving and silently punishes fun. On a scenic drive that's backwards. Need to
-  decide whether spirited is (a) a *separate* positive metric, (b) a driving
-  *mode* that reweights the score, or (c) left out.
-- **The on-board IMU is unused.** The board has a QMI8658 6-axis IMU; real
-  lateral/longitudinal g would replace the speed-delta proxy and finally make
-  "harsh" (and any "spirited") meaningful. Decide the thresholds against a real
-  IMU + drive log, not guesses.
+- **Two poles, one formula.** A hidden **intensity** — the loudest of revs,
+  throttle and horizontal g, smoothed over 30 s — picks whether the driving
+  is judged as **Nice** or **Spirited**. The pole picks the bands; the weights
+  never change. Nice below 0.35, Spirited above 0.55, and a pole must hold 5 s
+  before it takes over.
+- **Four sub-scores:** throttle 0.30, braking 0.30, cornering 0.25,
+  mechanical care 0.15. Nice scores the *size* of a stop or a corner;
+  Spirited scores its *edges* — jerk and sawing — and allows any peak g.
+- **Fuel economy is out of the score entirely.** It is a readout on the Trip
+  view. A score that marks you down for enjoying the car is the thing B3 was
+  opened to stop.
+- **Everything is demerit-seconds**, so the maths is sample-rate independent
+  by construction.
+- **Missing channel means missing sub-score**, not a zero — the same honesty
+  rule as `gauge::view_available`.
 
-→ This is a design decision to make deliberately, then re-tune the constants.
+**"Harsh" is no longer a speed-delta guess.** The QMI8658 does the work it was
+fitted for. `mx5gauge/gforce.py` and `gauge_core/gforce.cpp` learn the
+mounting angle from the drive itself: gravity gives down, and the fact that
+road speed only changes when the car brakes or accelerates gives forward.
+Replayed against the 2026-08-29 mounted drive the solver puts forward along
+−Z and right along +Y — which is what an independent correlation of the raw
+axes against the speed derivative says. **Nobody measured the bracket**, which
+also closes the "needs a moving car in the final mounting orientation" note
+that had been blocking this. The answer is cached (`logs/mount.json` in the
+simulator, an NVS blob on the board), so only the first drive waits for it.
+
+**The view is the g-ball.** The round screen is the traction circle: a dot
+where the car is being pushed, a fading trail that draws the shape of the
+corner, ghosts on the drive's hardest stop and hardest corner, and the pole
+carried as colour — green through to red. The simulator says that with the §11
+backdrop fed intensity instead of revs; the board says it on the rim ring,
+because a full-screen backdrop costs 5–20 fps on this panel (§4).
+
+**Still not measured.** No real spirited drive exists on file yet, so that
+half of the score has never been fed real data — its bands are reasoned, not
+tuned. The board view has not been looked at on the panel, and the IMU read
+rate went from 5 Hz to 20 Hz without a drive to confirm it.
 
 ### B4 — Roof up/down over OBD? **No.**
 

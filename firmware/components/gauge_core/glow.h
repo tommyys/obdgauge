@@ -32,6 +32,12 @@ struct Glow {
 constexpr int kGlowSteps = 40;
 constexpr uint32_t kGlowEmber = 0x681A0C;   // low intensity, deep ember
 constexpr uint32_t kGlowRed   = 0xFF2216;   // full intensity, hot red
+// The cool end, used only where this ramp is driven by the driving score's
+// intensity rather than by rpm (gauge_ui/gball.cpp, and GLOW_CALM in the
+// simulator's index.html). The rev ramp has no calm end because a tacho at
+// idle should show nothing; a pole indicator must show something, or a gentle
+// drive is indistinguishable from a gauge that has died.
+constexpr uint32_t kGlowCalm  = 0x18844E;   // deep green: driving nicely
 constexpr double kGlowStart = 0.22;         // fraction of redline before any tint
 // Fraction of redline at which the glow is already fully hot. Tying full
 // intensity to the redline itself meant the top of the ramp was somewhere you

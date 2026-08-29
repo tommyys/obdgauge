@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "imu.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,6 +68,16 @@ bool drive_log_stats(drive_log_stats_t* out);
 // For serial_cmd.cpp's LIST/GET. Null until drive_log_init has mounted.
 // Only the serial task may touch it, and only while holding drive_log_lock().
 namespace gauge { class LogBuf; }
+// The latest accelerometer reading, and the board clock it was taken at.
+// False when the part has not reported yet, or when the recorder task was
+// caught mid-write -- one skipped g sample, which the score does not notice.
+//
+// The recorder task is the only thing allowed to touch the I2C bus, so the UI
+// loop cannot read the part itself; it reads what that task last published.
+// The part is sampled at 20 Hz for this and written to flash at 5, because
+// the driving score measures jerk and the log wants hours.
+bool drive_log_imu(imu_sample_t* out, double* t_s);
+
 gauge::LogBuf* drive_log_buf(void);
 bool drive_log_lock(int ms);
 void drive_log_unlock(void);

@@ -28,7 +28,15 @@ constexpr int64_t kSilenceUs = 20LL * 1000 * 1000;
 constexpr int64_t kFlushUs = 2LL * 1000 * 1000;
 // 5 Hz, not 10: the IMU is four channels against the car's twelve readings a
 // second, and 10 Hz would halve the history the partition holds (design s3).
-constexpr int64_t kImuPeriodUs = 200LL * 1000;
+// How often the part is read. 20 Hz, up from 5: the driving score measures
+// jerk -- how fast braking arrives and leaves -- and at 5 Hz a whole hard
+// stop is one or two samples, which is not a rate of anything. The recorder
+// task is the only thing allowed to touch the I2C bus here, so the score
+// cannot simply read it itself from the UI loop.
+constexpr int64_t kImuPeriodUs = 50LL * 1000;
+// ...but only every fourth read is written to flash, which keeps the ring at
+// the 5 Hz it already held. The score wants resolution; the log wants hours.
+constexpr int kImuLogEvery = 4;
 // Persist the borrowed clock this often, so a boot with no Mac has a floor.
 constexpr int64_t kClockSaveUs = 300LL * 1000 * 1000;
 
@@ -71,6 +79,22 @@ uint32_t         g_write_fail = 0;         // LogBuf calls that returned false
 uint32_t         g_epoch_at_boot = 0;      // wall clock of uptime 0, 0 if unknown
 uint32_t         g_clock_floor = 0;        // NVS wall clock from a previous run
 bool             g_have_imu = false;
+int              imu_reads = 0;
+
+// The latest accelerometer reading, for anything outside this task. Written
+// here and read from the UI loop, so it is guarded by a plain sequence
+// counter rather than the log's mutex: a torn read would be one bad g sample,
+// and blocking the draw path on the recorder's lock would be far worse.
+volatile uint32_t g_imu_seq = 0;
+imu_sample_t      g_imu_last{};
+double            g_imu_t = 0.0;
+
+void imu_publish(const imu_sample_t& s, double t_s) {
+    ++g_imu_seq;                       // odd: a write is in progress
+    g_imu_last = s;
+    g_imu_t = t_s;
+    ++g_imu_seq;                       // even: settled
+}
 
 // Every LogBuf entry point returns bool and every one of them used to be
 // discarded, so a failed flash write or erase left a hole in a drive nobody
@@ -178,26 +202,36 @@ void task(void*) {
             last_imu = now;
             imu_sample_t im{};
             if (imu_read(&im)) {
-                // Ids are looked up once: log_chan_id walks a string table.
-                static const uint16_t kImuChan[4] = {
-                    gauge::log_chan_id("imu_ax"), gauge::log_chan_id("imu_ay"),
-                    gauge::log_chan_id("imu_az"), gauge::log_chan_id("imu_gz"),
-                };
-                const float v[4] = {im.ax, im.ay, im.az, im.gz};
-                const double dt = now / 1e6 - drive_t0;
-                const uint32_t t_ms = dt > 0 ? (uint32_t)(dt * 1000.0) : 0;
-                xSemaphoreTake(g_lock, portMAX_DELAY);
-                // A drive may have closed between the check and the lock;
-                // append() would refuse, and that refusal is not a fault.
-                if (g_log->current_drive()) {
-                    for (int i = 0; i < 4; ++i) {
-                        if (kImuChan[i] == gauge::kChanUnknown) continue;
-                        gauge::Record r{t_ms, kImuChan[i], 0, v[i]};
-                        note(g_log->append(r), "append imu");
-                        ++drive_records;
+                // Publish first, whatever happens to the flash write below.
+                // The score reads this from the UI loop; it must not be
+                // coupled to whether a drive happens to be open.
+                imu_publish(im, now / 1e6);
+                // Only every fourth read reaches flash, which keeps the ring
+                // at the 5 Hz it already held. `continue` would be wrong
+                // here: it would also skip the flush and the clock save below
+                // and leave the ring unflushed for three reads in four.
+                if (++imu_reads % kImuLogEvery == 0) {
+                    // Ids are looked up once: log_chan_id walks a string table.
+                    static const uint16_t kImuChan[4] = {
+                        gauge::log_chan_id("imu_ax"), gauge::log_chan_id("imu_ay"),
+                        gauge::log_chan_id("imu_az"), gauge::log_chan_id("imu_gz"),
+                    };
+                    const float v[4] = {im.ax, im.ay, im.az, im.gz};
+                    const double dt = now / 1e6 - drive_t0;
+                    const uint32_t t_ms = dt > 0 ? (uint32_t)(dt * 1000.0) : 0;
+                    xSemaphoreTake(g_lock, portMAX_DELAY);
+                    // A drive may have closed between the check and the lock;
+                    // append() would refuse, and that refusal is not a fault.
+                    if (g_log->current_drive()) {
+                        for (int i = 0; i < 4; ++i) {
+                            if (kImuChan[i] == gauge::kChanUnknown) continue;
+                            gauge::Record r{t_ms, kImuChan[i], 0, v[i]};
+                            note(g_log->append(r), "append imu");
+                            ++drive_records;
+                        }
                     }
+                    xSemaphoreGive(g_lock);
                 }
-                xSemaphoreGive(g_lock);
             }
         }
 
@@ -217,7 +251,20 @@ void task(void*) {
 
 }  // namespace
 
-extern "C" void drive_log_init(void) {
+bool drive_log_imu(imu_sample_t* out, double* t_s) {
+    // Read the sequence either side. An odd value, or a value that moved,
+    // means the recorder task was mid-write and this sample is torn.
+    const uint32_t a = g_imu_seq;
+    if (a == 0 || (a & 1u)) return false;
+    imu_sample_t s = g_imu_last;
+    double t = g_imu_t;
+    if (g_imu_seq != a) return false;
+    *out = s;
+    *t_s = t;
+    return true;
+}
+
+void drive_log_init(void) {
     if (!g_flash.open()) {
         ESP_LOGW(TAG, "no 'logs' partition -- drives will not be recorded");
         flight_log("no logs partition, NOT recording");

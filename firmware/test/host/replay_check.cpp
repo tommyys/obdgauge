@@ -132,8 +132,15 @@ int main(int argc, char** argv) {
         st.set(key, value);
         if (ok) {
             trip.update(t, st.get("speed"), st.get("fuel_rate"));
+            // The IMU is fed on its own arrival, not folded into the OBD
+            // update: on the board it is read far faster than any OBD
+            // channel, and jerk is the whole reason for using it. Mirrors
+            // state.IMU_KEYS in the Python.
+            if (key == "imu_ax" || key == "imu_ay" || key == "imu_az")
+                score.imu(t, st.get("imu_ax"), st.get("imu_ay"),
+                          st.get("imu_az"));
             score.update(t, st.get("speed"), st.get("rpm"), st.get("throttle"),
-                         st.get("fuel_rate"));
+                         st.get("fuel_rate"), st.get("coolant"));
         }
 
         if (!fgets(line, sizeof line, ref)) {
@@ -147,8 +154,6 @@ int main(int argc, char** argv) {
         for (const auto& kv : st.values()) got_ch[kv.first] = fmt(kv.second);
         channels_seen = static_cast<long>(got_ch.size());
 
-        double sum_events = 0.0;
-        for (const auto& e : score.events) sum_events += e.a;
         std::map<std::string, std::string> got_dv = {
             {"dist_km", fmt(trip.dist_km)},
             {"fuel_l", fmt(trip.fuel_l)},
@@ -158,18 +163,31 @@ int main(int argc, char** argv) {
             {"econ_l_per_100", fmt(trip.econ_l_per_100())},
             {"econ_km_per_l", fmt(trip.econ_km_per_l())},
             {"avg_speed_kph", fmt(trip.avg_speed_kph())},
-            {"thr_travel", fmt(score.thr_travel)},
-            {"thr_seconds", fmt(score.thr_seconds)},
-            {"eco_s", fmt(score.eco_s)},
+            {"thr_s", fmt(score.thr_s)},
+            {"thr_bad", fmt(score.thr_bad)},
+            {"brake_s", fmt(score.brake_s)},
+            {"brake_bad", fmt(score.brake_bad)},
+            {"corner_s", fmt(score.corner_s)},
+            {"corner_bad", fmt(score.corner_bad)},
+            {"care_s", fmt(score.care_s)},
+            {"care_bad", fmt(score.care_bad)},
             {"rev_s", fmt(score.rev_s)},
-            {"econ_sum", fmt(score.econ_sum)},
-            {"econ_s", fmt(score.econ_s)},
-            {"harsh", fmt(static_cast<double>(score.harsh))},
+            {"intensity", fmt(score.intensity)},
+            {"pole", score.pole == gauge::Pole::Spirited ? "SPIRITED" : "NICE"},
+            {"nice_s", fmt(score.nice_s)},
+            {"spirited_s", fmt(score.spirited_s)},
             {"n_events", fmt(static_cast<double>(score.events.size()))},
-            {"sum_events", fmt(sum_events)},
-            {"smooth", fmt(score.smooth())},
-            {"econ", fmt(score.econ())},
-            {"calm", fmt(score.calm())},
+            // The Python dump writes a bool through the same numeric
+            // formatter, so it lands as 0 or 1. Match it.
+            {"g_ready", fmt(static_cast<double>(score.g.ready()))},
+            {"g_lat", fmt(score.g.lat)},
+            {"g_lon", fmt(score.g.lon)},
+            {"g_peak_lat", fmt(score.g.peak_lat)},
+            {"g_peak_brake", fmt(score.g.peak_lon_brake)},
+            {"throttle", fmt(score.throttle())},
+            {"braking", fmt(score.braking())},
+            {"cornering", fmt(score.cornering())},
+            {"care", fmt(score.care())},
             {"total", fmt(score.total())},
             {"coach", score.coach()},
             {"rejected", fmt(static_cast<double>(st.rejected()))},

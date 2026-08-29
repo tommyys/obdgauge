@@ -31,6 +31,7 @@
 #include "live_link.h"
 #include "ble_transport.h"
 #include "imu.h"
+#include "mount_cache.h"
 #include "flight_log.h"
 #include <cstdlib>
 #include <ctime>
@@ -288,8 +289,13 @@ extern "C" void app_main(void) {
     gauge::VehicleState st;
     gauge::Trip trip;
     gauge::DrivingScore score;
+    // Which way the gauge points, if a previous drive worked it out. Without
+    // this the g view says LEARNING for the first six minutes of every drive.
+    mount_cache_load(score.g);
     int64_t t0 = esp_timer_get_time();
     int64_t last_frame_us = t0;
+    double  last_imu_t = -1.0;      // so the first published sample is taken
+    bool    mount_saved = false;    // one NVS write per learning event, not per frame
 
     for (;;) {
         if (replay_ok && !have_replay && !live_mode && demo_wanted()) {
@@ -319,8 +325,41 @@ extern "C" void app_main(void) {
                 id = gauge::identify(live::vin(), "", "MX-5");
             st = gauge::VehicleState{};
             trip = gauge::Trip{};
-            score = gauge::DrivingScore{};
+            // The mounting angle survives. It is a property of the bracket,
+            // not of the drive, so switching from replay to the real car must
+            // not throw away what has been learned and blank the g view.
+            {
+                const auto axes = score.g.export_axes();
+                score = gauge::DrivingScore{};
+                if (axes) score.g.restore_axes(*axes);
+            }
             printf("live: %s -- switching the views off replay\n", live::status());
+        }
+
+        // The accelerometer, fed on its own clock rather than folded into the
+        // OBD updates. It is read at 20 Hz on the recorder task -- four times
+        // any OBD channel -- because the driving score measures jerk, and a
+        // hard stop sampled twice is not a rate of anything.
+        //
+        // Never while a replay is playing. A replay carries its own recorded
+        // accelerometer on its own timeline, and feeding the part's readings
+        // in as well would hand the solver two clocks and a stationary car.
+        if (!have_replay) {
+            imu_sample_t im{};
+            double imu_t = 0.0;
+            if (drive_log_imu(&im, &imu_t) && imu_t != last_imu_t) {
+                last_imu_t = imu_t;
+                score.imu(imu_t, im.ax, im.ay, im.az);
+            }
+        }
+
+        // Saved the moment the axes are first solved, and only then. NVS is
+        // flash: a write per frame would wear it out, and there is nothing
+        // new to write until the solver has an answer it did not have before.
+        if (!mount_saved && !have_replay && score.g.ready()) {
+            mount_saved = true;
+            mount_cache_save(score.g);
+            printf("mount: solved and saved\n");
         }
 
         if (live_mode) {
@@ -333,21 +372,33 @@ extern "C" void app_main(void) {
                 // thresholds are measuring real elapsed time (SPEC.md s4).
                 trip.update(smp.t_s, st.get("speed"), st.get("fuel_rate"));
                 score.update(smp.t_s, st.get("speed"), st.get("rpm"),
-                             st.get("throttle"), st.get("fuel_rate"));
+                             st.get("throttle"), st.get("fuel_rate"),
+                             st.get("coolant"));
             }
         } else if (have_replay) {
             double logical = (esp_timer_get_time() - t0) / 1e6 * kSpeed;
             gauge::ReplaySample smp{};
             while (replay.next(logical, &smp)) {
-                st.set(replay.channel_name(smp.chan), smp.value);
+                const std::string key = replay.channel_name(smp.chan);
+                st.set(key, smp.value);
+                // A recorded drive brings its own accelerometer. Mirrors
+                // state.IMU_KEYS in the simulator.
+                if (key == "imu_ax" || key == "imu_ay" || key == "imu_az")
+                    score.imu(smp.t_ms / 1000.0, st.get("imu_ax"),
+                              st.get("imu_ay"), st.get("imu_az"));
                 trip.update(smp.t_ms / 1000.0, st.get("speed"), st.get("fuel_rate"));
                 score.update(smp.t_ms / 1000.0, st.get("speed"), st.get("rpm"),
-                             st.get("throttle"), st.get("fuel_rate"));
+                             st.get("throttle"), st.get("fuel_rate"),
+                             st.get("coolant"));
             }
             if (replay.finished()) {          // loop the drive
                 replay.select(replay.selected());
                 st = gauge::VehicleState{};
                 trip = gauge::Trip{};
+                // Deliberately NOT carrying the axes over. A replay's axes
+                // are the axes of whatever car recorded it, on whatever
+                // bracket it had; keeping them across a loop would quietly
+                // score the next pass against the last one's mounting.
                 score = gauge::DrivingScore{};
                 t0 = esp_timer_get_time();
             }

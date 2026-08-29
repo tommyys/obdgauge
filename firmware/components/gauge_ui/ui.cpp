@@ -7,6 +7,7 @@
 #include "ease.h"
 #include "carousel.h"
 #include "drives.h"
+#include "gball.h"
 #include "face.h"
 #include "slide.h"
 #include "views.h"
@@ -371,6 +372,12 @@ ViewObjs build_view(const ViewSpec& spec) {
         drives_build(c);
         return v;
     }
+    if (layout_k == Layout::GBall) {
+        // Same reason: a moving dot with a trail is not a hero, a dial or
+        // rows. See gball.h.
+        gball_build(c);
+        return v;
+    }
 
     int n = 0;
     while (n < 4 && spec.rows[n].label) ++n;
@@ -678,6 +685,29 @@ void update(const Model& m) {
         // list is this view's own answer. Formatting it every frame is cheap:
         // drives_update() writes a label only when its text actually changed.
         drives_update();
+        return;
+    }
+    if (s.layout == Layout::GBall) {
+        // The availability screen still applies -- a car with no rpm, speed
+        // or throttle has nothing to score -- so it is checked below with
+        // everyone else's, and only then does the ball draw.
+        if (v.na_head) {
+            const bool want_na = !gauge::view_available(s.avail.needs, m.supported);
+            if (want_na != v.na_shown) {
+                v.na_shown = want_na;
+                if (!want_na) {
+                    lv_obj_clear_flag(v.content, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_add_flag(v.na_head, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_add_flag(v.na_note, LV_OBJ_FLAG_HIDDEN);
+                } else {
+                    lv_obj_add_flag(v.content, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_clear_flag(v.na_head, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_clear_flag(v.na_note, LV_OBJ_FLAG_HIDDEN);
+                }
+            }
+            if (v.na_shown) return;
+        }
+        gball_update(m);
         return;
     }
 

@@ -45,21 +45,54 @@ def drive(speed_series, filler_per_step=0, throttle=None, rpm=2000, step=0.33):
     return sc
 
 
-# --- a stub g source -------------------------------------------------------
-# The real GForce learns its axes from the car. These tests are about the
-# score's arithmetic, so they hand it g directly.
-class FakeG(object):
-    def __init__(self, ready=True):
-        self.ready = ready
-        self.lat = 0.0
-        self.lon = 0.0
-        self.peak_lat = 0.0
-        self.peak_lon_brake = 0.0
-        self.peak_lon_accel = 0.0
+# --- a synthetic g drive ---------------------------------------------------
+# The band tests need known lateral and longitudinal g. They get it the same
+# way the car does -- through the real solver, with the mounting angle handed
+# to it up front -- rather than through a stub only the tests use. The C++
+# suite runs the identical helper, so the two report the same numbers and a
+# divergence in either port shows up here rather than on the road.
+def g_drive(pattern, steps, pole, step=0.25):
+    """Replay a repeating [(lat, lon), ...] pattern with the pole forced.
 
-    @property
-    def total(self):
-        return (self.lat ** 2 + self.lon ** 2) ** 0.5
+    Forcing the pole keeps these cases about the bands. Whether the intensity
+    latch picks the right pole is tested separately, below."""
+    down, fwd = (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)
+    right = (0.0, 1.0, 0.0)                       # = down x fwd
+    sc = metrics.DrivingScore()
+    sc.g.restore_axes({'fwd': list(fwd), 'down': list(down), 'weight': 1.0})
+    sc.update(0.0, 30.0, 2000, 20.0, 6.0)
+    t = 0.0
+    # Settle the gravity average on level ground first. The solver seeds it
+    # from the very first sample, so starting a case with a held 0.5 g would
+    # teach it that 0.5 g is which way down is -- and the residual, which is
+    # what braking is measured from, would come out as zero. A car boots
+    # parked, so this is what actually happens; the test has to do it too.
+    for _ in range(400):
+        t += step
+        sc.imu(t, down[0], down[1], down[2])
+        sc.update(t, 30.0, 2000, 20.0, 6.0)
+    sc.thr_s = sc.thr_bad = 0.0
+    sc.brake_s = sc.brake_bad = 0.0
+    sc.corner_s = sc.corner_bad = 0.0
+    for i in range(steps):
+        lat, lon = pattern[i % len(pattern)]
+        t += step
+        # lon is positive under braking, which is a backwards push.
+        sc.imu(t, down[0] - fwd[0] * lon + right[0] * lat,
+                  down[1] - fwd[1] * lon + right[1] * lat,
+                  down[2] - fwd[2] * lon + right[2] * lat)
+        sc.pole = pole
+        sc.update(t, 30.0, 2000, 20.0, 6.0)
+        sc.pole = pole
+    return sc
+
+
+class NoG(object):
+    """A gauge whose axes were never solved, for the honesty cases."""
+    ready = False
+    lat = lon = 0.0
+    peak_lat = peak_lon_brake = peak_lon_accel = 0.0
+    total = 0.0
 
     def update(self, *a):
         pass
@@ -68,25 +101,7 @@ class FakeG(object):
         pass
 
     def snapshot(self):
-        return {'ready': self.ready}
-
-
-def g_drive(series, pole='NICE', step=0.25, rpm=2000, throttle=20.0):
-    """Replay a series of (lat, lon) through the score, with the pole forced.
-
-    Forcing it keeps these tests about the bands. Whether the intensity
-    latch picks the right pole is tested separately, below."""
-    fake = FakeG()
-    sc = metrics.DrivingScore(gforce=fake)
-    sc.update(0.0, 30.0, rpm, throttle, 6.0)
-    t = 0.0
-    for lat, lon in series:
-        t += step
-        fake.lat, fake.lon = lat, lon
-        sc.pole = pole
-        sc.update(t, 30.0, rpm, throttle, 6.0)
-        sc.pole = pole
-    return sc
+        return {'ready': False}
 
 
 # --- the bug this file exists for -----------------------------------------
@@ -147,8 +162,8 @@ check('a reversal costs throttle score',
       flutter.throttle < one_way.throttle, True)
 
 # --- braking: Nice scores the size, Spirited scores the edges -------------
-soft = g_drive([(0.0, 0.10)] * 40, pole='NICE')
-firm = g_drive([(0.0, 0.50)] * 40, pole='NICE')
+soft = g_drive([(0.0, 0.10)], 40, 'NICE')
+firm = g_drive([(0.0, 0.50)], 40, 'NICE')
 check('a nice segment marks down a hard stop',
       firm.braking < soft.braking, True)
 near('0.5g held is past the nice band, so braking bottoms out',
@@ -156,40 +171,42 @@ near('0.5g held is past the nice band, so braking bottoms out',
 
 # The same 0.5g, judged as a spirited segment: sustained is fine, snatched is
 # not. This is the whole point of the two poles.
-held = g_drive([(0.0, 0.5)] * 40, pole='SPIRITED')
-snatch = g_drive([(0.0, 0.5 if i % 2 else 0.0) for i in range(40)],
-                 pole='SPIRITED')
+held = g_drive([(0.0, 0.5)], 40, 'SPIRITED')
+snatch = g_drive([(0.0, 0.5), (0.0, 0.0)], 40, 'SPIRITED')
+# Not exactly 100: over ten seconds of held braking the gravity average starts
+# to absorb a little of it, and a slowly shrinking g is a small jerk. That is
+# real rather than an artefact -- a car cannot hold 0.5 g for ten seconds
+# without the reference drifting -- so the tolerance allows for it.
 near('a spirited segment does not punish sustained 0.5g braking',
-     held.braking, 100.0, tol=1.0)
+     held.braking, 100.0, tol=5.0)
 check('but it does punish snatching the same 0.5g on and off',
       snatch.braking < held.braking - 20, True)
 check('...and the nice band would have failed the sustained one',
-      g_drive([(0.0, 0.5)] * 40, pole='NICE').braking < held.braking, True)
+      g_drive([(0.0, 0.5)], 40, 'NICE').braking < held.braking, True)
 
 # --- cornering ------------------------------------------------------------
-gentle_turn = g_drive([(0.15, 0.0)] * 40, pole='NICE')
-hard_turn = g_drive([(0.60, 0.0)] * 40, pole='NICE')
+gentle_turn = g_drive([(0.15, 0.0)], 40, 'NICE')
+hard_turn = g_drive([(0.60, 0.0)], 40, 'NICE')
 check('a nice segment marks down a fast corner',
       hard_turn.cornering < gentle_turn.cornering, True)
-smooth_fast = g_drive([(0.60, 0.0)] * 40, pole='SPIRITED')
-sawing = g_drive([(0.60 if i % 2 else 0.25, 0.0) for i in range(40)],
-                 pole='SPIRITED')
+smooth_fast = g_drive([(0.60, 0.0)], 40, 'SPIRITED')
+sawing = g_drive([(0.60, 0.0), (0.25, 0.0)], 40, 'SPIRITED')
 near('a spirited segment does not punish a steady 0.6g corner',
-     smooth_fast.cornering, 100.0, tol=1.0)
+     smooth_fast.cornering, 100.0, tol=5.0)
 check('but sawing at the wheel inside one is punished',
       sawing.cornering < smooth_fast.cornering - 20, True)
 
 # --- missing channel means missing sub-score ------------------------------
 # The same honesty rule as gauge::view_available. A convincing number for data
 # we do not have is worse than an em-dash.
-no_g = metrics.DrivingScore(gforce=FakeG(ready=False))
+no_g = metrics.DrivingScore(gforce=NoG())
 for i in range(60):
     no_g.update(i * 0.25, 40.0, 2500, 25.0, 6.0, coolant_c=90.0)
 check('no g axes yet -> no braking score', no_g.braking, None)
 check('no g axes yet -> no cornering score', no_g.cornering, None)
 check('...but the score still exists on what is left',
       no_g.total is not None, True)
-no_cool = metrics.DrivingScore(gforce=FakeG(ready=False))
+no_cool = metrics.DrivingScore(gforce=NoG())
 for i in range(60):
     no_cool.update(i * 0.25, 40.0, 2500, 25.0, 6.0)
 check('no coolant channel -> no care score', no_cool.care, None)

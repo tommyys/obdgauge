@@ -149,46 +149,24 @@ const ViewSpec* view_table(int* count) {
                 {nullptr, nullptr},
             },
         },
-        // 4 --- Driving score. The weights are still untuned guesses (B3), so
-        // the coach word sits in the unit slot rather than the number alone.
-        // The ring is on the rim, where the tacho's is. The simulator insets
-        // it to 68% because it has a whole square viewport to spend; on a round
-        // panel that diameter runs straight through the rows underneath.
+        // 3 --- Driving: the g-ball. Its own file, because a moving dot
+        // with a trail is none of the shapes ViewSpec describes -- see
+        // gball.h. The title, the score and the coach word are drawn there
+        // too, so this row carries only what the carousel itself needs.
+        //
+        // B3 is settled as of 2026-08-29: the score judges how tidily you
+        // drove, not how gently, and fuel economy is out of it entirely.
         {
-            "DRIVING",
-            Instrument::VerdictRing,
-            Layout::Rows,
+            nullptr,                       // gball.cpp draws its own title
+            Instrument::None,
+            Layout::GBall,
             {"rpm,speed,throttle", "NO DRIVE DATA",
              "scoring needs rpm, speed or throttle"},
-            // 0, not "--", when there is nothing to score. Every other view's
-            // dashes mean "this car does not report it"; the score is always
-            // reportable -- before a drive starts there is simply no good
-            // driving in it yet, and that is a zero.
-            [](const Model& m) {
-                auto t = m.score.total();
-                return t ? num(t, "%.0f") : std::string("0"); },
-            nullptr,
-            [](const Model& m, uint32_t* colour) -> std::string {
-                auto t = m.score.total();
-                if (!t)        { *colour = 0x808080; return m.score.coach(); }
-                if (*t >= 85)  { *colour = 0x5BD97A; return m.score.coach(); }
-                if (*t >= 70)  { *colour = 0xFFC24A; return m.score.coach(); }
-                *colour = 0xFF6B4A; return m.score.coach();
-            },
-            { [](const Model&) { return 0.0; }, [](const Model&) { return 100.0; }, nullptr,
-              [](const Model& m, double* o) {
-                  auto v = m.score.total(); if (!v) return false; *o = *v; return true; },
-              [](const Model&, double v) -> uint32_t {
-                  return v >= 85 ? 0x35E06B : v >= 70 ? 0xFFC53D : 0xFF3B30; } },
-            {
-                {"sm",   [](const Model& m) {
-                    auto v = m.score.smooth(); return v ? num(v, "%.0f") : std::string("0"); }},
-                {"eco",  [](const Model& m) {
-                    auto v = m.score.econ();   return v ? num(v, "%.0f") : std::string("0"); }},
-                {"calm", [](const Model& m) {
-                    auto v = m.score.calm();   return v ? num(v, "%.0f") : std::string("0"); }},
-                {nullptr, nullptr},
-            },
+            nullptr, nullptr, nullptr,
+            {nullptr, nullptr, nullptr, nullptr, nullptr},
+            {{nullptr, nullptr}, {nullptr, nullptr},
+             {nullptr, nullptr}, {nullptr, nullptr}},
+            "DRIVING",
         },
         // 4 --- Trip. Four totals in a grid: they are read one at a time when
         // you glance down, not scanned as a list.

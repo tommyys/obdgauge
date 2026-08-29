@@ -52,6 +52,11 @@ enum class Layout {
     // rather than from `rows` -- its content is what the flash ring holds,
     // which is not a function of the Model the other views render from.
     Drives,
+    // The g-ball, built and filled by gauge_ui/gball.cpp. A moving dot with a
+    // trail is not a hero number, a dial or rows, so like Drives it is a
+    // bespoke view in the carousel rather than a ViewSpec the builder can
+    // lay out. See gball.h.
+    GBall,
 };
 
 // What the view says when the car cannot drive it at all. `needs` is a

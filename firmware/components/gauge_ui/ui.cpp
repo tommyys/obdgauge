@@ -41,7 +41,10 @@ constexpr int kDotY = 205;
 // One length of the scanning bar. 1.6 s, not the 0.9 s it started at: this
 // runs for as long as the gauge is looking for the car, and a fast shuttle
 // reads as urgency where there is none to report.
-constexpr int kScanTravelMs = 1600;
+constexpr int kScanRingPx = 22;     // the ring's diameter
+constexpr int kScanArcDeg = 100;    // how much of it the moving arc covers
+constexpr int kScanTurnMs = 1600;   // one turn -- slow enough to read as patience
+constexpr uint32_t kScanCyan = 0x3FE0F0;
 // How fast it gets to its verdict. 1.2 s of time constant: slow enough to read
 // as a fade rather than a switch, quick enough that a colour is not still
 // arriving after the reading behind it has moved on.
@@ -130,12 +133,12 @@ lv_obj_t* g_banner = nullptr;
 lv_obj_t* g_dots[16] = {nullptr};
 lv_obj_t* g_dot_active = nullptr;
 char g_banner_base[40] = {0};
-// The "still looking for the car" bar, and the block that slides along it.
-lv_obj_t* g_scan       = nullptr;
-lv_obj_t* g_scan_block = nullptr;
-lv_anim_t g_scan_anim{};
-lv_anim_t g_scan_fade{};
-bool      g_scanning   = false;
+// A small ring that turns where the car's name will go, while the gauge is
+// still looking for the car. Small and at the bottom on purpose: the views
+// stay readable behind it, and this is a footnote about the link, not the
+// gauge's headline.
+lv_obj_t* g_scan     = nullptr;   // lv_spinner
+bool      g_scanning = false;
 bool g_dials_on = true;
 int  g_dot_x0 = 0;
 int  g_dot_spacing = 18;
@@ -569,59 +572,22 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_label_set_text(g_banner, "");
     lv_obj_align(g_banner, LV_ALIGN_CENTER, 0, 178);
 
-    // The scanning bar sits exactly where the car's name will: one line, one
-    // job, and no layout shift when the car finally answers.
-    //
-    // It is 140x4 with a 44 px block sliding inside it. LVGL animates the
-    // block from its own timer, so nothing in the UI loop touches this -- and
-    // the repaint is a 140x4 strip rather than anything on the dial.
-    g_scan = lv_obj_create(parent);
-    lv_obj_remove_style_all(g_scan);
-    lv_obj_set_size(g_scan, 140, 4);
-    lv_obj_align(g_scan, LV_ALIGN_CENTER, 0, 182);
-    lv_obj_remove_flag(g_scan, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(g_scan, 2, 0);
-    lv_obj_set_style_bg_color(g_scan, lv_color_hex(0x24262C), 0);
-    lv_obj_set_style_bg_opa(g_scan, LV_OPA_COVER, 0);
-
-    g_scan_block = lv_obj_create(g_scan);
-    lv_obj_remove_style_all(g_scan_block);
-    lv_obj_set_size(g_scan_block, 44, 4);
-    lv_obj_set_style_radius(g_scan_block, 2, 0);
-    lv_obj_set_style_bg_color(g_scan_block, lv_color_hex(0x35E06B), 0);
-    lv_obj_set_style_bg_opa(g_scan_block, LV_OPA_COVER, 0);
-    lv_obj_set_pos(g_scan_block, 0, 0);
-
-    // Two animations on the one block: it travels, and it fades as it goes.
-    //
-    // The fade is opacity rather than a gradient across the block. This build
-    // has LV_GRADIENT_MAX_STOPS at 2, so a block that fades out at BOTH ends
-    // would need three stops and a rebuild of the whole gradient path -- and
-    // an opacity that swells in the middle of the travel and thins at the
-    // turns reads as the same thing for none of that cost.
-    lv_anim_init(&g_scan_anim);
-    lv_anim_set_var(&g_scan_anim, g_scan_block);
-    lv_anim_set_exec_cb(&g_scan_anim, [](void* obj, int32_t x) {
-        lv_obj_set_x(static_cast<lv_obj_t*>(obj), x);
-    });
-    lv_anim_set_values(&g_scan_anim, 0, 140 - 44);
-    lv_anim_set_duration(&g_scan_anim, kScanTravelMs);
-    lv_anim_set_playback_duration(&g_scan_anim, kScanTravelMs);
-    lv_anim_set_repeat_count(&g_scan_anim, LV_ANIM_REPEAT_INFINITE);
-
-    lv_anim_init(&g_scan_fade);
-    lv_anim_set_var(&g_scan_fade, g_scan_block);
-    lv_anim_set_exec_cb(&g_scan_fade, [](void* obj, int32_t opa) {
-        lv_obj_set_style_bg_opa(static_cast<lv_obj_t*>(obj),
-                                static_cast<lv_opa_t>(opa), 0);
-    });
-    lv_anim_set_values(&g_scan_fade, 40, LV_OPA_COVER);
-    // Half the travel each way, so the block is brightest mid-sweep and
-    // faintest at the two turns, where it changes direction.
-    lv_anim_set_duration(&g_scan_fade, kScanTravelMs / 2);
-    lv_anim_set_playback_duration(&g_scan_fade, kScanTravelMs / 2);
-    lv_anim_set_repeat_count(&g_scan_fade, LV_ANIM_REPEAT_INFINITE);
-
+    // Sits exactly where the car's name goes, so nothing shifts when the car
+    // answers and the name replaces it. LVGL turns it from its own timer:
+    // nothing in the UI loop touches this, and the repaint is the ring's own
+    // 22 px box rather than anything on the dial.
+    g_scan = lv_spinner_create(parent);
+    lv_obj_set_size(g_scan, kScanRingPx, kScanRingPx);
+    lv_obj_align(g_scan, LV_ALIGN_CENTER, 0, 180);
+    lv_obj_remove_flag(g_scan, LV_OBJ_FLAG_CLICKABLE);
+    lv_spinner_set_anim_params(g_scan, kScanTurnMs, kScanArcDeg);
+    // The track is nearly black rather than absent: a ring you can just make
+    // out is what makes the arc read as travelling round something.
+    lv_obj_set_style_arc_width(g_scan, 3, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(g_scan, lv_color_hex(0x11262B), LV_PART_MAIN);
+    lv_obj_set_style_arc_width(g_scan, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(g_scan, lv_color_hex(kScanCyan), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(g_scan, true, LV_PART_INDICATOR);
     lv_obj_add_flag(g_scan, LV_OBJ_FLAG_HIDDEN);
 
     // Last, because it measures the screen and wants the PSRAM the boot clip
@@ -810,13 +776,11 @@ void set_scanning(bool scanning) {
     if (!g_banner || !g_scan) return;
     if (scanning == g_scanning) return;       // a flag write is a repaint
     g_scanning = scanning;
-    // The frame rate used to live on this line, appended to the car's name. It
-    // was a developer's number on a driver's gauge; it is still in the serial
-    // log, where whoever is measuring can read it.
+    // The car's name appears only once there is a car. The frame rate used to
+    // live on that line too; it is in the serial log now, where whoever is
+    // measuring can read it.
     set_text_if_changed(g_banner, scanning ? "" : g_banner_base);
     show_obj(g_scan, scanning);
-    if (scanning) { lv_anim_start(&g_scan_anim); lv_anim_start(&g_scan_fade); }
-    else            lv_anim_delete(g_scan_block, nullptr);
 }
 
 int gesture_count() { return g_gestures; }

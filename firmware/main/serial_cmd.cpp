@@ -261,6 +261,18 @@ void task(void*) {
         if (!strncmp(line, "TIME ", 5)) {
             drive_log_set_epoch((uint32_t)strtoul(line + 5, nullptr, 10));
             printf("OK clock set\n");
+        } else if (!strncmp(line, "DATE ", 5)) {
+            // DATE <drive id> <epoch> -- for a drive recorded before anything
+            // ever set the board's clock. It cannot be fixed on flash (the
+            // marker's zeroed bits cannot be written back up), so it is kept
+            // beside the ring instead.
+            char* end = nullptr;
+            const uint32_t id = (uint32_t)strtoul(line + 5, &end, 10);
+            const uint32_t epoch = end ? (uint32_t)strtoul(end, nullptr, 10) : 0;
+            if (!id) printf("ERR say 'DATE <id> <epoch>'\n");
+            else if (drives_list_set_date(id, epoch)) printf("OK drive %u dated %u\n",
+                                                            (unsigned)id, (unsigned)epoch);
+            else printf("ERR could not store the date\n");
         } else if (!strcmp(line, "DRIVES")) {
             // What the Drives view is showing, in text. The panel cannot be
             // read from a tool call, so without this the only way to check the

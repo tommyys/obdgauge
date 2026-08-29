@@ -20,6 +20,8 @@
 #include "drives.h"
 #include "flight_log.h"
 #include "logbuf.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 namespace {
 
@@ -35,6 +37,28 @@ struct Entry {
     gauge::DriveStats stats{};
     bool              ready = false;
 };
+
+// Dates lent to drives that recorded without a clock.
+//
+// The epoch lives in the drive's start marker on flash, and flash bits only
+// go one way without an erase: a marker written as 0 cannot be rewritten to
+// 1,787,000,000 in place, and erasing to fix it would take the drive with it.
+// So a lent date is kept beside the ring in NVS, keyed by drive id, and
+// applied when the drive is listed. The records are never touched.
+constexpr const char* kDateNs = "drivedate";
+
+void date_key(char* out, size_t n, uint32_t id) { snprintf(out, n, "%u", (unsigned)id); }
+
+uint32_t lent_date(uint32_t id) {
+    nvs_handle_t h;
+    if (nvs_open(kDateNs, NVS_READONLY, &h) != ESP_OK) return 0;
+    char key[16];
+    date_key(key, sizeof key, id);
+    uint32_t epoch = 0;
+    if (nvs_get_u32(h, key, &epoch) != ESP_OK) epoch = 0;
+    nvs_close(h);
+    return epoch;
+}
 
 SemaphoreHandle_t g_mutex = nullptr;
 Entry             g_cache[kMaxCached];
@@ -69,6 +93,10 @@ void relist(gauge::LogBuf* log) {
     int count = 0;
     for (size_t i = 0; i < n && count < kMaxCached; ++i) {
         next[count].info = found[i];
+        // A drive that recorded with no clock can be given one afterwards.
+        // Only ever fills a gap: a date the drive recorded for itself is the
+        // better one and is never overwritten.
+        if (!next[count].info.epoch_s) next[count].info.epoch_s = lent_date(found[i].id);
         for (int j = 0; j < g_count; ++j) {
             if (g_cache[j].info.id != found[i].id || !g_cache[j].ready) continue;
             // A drive still being WRITTEN grows, so its numbers are re-folded
@@ -190,6 +218,23 @@ const char* src_empty() { return g_empty; }
 const gauge_ui::DrivesSource kSource = { src_count, src_row, src_empty };
 
 }  // namespace
+
+bool drives_list_set_date(uint32_t id, uint32_t epoch_s) {
+    nvs_handle_t h;
+    if (nvs_open(kDateNs, NVS_READWRITE, &h) != ESP_OK) return false;
+    char key[16];
+    date_key(key, sizeof key, id);
+    const bool ok = nvs_set_u32(h, key, epoch_s) == ESP_OK && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    if (ok) {
+        // Take effect now rather than at the next five-second re-list.
+        xSemaphoreTake(g_mutex, portMAX_DELAY);
+        for (int i = 0; i < g_count; ++i)
+            if (g_cache[i].info.id == id) g_cache[i].info.epoch_s = epoch_s;
+        xSemaphoreGive(g_mutex);
+    }
+    return ok;
+}
 
 void drives_list_dump(void) {
     if (!g_mutex) { printf("ERR drives view not started\n"); return; }

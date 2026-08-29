@@ -33,6 +33,7 @@
 #include "imu.h"
 #include "flight_log.h"
 #include "drive_log.h"
+#include "drives_list.h"
 #include "serial_cmd.h"
 #include "sweep.h"
 #include "gauge_ui.h"
@@ -214,6 +215,9 @@ extern "C" void app_main(void) {
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
     flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
     drive_log_init();
+    // After the recorder: the Drives view reads what it wrote, and its scan
+    // task asks drive_log_buf() for the mounted ring.
+    drives_list_init();
     serial_cmd_init();
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE

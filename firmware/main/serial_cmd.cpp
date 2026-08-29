@@ -15,6 +15,7 @@
 #include "crc32.h"
 #include "drive_log.h"
 #include "gauge_ui.h"
+#include "imu.h"
 #include "logbuf.h"
 
 // USB-Serial-JTAG blocking reads
@@ -100,6 +101,53 @@ bool emit(const gauge::Record* r, size_t n, void* ctx) {
     }
     g->sent += n;
     return true;
+}
+
+// What is actually on the board's I2C bus.
+//
+// The BSP header says the bus is shared by "touch, audio, IMU, RTC, and
+// power-management devices", but that comment covers a family of boards and
+// Waveshare's page for this one does not list a clock chip at all. A drive
+// recorded with no clock is stamped `drive-unknown-N` for ever (SPEC.md s15),
+// so whether a PCF85063 is sitting there unused is worth one command to
+// settle rather than an argument. Addresses only -- this identifies parts, it
+// does not talk to them.
+void cmd_i2c() {
+    // Three passes, and only an address that answered in all three counts.
+    // One pass on this board reports 12-18 devices and a different set every
+    // time: the bus is shared with the touch controller and the IMU, which
+    // are being polled while the scan runs, and a probe that collides with
+    // their traffic reads as an ACK from an address with nothing on it. The
+    // real parts answer every pass; the ghosts never repeat.
+    uint8_t seen[3][32];
+    int count[3] = {0, 0, 0};
+    for (int pass = 0; pass < 3; ++pass) {
+        count[pass] = imu_i2c_scan(seen[pass], (int)(sizeof seen[pass]));
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    int n = 0;
+    for (int i = 0; i < count[0]; ++i) {
+        const uint8_t a = seen[0][i];
+        bool in_all = true;
+        for (int pass = 1; pass < 3 && in_all; ++pass) {
+            bool hit = false;
+            for (int j = 0; j < count[pass]; ++j) hit = hit || seen[pass][j] == a;
+            in_all = hit;
+        }
+        if (!in_all) continue;
+        ++n;
+        const char* part = "?";
+        switch (a) {
+            case 0x18: case 0x19: part = "ES8311 audio codec"; break;
+            case 0x34:            part = "AXP2101 power management"; break;
+            case 0x40: case 0x41: part = "ES7210 echo cancellation"; break;
+            case 0x51:            part = "PCF85063 REAL-TIME CLOCK"; break;
+            case 0x5a:            part = "CST9217 touch"; break;
+            case 0x6a: case 0x6b: part = "QMI8658 IMU"; break;
+        }
+        printf("I2C 0x%02x %s\n", a, part);
+    }
+    printf("OK %d devices\n", n);
 }
 
 void cmd_stats() {
@@ -212,6 +260,8 @@ void task(void*) {
         if (!strncmp(line, "TIME ", 5)) {
             drive_log_set_epoch((uint32_t)strtoul(line + 5, nullptr, 10));
             printf("OK clock set\n");
+        } else if (!strcmp(line, "I2C")) {
+            cmd_i2c();
         } else if (!strcmp(line, "STATS")) {
             cmd_stats();
         } else if (!strcmp(line, "LIST")) {

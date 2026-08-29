@@ -38,6 +38,10 @@ enum class Instrument {
 enum class Layout {
     Rows,   // small label/value pairs stacked under the hero
     Grid,   // 2x2 of large value-over-label cells; a 3rd-of-3 spans both columns
+    // A list of recorded drives, built and filled by gauge_ui/drives.cpp
+    // rather than from `rows` -- its content is what the flash ring holds,
+    // which is not a function of the Model the other views render from.
+    Drives,
 };
 
 // What the view says when the car cannot drive it at all. `needs` is a

@@ -17,5 +17,12 @@ bool sweep_rpm(double* out);
 // The same triangle, for the trip view's economy ring: it colours off a
 // number that takes a real drive to move, so there is otherwise no way to see
 // the ramp between red and green without driving to each end of it.
+// The bench replay. The gauge no longer plays a recorded drive at power-up --
+// a gauge showing a drive that is not happening is a gauge lying -- so this is
+// how a desk demo is asked for. Latches: once asked, the replay runs until the
+// car takes over or the board is restarted.
+void demo_request(void);
+bool demo_wanted(void);
+
 void sweep_econ_start(double seconds, double lo, double hi);
 bool sweep_econ(double* out);

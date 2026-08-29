@@ -43,6 +43,12 @@ void update(const Model& m);
 // switching worked only sometimes.
 const char* slide_note();
 
+// What the line under the views says. Until the car has answered, this is the
+// link's own state -- looking for the adapter, connecting, waiting for the
+// ignition. Passing null puts the car's name back, which is what the gauge
+// shows once there is a car to name.
+void set_banner_note(const char* note);
+
 // Claims the slide's DMA band buffer now rather than on the first swipe.
 // Call it at boot, right after the radio, and before the display starts.
 //
@@ -75,9 +81,6 @@ int gesture_count();
 int press_count();
 int release_count();
 
-// Dev readout appended to the banner, so the frame rate is visible on the
-// device rather than only in a log. Pass 0 to hide it.
-void set_fps(uint32_t fps);
 
 // How long an instrument takes to reach a new reading, in milliseconds -- the
 // time for the remaining gap to close to about a third. 0 turns easing off, so

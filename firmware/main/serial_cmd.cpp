@@ -327,6 +327,11 @@ void task(void*) {
             const double secs = (line[5] == ' ') ? strtod(line + 6, nullptr) : 60.0;
             sweep_start(secs > 0 ? secs : 60.0, 1000.0, 8000.0);
             printf("OK sweep 1000-8000 rpm for %.0fs\n", secs > 0 ? secs : 60.0);
+        } else if (!strcmp(line, "DEMO")) {
+            // Starts the built-in replay. Off at power-up on purpose: see
+            // demo_request() in sweep.h.
+            demo_request();
+            printf("OK demo replay started\n");
         } else if (!strncmp(line, "ECON", 4)) {
             // "ECON" for a minute, "ECON 20" for twenty seconds. Walks the
             // trip ring from 4 to 16 km/L and back, which is the only way to

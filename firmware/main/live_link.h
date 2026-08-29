@@ -39,4 +39,10 @@ const std::string& vin();
 // One line for the serial log and, later, the status view.
 const char* status();
 
+// Where the link has got to, in the two or three words a banner can hold.
+// status() is the sentence; this is the state behind it.
+enum class Phase { Idle, Scanning, Connecting, Waking, Live, Lost };
+Phase phase();
+const char* phase_text();
+
 }  // namespace live

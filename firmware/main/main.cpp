@@ -249,17 +249,21 @@ extern "C" void app_main(void) {
     // read as violent acceleration (SPEC.md section 4).
     constexpr double kSpeed = 4.0;
 
+    // OFF at power-up. The gauge used to come up replaying a drive from
+    // August, needles moving, temperatures climbing, a car's name under it --
+    // a car that was not there. On a desk that is a demo; in the car it is a
+    // gauge lying about the engine for the thirty seconds before the adapter
+    // answers. It is a bench feature now: `DEMO` on the console starts it.
     size_t lib_len = 0;
     const uint8_t* lib = drive_library_map(&lib_len);
     gauge::Replay replay;
-    bool have_replay = lib && replay.open(lib, lib_len);
-    if (have_replay) {
-        printf("replay: %d drives, %d channels, %d records\n",
+    const bool replay_ok = lib && replay.open(lib, lib_len);
+    bool have_replay = false;
+    if (replay_ok) {
+        printf("replay: %d drives, %d channels, %d records -- idle, say DEMO to play\n",
                replay.drive_count(), replay.channel_count(), replay.total_records());
-        printf("replay: playing '%s', %.0f s at %.0fx\n",
-               replay.drive_name(0).c_str(), replay.duration_s(), kSpeed);
     } else {
-        printf("replay: no drive library -- falling back to a synthetic sweep\n");
+        printf("replay: no drive library\n");
     }
 
     // Which channels this drive actually carries. The views use it to decide
@@ -272,12 +276,14 @@ extern "C" void app_main(void) {
     // "not identified yet" and so show everything. That is the right answer for
     // the synthetic sweep below, which is a bench signal rather than a car.
     std::set<std::string> channels;
-    if (have_replay) {
+    if (replay_ok) {
         for (int i = 0; i < replay.channel_count(); ++i)
             channels.insert(replay.channel_name(static_cast<uint16_t>(i)));
-        printf("replay: %d channels available to the views\n", (int)channels.size());
     }
-    const std::set<std::string>* supported = have_replay ? &channels : nullptr;
+    // Null until something is actually feeding the views, which the views read
+    // as "not identified yet" and so show everything rather than a wall of
+    // not-available screens while the gauge is still looking for the car.
+    const std::set<std::string>* supported = nullptr;
 
     gauge::VehicleState st;
     gauge::Trip trip;
@@ -288,6 +294,15 @@ extern "C" void app_main(void) {
     int64_t last_frame_us = t0;
 
     for (;;) {
+        if (replay_ok && !have_replay && !live_mode && demo_wanted()) {
+            have_replay = true;
+            supported = &channels;
+            replay.select(replay.selected());
+            t0 = esp_timer_get_time();
+            printf("replay: playing '%s', %.0f s at %.0fx\n",
+                   replay.drive_name(0).c_str(), replay.duration_s(), kSpeed);
+        }
+
         if (!live_started && esp_timer_get_time() - t0 > kLiveStartUs) {
             live_started = true;
             live::start("vlinker");
@@ -472,7 +487,10 @@ extern "C" void app_main(void) {
                            v("throttle"), v("load"), v("volts"), v("fuel_rate"));
                 }
                 bsp_display_lock(-1);
-                gauge_ui::set_fps(fps);
+                // The banner says where the link has got to, and hands over to
+                // the car's name once there is a car. The frame rate stays in
+                // this log line and is no longer written on the glass.
+                gauge_ui::set_banner_note(live_mode ? nullptr : live::phase_text());
                 bsp_display_unlock();
             }
         }

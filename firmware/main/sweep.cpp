@@ -42,6 +42,11 @@ bool read(Sweep& s, double* out) {
 
 }  // namespace
 
+bool g_demo = false;
+
+void demo_request(void) { g_demo = true; }
+bool demo_wanted(void)  { return g_demo; }
+
 void sweep_start(double seconds, double lo, double hi) { start(g_rpm, seconds, lo, hi); }
 bool sweep_rpm(double* out)                            { return read(g_rpm, out); }
 

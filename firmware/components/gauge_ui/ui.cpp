@@ -36,6 +36,8 @@ constexpr int kRowStep  =   24;  // Rows: line to line
 // ring is there and has nothing to report yet -- a ring that appears already
 // green has told you something before it knew it.
 constexpr uint32_t kVerdictGrey = 0x5A5F6A;
+// The page dots' row, below the views and above the banner.
+constexpr int kDotY = 205;
 // How fast it gets to its verdict. 1.2 s of time constant: slow enough to read
 // as a fade rather than a switch, quick enough that a colour is not still
 // arriving after the reading behind it has moved on.
@@ -409,7 +411,13 @@ void flip_now(void*) {
     // The dot moves in the same breath so that the destination snapshot -- and
     // so the sliding frame -- already shows the right page. It needs no
     // animation of its own now that the view itself is the motion cue.
-    if (g_dot_active) lv_obj_set_x(g_dot_active, g_dot_x0 + g_cur * g_dot_spacing - 3);
+    // Realigned, not set_x'd. The dot was built with lv_obj_align, so LVGL
+    // reads its x as an offset from CENTRE; setting an absolute coordinate on
+    // top of that offset sent the active dot off the side of the panel on the
+    // first swipe, which is what "the dots are broken" was.
+    if (g_dot_active)
+        lv_obj_align(g_dot_active, LV_ALIGN_CENTER,
+                     g_dot_x0 + g_cur * g_dot_spacing, kDotY);
 }
 
 void switch_to(int target, int dir) {
@@ -512,7 +520,7 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
         lv_obj_set_style_radius(g_dots[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(g_dots[i], lv_color_hex(0x3A3A3A), 0);
         lv_obj_set_style_bg_opa(g_dots[i], LV_OPA_COVER, 0);
-        lv_obj_align(g_dots[i], LV_ALIGN_CENTER, x0 + i * spacing, 205);
+        lv_obj_align(g_dots[i], LV_ALIGN_CENTER, x0 + i * spacing, kDotY);
     }
     g_dot_active = lv_obj_create(parent);
     lv_obj_remove_style_all(g_dot_active);
@@ -520,9 +528,10 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_obj_set_style_radius(g_dot_active, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(g_dot_active, lv_color_hex(0xFF9500), 0);
     lv_obj_set_style_bg_opa(g_dot_active, LV_OPA_COVER, 0);
-    lv_obj_align(g_dot_active, LV_ALIGN_CENTER, x0, 205);
-    lv_obj_update_layout(parent);
-    g_dot_x0 = lv_obj_get_x(g_dots[0]);
+    lv_obj_align(g_dot_active, LV_ALIGN_CENTER, x0, kDotY);
+    // Both kept in the same space the dots were laid out in: an offset from
+    // the centre of the panel, in the units lv_obj_align takes.
+    g_dot_x0 = x0;
     g_dot_spacing = spacing;
 
     // The make/model banner persists across views (SPEC.md section 10), so it
@@ -531,7 +540,10 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_obj_set_style_text_font(g_banner, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(g_banner, lv_color_hex(0x585858), 0);
     snprintf(g_banner_base, sizeof g_banner_base, "%s", id.label.c_str());
-    lv_label_set_text(g_banner, g_banner_base);
+    // Empty at boot. The car's name is a claim about what the gauge is plugged
+    // into, and at power-up it is not plugged into anything yet -- the link's
+    // own state goes here until a car has answered (set_banner_note).
+    lv_label_set_text(g_banner, "");
     lv_obj_align(g_banner, LV_ALIGN_CENTER, 0, 178);
 
     // Last, because it measures the screen and wants the PSRAM the boot clip
@@ -716,12 +728,12 @@ void set_dial_enabled(bool on) {
     }
 }
 
-void set_fps(uint32_t fps) {
+void set_banner_note(const char* note) {
     if (!g_banner) return;
-    char b[64];
-    if (fps) snprintf(b, sizeof b, "%s  %u fps", g_banner_base, (unsigned)fps);
-    else     snprintf(b, sizeof b, "%s", g_banner_base);
-    set_text_if_changed(g_banner, b);
+    // The frame rate used to live here, appended to the car's name. It was a
+    // developer's number on a driver's gauge; it is still in the serial log,
+    // where it is read by whoever is measuring.
+    set_text_if_changed(g_banner, note && *note ? note : g_banner_base);
 }
 
 int gesture_count() { return g_gestures; }

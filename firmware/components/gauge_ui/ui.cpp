@@ -44,7 +44,10 @@ constexpr int kDotY = 205;
 constexpr int kScanRingPx = 22;     // the ring's diameter
 constexpr int kScanArcDeg = 100;    // how much of it the moving arc covers
 constexpr int kScanTurnMs = 1600;   // one turn -- slow enough to read as patience
-constexpr uint32_t kScanCyan = 0x3FE0F0;
+constexpr int kScanFadeMs = 2400;   // green to red, and back
+constexpr int kScanY      = 168;    // just above the line the car's name uses
+constexpr uint32_t kScanGreen = 0x35E06B;
+constexpr uint32_t kScanRed   = 0xFF3B30;
 // How fast it gets to its verdict. 1.2 s of time constant: slow enough to read
 // as a fade rather than a switch, quick enough that a colour is not still
 // arriving after the reading behind it has moved on.
@@ -137,8 +140,10 @@ char g_banner_base[40] = {0};
 // still looking for the car. Small and at the bottom on purpose: the views
 // stay readable behind it, and this is a footnote about the link, not the
 // gauge's headline.
-lv_obj_t* g_scan     = nullptr;   // lv_spinner
-bool      g_scanning = false;
+lv_obj_t* g_scan       = nullptr;   // a plain arc, turned by hand
+lv_anim_t g_scan_spin{};
+lv_anim_t g_scan_hue{};
+bool      g_scanning   = false;
 bool g_dials_on = true;
 int  g_dot_x0 = 0;
 int  g_dot_spacing = 18;
@@ -572,22 +577,52 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_label_set_text(g_banner, "");
     lv_obj_align(g_banner, LV_ALIGN_CENTER, 0, 178);
 
-    // Sits exactly where the car's name goes, so nothing shifts when the car
-    // answers and the name replaces it. LVGL turns it from its own timer:
-    // nothing in the UI loop touches this, and the repaint is the ring's own
-    // 22 px box rather than anything on the dial.
-    g_scan = lv_spinner_create(parent);
+    // Sits just above where the car's name goes. Not lv_spinner: that widget
+    // animates its two ends on different paths -- the end angle linear, the
+    // start angle on a bezier -- so the arc lengthens and shortens as it
+    // turns. At 22 px that reads as stuttering rather than as breathing, which
+    // is what "the loading is not smooth" was. This is a plain arc of fixed
+    // length, turned at a constant rate, and it is smooth because nothing
+    // about it changes except its angle.
+    g_scan = lv_arc_create(parent);
     lv_obj_set_size(g_scan, kScanRingPx, kScanRingPx);
-    lv_obj_align(g_scan, LV_ALIGN_CENTER, 0, 180);
+    lv_obj_align(g_scan, LV_ALIGN_CENTER, 0, kScanY);
     lv_obj_remove_flag(g_scan, LV_OBJ_FLAG_CLICKABLE);
-    lv_spinner_set_anim_params(g_scan, kScanTurnMs, kScanArcDeg);
-    // The track is nearly black rather than absent: a ring you can just make
-    // out is what makes the arc read as travelling round something.
+    lv_obj_remove_style(g_scan, nullptr, LV_PART_KNOB);
+    lv_arc_set_bg_angles(g_scan, 0, 360);
     lv_obj_set_style_arc_width(g_scan, 3, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(g_scan, lv_color_hex(0x11262B), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(g_scan, lv_color_hex(0x1E2228), LV_PART_MAIN);
     lv_obj_set_style_arc_width(g_scan, 3, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(g_scan, lv_color_hex(kScanCyan), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(g_scan, true, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(g_scan, lv_color_hex(kScanGreen), LV_PART_INDICATOR);
+
+    lv_anim_init(&g_scan_spin);
+    lv_anim_set_var(&g_scan_spin, g_scan);
+    lv_anim_set_exec_cb(&g_scan_spin, [](void* obj, int32_t a) {
+        lv_arc_set_angles(static_cast<lv_obj_t*>(obj), a % 360, (a + kScanArcDeg) % 360);
+    });
+    lv_anim_set_values(&g_scan_spin, 0, 360);
+    lv_anim_set_duration(&g_scan_spin, kScanTurnMs);
+    lv_anim_set_repeat_count(&g_scan_spin, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&g_scan_spin, lv_anim_path_linear);
+
+    // Green to red and back while it looks: the two colours this gauge already
+    // uses for good and bad. Nothing is being judged here -- it is a ring going
+    // round -- so it travels the whole way between them rather than sitting at
+    // either end.
+    lv_anim_init(&g_scan_hue);
+    lv_anim_set_var(&g_scan_hue, g_scan);
+    lv_anim_set_exec_cb(&g_scan_hue, [](void* obj, int32_t f) {
+        const uint32_t c = blend_colour(kScanGreen, kScanRed, f / 1000.0);
+        lv_obj_set_style_arc_color(static_cast<lv_obj_t*>(obj), lv_color_hex(c),
+                                   LV_PART_INDICATOR);
+    });
+    lv_anim_set_values(&g_scan_hue, 0, 1000);
+    lv_anim_set_duration(&g_scan_hue, kScanFadeMs);
+    lv_anim_set_playback_duration(&g_scan_hue, kScanFadeMs);
+    lv_anim_set_repeat_count(&g_scan_hue, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_path_cb(&g_scan_hue, lv_anim_path_ease_in_out);
+
     lv_obj_add_flag(g_scan, LV_OBJ_FLAG_HIDDEN);
 
     // Last, because it measures the screen and wants the PSRAM the boot clip
@@ -781,6 +816,8 @@ void set_scanning(bool scanning) {
     // measuring can read it.
     set_text_if_changed(g_banner, scanning ? "" : g_banner_base);
     show_obj(g_scan, scanning);
+    if (scanning) { lv_anim_start(&g_scan_spin); lv_anim_start(&g_scan_hue); }
+    else            lv_anim_delete(g_scan, nullptr);
 }
 
 int gesture_count() { return g_gestures; }

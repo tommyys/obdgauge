@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <string>
 
+#include <cmath>
+
 namespace gauge_ui {
 namespace {
 
@@ -205,6 +207,14 @@ const ViewSpec* view_table(int* count) {
               [](const Model& m, double) -> uint32_t {
                   auto e = m.trip.econ_km_per_l();
                   if (!e) return 0x5A5F6A;
+                  // Quantised to a quarter of a km/L before the colour is
+                  // computed. A trip average moves on every speed sample, so
+                  // an unquantised target moved every frame -- and each move
+                  // repainted a 434 px ring, which held this view at 6 fps
+                  // while the car was moving. A quarter is finer than the
+                  // colour difference the eye can find on the rim.
+                  const double q = std::round(*e * 4.0) / 4.0;
+                  e = q;
                   const double lo = gauge::kEconPoorKmL, hi = gauge::kEconGoodKmL;
                   const double mid = (lo + hi) / 2.0;
                   if (*e <= lo) return 0xFF3B30;

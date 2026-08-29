@@ -1,4 +1,5 @@
 #include "gauge_ui.h"
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -30,6 +31,18 @@ constexpr int kSubY0    =   66;  // first line of sub-text, Rows layout
 // banner that the rows views have. 48 px was tried first and read as too high.
 constexpr int kGridHeroY = kSubY0 - 40;
 constexpr int kRowStep  =   24;  // Rows: line to line
+
+// A verdict ring's resting colour, and where every fade starts. Grey says the
+// ring is there and has nothing to report yet -- a ring that appears already
+// green has told you something before it knew it.
+constexpr uint32_t kVerdictGrey = 0x5A5F6A;
+// How fast it gets to its verdict. 1.2 s of time constant: slow enough to read
+// as a fade rather than a switch, quick enough that a colour is not still
+// arriving after the reading behind it has moved on.
+constexpr double kVerdictTauS = 1.2;
+// Within this many levels on every channel, the fade is over. Six levels of
+// 255 is under the panel's own colour resolution once RGB565 has had it.
+constexpr int kVerdictSnap = 6;
 constexpr int kCellStep =   52;  // Grid: cell row to cell row
 constexpr int kCellGap  =   24;  // Grid: a cell's value to its own label
 constexpr int kCellX    =   82;  // Grid: column offset from centre
@@ -83,7 +96,10 @@ struct ViewObjs {
     uint32_t row_colour[4] = {0, 0, 0, 0};
     // Same idea for a VerdictRing's arc: restyling invalidates the object, so
     // the colour is written only when it actually changes.
-    uint32_t arc_colour = 0;
+    // Starts grey. A verdict ring eases toward its colour rather than
+    // switching to it, so the view fades up from grey on the first reading
+    // and slides between verdicts afterwards.
+    uint32_t arc_colour = kVerdictGrey;
     // The "this car cannot drive this view" screen. Everything else in the
     // view is hidden behind it rather than left showing dashes.
     lv_obj_t* na_head = nullptr;
@@ -115,6 +131,36 @@ int      g_presses = 0;
 int      g_releases = 0;
 
 int screen_w() { return lv_obj_get_width(g_parent); }
+
+// One step of a colour walk, per channel. Rounds AWAY from the start colour so
+// a step smaller than one level still moves: rounding to nearest leaves the
+// last few levels of a fade unreachable, and the ring stops a shade short of
+// the colour it was going to for ever.
+// The largest per-channel difference between two colours.
+int colour_gap(uint32_t a, uint32_t b) {
+    int worst = 0;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        int d = static_cast<int>((a >> sh) & 0xFF) - static_cast<int>((b >> sh) & 0xFF);
+        if (d < 0) d = -d;
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+uint32_t blend_colour(uint32_t from, uint32_t to, double f) {
+    if (f <= 0.0) return from;
+    if (f >= 1.0) return to;
+    uint32_t out = 0;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        const int a = (from >> sh) & 0xFF, b = (to >> sh) & 0xFF;
+        const double step = (b - a) * f;
+        int v = a + static_cast<int>(step > 0 ? std::ceil(step) : std::floor(step));
+        if (v < 0) v = 0;
+        if (v > 255) v = 255;
+        out |= static_cast<uint32_t>(v) << sh;
+    }
+    return out;
+}
 
 lv_obj_t* mk_label(lv_obj_t* parent, const lv_font_t* font, uint32_t colour,
                    lv_align_t align, int dx, int dy) {
@@ -601,7 +647,17 @@ void update(const Model& m) {
             // A ring that carries its verdict as colour says what the
             // thresholds are in its own view, not here.
             if (s.dial.colour) {
-                const uint32_t col = s.dial.colour(m, val);
+                // Walk toward the target rather than jumping to it. The step
+                // is time-based, like the needle ease, so the fade takes the
+                // same 1.2 s on a busy screen as on a quiet one.
+                const uint32_t want = s.dial.colour(m, val);
+                const double f = m.dt_s > 0 ? 1.0 - std::exp(-m.dt_s / kVerdictTauS) : 1.0;
+                // Close enough is arrived. Without this the last few levels of
+                // every fade are walked one at a time, and each of those steps
+                // is a repaint of a 434 px ring for a shade nobody can see.
+                const uint32_t col = colour_gap(v.arc_colour, want) <= kVerdictSnap
+                                         ? want
+                                         : blend_colour(v.arc_colour, want, f);
                 if (col != v.arc_colour) {
                     v.arc_colour = col;
                     lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);

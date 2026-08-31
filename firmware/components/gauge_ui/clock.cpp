@@ -86,15 +86,19 @@ int days_in(int year, int month) {
 // also unaffordable and segments of a ramp read as smooth at this size. Built
 // once and never touched again, so it costs nothing per frame.
 constexpr int kFadeSteps = 6;
-constexpr int kFadeStepH = 5;      // 30 px deep, which is one row of the wheel
 
 // `outer_y` is the row's top or bottom edge; `dir` is +1 to walk down from the
-// top, -1 to walk up from the bottom.
-void mk_fade(lv_obj_t* parent, int cx, int w, int outer_y, int dir) {
+// top, -1 to walk up from the bottom. `depth` is how far in the fade reaches,
+// and it is always exactly one row of the wheel -- so the fade ends where the
+// selection band begins, and there is no strip of full-brightness text
+// stranded between the two. That gap was the thing that looked wrong: the
+// gradient has to run into the box, not stop short of it.
+void mk_fade(lv_obj_t* parent, int cx, int w, int outer_y, int dir, int depth) {
+    const int step = (depth + kFadeSteps - 1) / kFadeSteps;
     for (int i = 0; i < kFadeSteps; ++i) {
         lv_obj_t* o = lv_obj_create(parent);
         lv_obj_remove_style_all(o);
-        lv_obj_set_size(o, w, kFadeStepH);
+        lv_obj_set_size(o, w, step);
         lv_obj_set_style_bg_color(o, lv_color_black(), 0);
         // Nearly solid at the outer edge, gone by the inner one. Squared, so
         // the fade holds on longer at the outside and lets go quickly at the
@@ -105,8 +109,8 @@ void mk_fade(lv_obj_t* parent, int cx, int w, int outer_y, int dir) {
         // Not clickable, so a thumb landing on the fade still reaches the
         // wheel underneath it.
         lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
-        const int y = dir > 0 ? outer_y + i * kFadeStepH
-                              : outer_y - (i + 1) * kFadeStepH;
+        const int y = dir > 0 ? outer_y + i * step
+                              : outer_y - (i + 1) * step;
         lv_obj_align(o, LV_ALIGN_TOP_MID, cx, y);
     }
 }
@@ -219,7 +223,11 @@ void clock_build(lv_obj_t* parent) {
     // -- at the first spacing the three ran together and a thumb reaching for
     // the hour wheel was already over the minutes. Both rows stay on the wide
     // part of the circle, where a 466 px round screen actually has width.
-    constexpr int kDateY = 74, kTimeY = 214;
+    // Tighter than the first pass. The fade at each row's ends now does the
+    // separating, so the rows no longer need clear glass between them to read
+    // as two -- and closing that up is what lets SET sit higher, out of the
+    // narrow bottom of the circle.
+    constexpr int kDateY = 80, kTimeY = 196;
     constexpr int kDateH = 96, kTimeH = 108;
     g_roll[kDay]  = mk_roller(parent, days,    84, kDateH, -118, kDateY, &lv_font_montserrat_24);
     g_roll[kMon]  = mk_roller(parent, kMonths, 96, kDateH,    0, kDateY, &lv_font_montserrat_24);
@@ -234,14 +242,16 @@ void clock_build(lv_obj_t* parent) {
     constexpr int kTimeL =  -62 - 104 / 2, kTimeR =  62 + 104 / 2;
     constexpr int kDateCx = (kDateL + kDateR) / 2, kDateW = kDateR - kDateL + 8;
     constexpr int kTimeCx = (kTimeL + kTimeR) / 2, kTimeW = kTimeR - kTimeL + 8;
-    mk_fade(parent, kDateCx, kDateW, kDateY,           +1);   // above the date
-    mk_fade(parent, kDateCx, kDateW, kDateY + kDateH,  -1);   // below it
-    mk_fade(parent, kTimeCx, kTimeW, kTimeY,           +1);   // above the time
-    mk_fade(parent, kTimeCx, kTimeW, kTimeY + kTimeH,  -1);   // below it
+    // A wheel shows three rows, so one row is a third of its height -- which
+    // is exactly how deep the fade goes.
+    mk_fade(parent, kDateCx, kDateW, kDateY,          +1, kDateH / 3);
+    mk_fade(parent, kDateCx, kDateW, kDateY + kDateH, -1, kDateH / 3);
+    mk_fade(parent, kTimeCx, kTimeW, kTimeY,          +1, kTimeH / 3);
+    mk_fade(parent, kTimeCx, kTimeW, kTimeY + kTimeH, -1, kTimeH / 3);
 
     g_set = lv_button_create(parent);
     lv_obj_set_size(g_set, 150, 52);
-    lv_obj_align(g_set, LV_ALIGN_TOP_MID, 0, 350);
+    lv_obj_align(g_set, LV_ALIGN_TOP_MID, 0, 320);
     lv_obj_set_style_radius(g_set, 26, 0);
     lv_obj_set_style_bg_color(g_set, lv_color_hex(0x2A3038), 0);
     lv_obj_set_style_border_color(g_set, lv_color_hex(0x5BD97A), 0);

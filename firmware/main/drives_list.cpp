@@ -313,14 +313,10 @@ void drives_list_dump(void) {
 // and the floor persisted by a previous run -- both come out of the same
 // drive_log_stats_t the drives list already reads.
 const gauge_ui::ClockSource kClockSource = {
-    []() -> uint32_t {
-        drive_log_stats_t st{};
-        return drive_log_stats(&st) ? st.epoch_s : 0;
-    },
-    []() -> uint32_t {
-        drive_log_stats_t st{};
-        return drive_log_stats(&st) ? st.clock_floor_s : 0;
-    },
+    // Both lock-free: the header asks for the time every frame, and
+    // drive_log_stats() waits on the flash writer's mutex.
+    []() -> uint32_t { return drive_log_now(); },
+    []() -> uint32_t { return drive_log_clock_floor(); },
     [](uint32_t epoch_s) -> bool {
         // The same path `TIME <epoch>` takes from the console, so a clock set
         // on the glass and a clock set from the Mac cannot behave differently.

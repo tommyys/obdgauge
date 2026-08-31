@@ -39,6 +39,10 @@ struct ClockSource {
 
 void clock_set_source(const ClockSource* src);
 
+// The wall clock now, or 0 if nobody has set one. Exposed because the header
+// draws it on every view, not just this one -- ui.cpp owns that label.
+uint32_t clock_now();
+
 // Build the view's objects under `parent`, and refresh them. Both are called
 // with the display lock held, from ui.cpp.
 void clock_build(lv_obj_t* parent);

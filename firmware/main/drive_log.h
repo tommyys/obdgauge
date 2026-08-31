@@ -58,6 +58,15 @@ uint32_t drive_log_stack_headroom(void);
 // The Mac's clock, from `TIME <epoch>`. Applies to drives opened afterwards.
 void drive_log_set_epoch(uint32_t epoch_s);
 
+// The wall clock now, or 0 if nobody has set one this run. Note that a reboot
+// loses it: the epoch is not restored from NVS, only the floor below is, so
+// after a power cycle the gauge honestly does not know the time until someone
+// tells it -- on the Clock view or over `TIME`.
+uint32_t drive_log_now(void);
+// The last wall clock a previous run persisted, effectively the end of the
+// last drive. What the Clock view's wheels start on.
+uint32_t drive_log_clock_floor(void);
+
 // Takes drive_log_lock() itself; do not call it while already holding it.
 // False if there is no recorder, or if the lock could not be had in 5 s.
 bool drive_log_stats(drive_log_stats_t* out);

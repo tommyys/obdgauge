@@ -1,5 +1,6 @@
 #include "drive_log.h"
 
+#include <atomic>
 #include <cstring>
 
 #include "esp_log.h"
@@ -93,15 +94,19 @@ bool             g_have_imu = false;
 // here and read from the UI loop, so it is guarded by a plain sequence
 // counter rather than the log's mutex: a torn read would be one bad g sample,
 // and blocking the draw path on the recorder's lock would be far worse.
-volatile uint32_t g_imu_seq = 0;
+// std::atomic, not volatile: incrementing a volatile is deprecated in C++20,
+// and volatile was never the right tool anyway -- what this needs is that the
+// two increments cannot be reordered around the writes between them, which is
+// ordering, not merely "do not cache".
+std::atomic<uint32_t> g_imu_seq{0};
 imu_sample_t      g_imu_last{};
 double            g_imu_t = 0.0;
 
 void imu_publish(const imu_sample_t& s, double t_s) {
-    ++g_imu_seq;                       // odd: a write is in progress
+    g_imu_seq.fetch_add(1, std::memory_order_release);   // odd: writing
     g_imu_last = s;
     g_imu_t = t_s;
-    ++g_imu_seq;                       // even: settled
+    g_imu_seq.fetch_add(1, std::memory_order_release);   // even: settled
 }
 
 // Every LogBuf entry point returns bool and every one of them used to be
@@ -272,11 +277,11 @@ void task(void*) {
 bool drive_log_imu(imu_sample_t* out, double* t_s) {
     // Read the sequence either side. An odd value, or a value that moved,
     // means the recorder task was mid-write and this sample is torn.
-    const uint32_t a = g_imu_seq;
+    const uint32_t a = g_imu_seq.load(std::memory_order_acquire);
     if (a == 0 || (a & 1u)) return false;
     imu_sample_t s = g_imu_last;
     double t = g_imu_t;
-    if (g_imu_seq != a) return false;
+    if (g_imu_seq.load(std::memory_order_acquire) != a) return false;
     *out = s;
     *t_s = t;
     return true;
@@ -337,6 +342,15 @@ extern "C" void drive_log_sample(const char* key, float value, double t_s) {
     // UI cannot take: the draw loop must never wait on flash.
     if (xQueueSend(g_q, &s, 0) != pdTRUE) ++g_dropped;
 }
+
+// Read without the recorder's lock, on purpose. The UI loop asks for these
+// every frame to draw the clock in the header, and drive_log_stats() waits up
+// to five seconds on a mutex the flash writer holds -- that is the draw path
+// blocking on flash, which is the one thing this file exists to avoid. Both
+// values are a single aligned uint32 written by one task, so the worst a race
+// can do is hand back the previous second.
+extern "C" uint32_t drive_log_now(void) { return wall_now(); }
+extern "C" uint32_t drive_log_clock_floor(void) { return g_clock_floor; }
 
 extern "C" void drive_log_set_epoch(uint32_t epoch_s) {
     const uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);

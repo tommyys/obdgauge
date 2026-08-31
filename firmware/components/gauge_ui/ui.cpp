@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <vector>
 #include "avail.h"
 #include "ease.h"
@@ -21,6 +22,11 @@ namespace {
 // built from rows. They had drifted apart: the grid started higher and ran 18 px
 // lower, which on TRIP put the bottom label almost against the make/model
 // banner while every other view had a clear margin under it.
+// The wall clock, above the view's own name and on every view. It is the only
+// way to see at a glance whether the gauge knows the time -- and knowing
+// matters, because a drive recorded without a clock is stamped "date unknown"
+// for ever. Small and dim: it is a reassurance, not a readout.
+constexpr int kClockY   = -178;
 constexpr int kTitleY   = -142;  // view name, under the top of the rim
 constexpr int kHeroY    =  -60;  // the one big number
 constexpr int kUnitY    =  -18;  // its unit, directly beneath
@@ -135,6 +141,8 @@ std::vector<ViewObjs> g_objs;
 lv_obj_t* g_parent = nullptr;
 gauge::Identity g_id;
 lv_obj_t* g_banner = nullptr;
+lv_obj_t* g_clock  = nullptr;    // "14:26" at the top of every view
+int       g_clock_min = -1;      // last minute painted; a label write is a repaint
 lv_obj_t* g_dots[16] = {nullptr};
 lv_obj_t* g_dot_active = nullptr;
 char g_banner_base[40] = {0};
@@ -578,6 +586,14 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     g_dot_x0 = x0;
     g_dot_spacing = spacing;
 
+    // Above every view, like the banner below them, and for the same reason:
+    // it belongs to the gauge rather than to any one screen.
+    g_clock = lv_label_create(parent);
+    lv_obj_set_style_text_font(g_clock, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(g_clock, lv_color_hex(0x585858), 0);
+    lv_label_set_text(g_clock, "--:--");
+    lv_obj_align(g_clock, LV_ALIGN_CENTER, 0, kClockY);
+
     // The make/model banner persists across views (SPEC.md section 10), so it
     // lives on the parent rather than inside any one view.
     g_banner = lv_label_create(parent);
@@ -673,8 +689,35 @@ void watch_for_touch() {
     was_down = down;
 }
 
+// The header clock. Repainted only when the minute changes -- a label write
+// is a repaint, and this one sits on every view, so writing it every frame
+// would cost the panel on all seven.
+void draw_header_clock() {
+    if (!g_clock) return;
+    const uint32_t now = clock_now();
+    if (!now) {
+        // Honest: the gauge does not know the time. It says so rather than
+        // showing a plausible one, and the Clock view is one swipe away.
+        if (g_clock_min != -1) {
+            g_clock_min = -1;
+            lv_label_set_text(g_clock, "--:--");
+        }
+        return;
+    }
+    const time_t t = static_cast<time_t>(now);
+    struct tm tm_v;
+    localtime_r(&t, &tm_v);
+    const int minute = tm_v.tm_hour * 60 + tm_v.tm_min;
+    if (minute == g_clock_min) return;
+    g_clock_min = minute;
+    char buf[8];
+    strftime(buf, sizeof buf, "%H:%M", &tm_v);
+    lv_label_set_text(g_clock, buf);
+}
+
 void update(const Model& m) {
     watch_for_touch();
+    draw_header_clock();
     // A swipe the gesture callback queued. Run before anything is formatted:
     // the view it selects is the one this frame should be drawing.
     if (g_pending_step) {

@@ -14,9 +14,11 @@ const ClockSource* g_src = nullptr;
 enum Wheel { kDay, kMon, kYear, kHour, kMin, kWheels };
 lv_obj_t* g_roll[kWheels] = {nullptr};
 
-lv_obj_t* g_title = nullptr;
 lv_obj_t* g_set   = nullptr;
-lv_obj_t* g_note  = nullptr;   // where the wheels started, or what just happened
+// No title and no status line. The wheels say what the view is, and the live
+// clock in the header says what the gauge currently thinks the time is -- on
+// this view and on the other six. A caption repeating either was one more
+// thing between the two rows a thumb has to reach.
 
 // Years offered. Ten is plenty for a car gauge and keeps the wheel short
 // enough to spin end to end; the first is the year this was written, so the
@@ -28,6 +30,11 @@ constexpr int kYears  = 10;
 // Without this the view would drag a half-set wheel back to `now` under the
 // finger every frame.
 bool g_seeded = false;
+// The minute the wheels were last put on. Re-seeding them every frame meant
+// five lv_roller_set_selected calls 66 times a second, each of which scrolls a
+// label -- the same "a write is a repaint" rule the rest of the UI follows.
+// The clock only moves once a minute, so that is how often this needs to.
+int32_t g_seeded_min = -1;
 // Cleared by any wheel moving. Until then the view is a live clock and keeps
 // following the board; after it, the wheels are the driver's and are left
 // alone.
@@ -39,7 +46,13 @@ int64_t g_said_ms = 0;
 constexpr const char* kMonths =
     "Jan\nFeb\nMar\nApr\nMay\nJun\nJul\nAug\nSep\nOct\nNov\nDec";
 
-void wheel_changed(lv_event_t*) { g_touched = true; }
+void wheel_changed(lv_event_t*) {
+    g_touched = true;
+    // Forget which minute the wheels were on. Otherwise, if the clock is ever
+    // followed again, the next seed would be skipped as "already there" while
+    // the wheels are actually wherever a thumb left them.
+    g_seeded_min = -1;
+}
 
 // Days in a month, so 31 February becomes 28 or 29 rather than rolling into
 // March. The wheel always offers 1-31 -- rebuilding its options every time
@@ -71,13 +84,6 @@ lv_obj_t* mk_roller(lv_obj_t* parent, const char* options, int w, int x, int y,
     lv_obj_set_style_text_color(r, lv_color_hex(0xF0F0F0), LV_PART_SELECTED);
     lv_obj_add_event_cb(r, wheel_changed, LV_EVENT_VALUE_CHANGED, nullptr);
     return r;
-}
-
-void set_note(const char* s) {
-    if (!g_note) return;
-    const char* cur = lv_label_get_text(g_note);
-    if (cur && !strcmp(cur, s)) return;
-    lv_label_set_text(g_note, s);
 }
 
 // Put the wheels on one moment.
@@ -112,31 +118,25 @@ void set_clicked(lv_event_t*) {
         lv_roller_set_selected(g_roll[kDay], (uint16_t)(last - 1), LV_ANIM_ON);
     }
     const time_t t = mktime(&tm_v);
-    if (t <= 0) { set_note("could not read that date"); return; }
-    char buf[64];
-    if (g_src->set((uint32_t)t)) {
-        strftime(buf, sizeof buf, "clock set to %d %b %H:%M", &tm_v);
-        // Back to following the board: the wheels and the clock now agree, so
-        // there is nothing half-entered left to protect.
-        g_touched = false;
-    } else {
-        std::snprintf(buf, sizeof buf, "could not store the clock");
-    }
-    set_note(buf);
-    g_said_ms = (int64_t)lv_tick_get();
+    if (t <= 0) return;
+    if (!g_src->set((uint32_t)t)) return;
+    // Back to following the clock: the wheels and the board now agree, so
+    // there is nothing half-entered left to protect. The confirmation is the
+    // clock at the top of the screen jumping to what was just set -- which is
+    // the thing being changed, so it is the right thing to watch.
+    g_touched = false;
+    g_seeded_min = -1;
 }
 
 }  // namespace
 
 void clock_set_source(const ClockSource* src) { g_src = src; }
 
-void clock_build(lv_obj_t* parent) {
-    g_title = lv_label_create(parent);
-    lv_obj_set_style_text_font(g_title, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(g_title, lv_color_hex(0x808080), 0);
-    lv_label_set_text(g_title, "SET CLOCK");
-    lv_obj_align(g_title, LV_ALIGN_TOP_MID, 0, 62);
+uint32_t clock_now() {
+    return (g_src && g_src->now) ? g_src->now() : 0;
+}
 
+void clock_build(lv_obj_t* parent) {
     // Days 1-31 and minutes 0-59 are too long to write out by hand, and the
     // strings have to outlive this function -- lv_roller_set_options copies,
     // but only once, so a stack buffer would be read after it is gone on a
@@ -155,10 +155,12 @@ void clock_build(lv_obj_t* parent) {
     for (int y = 0; y < kYears; ++y)
         p += std::snprintf(p, 6, y == 0 ? "%d" : "\n%d", kYear0 + y);
 
-    // Two rows. The date row sits above the middle and the time row below it,
-    // so both are on the wide part of a round screen rather than out where the
-    // circle takes the corners away.
-    constexpr int kDateY = 108, kTimeY = 224;
+    // Two rows, pushed apart. The date sits high and the time low, with the
+    // SET button lower still, so each is its own band with clear glass between
+    // -- at the first spacing the three ran together and a thumb reaching for
+    // the hour wheel was already over the minutes. Both rows stay on the wide
+    // part of the circle, where a 466 px round screen actually has width.
+    constexpr int kDateY = 74, kTimeY = 214;
     g_roll[kDay]  = mk_roller(parent, days,   84, -118, kDateY, &lv_font_montserrat_24);
     g_roll[kMon]  = mk_roller(parent, kMonths, 96,    0, kDateY, &lv_font_montserrat_24);
     g_roll[kYear] = mk_roller(parent, years, 108,  118, kDateY, &lv_font_montserrat_24);
@@ -167,7 +169,7 @@ void clock_build(lv_obj_t* parent) {
 
     g_set = lv_button_create(parent);
     lv_obj_set_size(g_set, 150, 52);
-    lv_obj_align(g_set, LV_ALIGN_TOP_MID, 0, 336);
+    lv_obj_align(g_set, LV_ALIGN_TOP_MID, 0, 350);
     lv_obj_set_style_radius(g_set, 26, 0);
     lv_obj_set_style_bg_color(g_set, lv_color_hex(0x2A3038), 0);
     lv_obj_set_style_border_color(g_set, lv_color_hex(0x5BD97A), 0);
@@ -179,11 +181,6 @@ void clock_build(lv_obj_t* parent) {
     lv_label_set_text(lbl, "SET");
     lv_obj_center(lbl);
 
-    g_note = lv_label_create(parent);
-    lv_obj_set_style_text_font(g_note, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(g_note, lv_color_hex(0x6A737F), 0);
-    lv_label_set_text(g_note, "");
-    lv_obj_align(g_note, LV_ALIGN_TOP_MID, 0, 398);
 }
 
 void clock_update() {
@@ -191,37 +188,23 @@ void clock_update() {
     const uint32_t now = g_src->now ? g_src->now() : 0;
     const uint32_t floor_s = g_src->floor ? g_src->floor() : 0;
 
-    // Where to start. The clock if it is running -- then this view is also a
-    // live clock, and the wheels sit on the current minute. Otherwise the last
+    // Where to start. The clock if it is running -- then the wheels follow it
+    // minute by minute and the view is itself a clock. Otherwise the last
     // moment a previous run persisted, which is effectively the end of the
-    // last drive, so a drive a day later is a nudge on two wheels rather than
-    // five. Never a guess forward.
+    // last drive, so setting it the next day is a nudge on two wheels rather
+    // than five. Never a guess forward.
+    //
+    // A reboot loses the running clock but keeps that floor, which is why the
+    // wheels can sit still while looking set: nobody has told the gauge the
+    // time yet this run. The header shows --:-- for exactly that reason.
     const uint32_t seed = now ? now : floor_s;
-    if (!g_touched && seed) {
+    const int32_t seed_min = seed ? (int32_t)(seed / 60) : -1;
+    if (!g_touched && seed && seed_min != g_seeded_min) {
+        g_seeded_min = seed_min;
         seed_from(seed);
         g_seeded = true;
     }
-
-    // The note. What happened, for a few seconds after SET; otherwise where
-    // the wheels came from, which is the thing that makes the offset readable.
-    if (g_said_ms && (int64_t)lv_tick_get() - g_said_ms < 4000) return;
-    g_said_ms = 0;
-    char buf[64];
-    if (!seed) {
-        set_note("no clock yet -- set one and drives get dated");
-    } else if (now) {
-        const time_t t = (time_t)now;
-        struct tm tm_v;
-        localtime_r(&t, &tm_v);
-        strftime(buf, sizeof buf, "now %d %b %H:%M", &tm_v);
-        set_note(buf);
-    } else {
-        const time_t t = (time_t)floor_s;
-        struct tm tm_v;
-        localtime_r(&t, &tm_v);
-        strftime(buf, sizeof buf, "last drive %d %b %H:%M", &tm_v);
-        set_note(buf);
-    }
+    (void)g_said_ms;
     (void)g_seeded;
 }
 

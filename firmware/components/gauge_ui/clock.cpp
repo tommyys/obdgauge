@@ -115,10 +115,28 @@ void mk_fade(lv_obj_t* parent, int cx, int w, int outer_y, int dir, int depth) {
     }
 }
 
+// `wrap` puts the wheel in LVGL's infinite mode: the option list is repeated
+// so 31 rolls round to 1 and 59 rolls round to 00, the way a phone's picker
+// does. It is what you want on a wheel that is a cycle -- day, month, hour and
+// minute all are. It is NOT what you want on the year, which is a range with a
+// first and a last, and a wheel that rolls 2035 back round to 2024 tells you
+// the gauge will take a year it will not.
+//
+// "Infinite" is LVGL's word for three copies of the list, not for no end at
+// all: the wheel stops after one full turn either way (LV_CLAMP in
+// lv_roller.c, and EXTRA_INF_SIZE decides the copies -- every list here is
+// long enough that it lands on the minimum of three). Setting a clock never
+// spins one wheel past sixty steps in one direction, so the end is not
+// reachable by hand.
+//
+// lv_roller_get_selected already reports the index within the REAL list in
+// this mode, so nothing that reads the wheels -- seed_from, set_clicked --
+// changes.
 lv_obj_t* mk_roller(lv_obj_t* parent, const char* options, int w, int h, int x,
-                    int y, const lv_font_t* font) {
+                    int y, const lv_font_t* font, bool wrap) {
     lv_obj_t* r = lv_roller_create(parent);
-    lv_roller_set_options(r, options, LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_options(r, options,
+                          wrap ? LV_ROLLER_MODE_INFINITE : LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(r, 3);
     // Height set explicitly, not left to the font: the fade strips beside the
     // row have to be exactly as tall as it is, and asking LVGL for a height
@@ -229,11 +247,12 @@ void clock_build(lv_obj_t* parent) {
     // narrow bottom of the circle.
     constexpr int kDateY = 80, kTimeY = 196;
     constexpr int kDateH = 96, kTimeH = 108;
-    g_roll[kDay]  = mk_roller(parent, days,    84, kDateH, -118, kDateY, &lv_font_montserrat_24);
-    g_roll[kMon]  = mk_roller(parent, kMonths, 96, kDateH,    0, kDateY, &lv_font_montserrat_24);
-    g_roll[kYear] = mk_roller(parent, years,  108, kDateH,  118, kDateY, &lv_font_montserrat_24);
-    g_roll[kHour] = mk_roller(parent, hours,  104, kTimeH,  -62, kTimeY, &lv_font_montserrat_28);
-    g_roll[kMin]  = mk_roller(parent, mins,   104, kTimeH,   62, kTimeY, &lv_font_montserrat_28);
+    // Everything but the year wraps. See mk_roller on why the year does not.
+    g_roll[kDay]  = mk_roller(parent, days,    84, kDateH, -118, kDateY, &lv_font_montserrat_24, true);
+    g_roll[kMon]  = mk_roller(parent, kMonths, 96, kDateH,    0, kDateY, &lv_font_montserrat_24, true);
+    g_roll[kYear] = mk_roller(parent, years,  108, kDateH,  118, kDateY, &lv_font_montserrat_24, false);
+    g_roll[kHour] = mk_roller(parent, hours,  104, kTimeH,  -62, kTimeY, &lv_font_montserrat_28, true);
+    g_roll[kMin]  = mk_roller(parent, mins,   104, kTimeH,   62, kTimeY, &lv_font_montserrat_28, true);
 
     // Over each row, after the wheels so the fade sits on top of them. A row
     // is as wide as its outermost wheel edges, plus a little either side so

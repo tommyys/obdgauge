@@ -30,9 +30,63 @@ namespace {
 // The newest drives, which is what a list is for. The ring can hold more; the
 // view shows the newest and the console still reaches every one of them.
 constexpr int kMaxCached = 12;
-// How often the list itself is refreshed. Drives open and close on the scale
-// of minutes, so re-listing faster than this is flash traffic for nothing.
+// How often the list itself is refreshed WHILE THE DRIVES VIEW IS ON SCREEN.
+// Drives open and close on the scale of minutes, so re-listing faster than this
+// is flash traffic for nothing.
 constexpr int kRelistMs = 5000;
+// And how long after the view was last drawn the board still counts as being
+// watched. One frame is 16 ms; this is generous enough to survive a slow frame
+// and short enough that leaving the view stops the flash traffic at once.
+constexpr int kWatchGraceMs = 500;
+// A gap longer than this means the view was somewhere else and has just come
+// back, so the list is re-read immediately rather than up to kRelistMs later.
+constexpr int kWatchReturnMs = 1500;
+
+// ---- and why it also waits for the ring to move -------------------------
+// A re-list is not a cheap read. LogBuf::list() summarises every drive it
+// holds, and summarising means reading every record of it: measured on this
+// board at 1.44 to 1.64 SECONDS for six drives, of which the NVS lookups for
+// lent dates and hidden flags were 2 ms. There is no version of that which is
+// quick enough to do on a timer.
+//
+// But it is also not necessary on a timer. The ring only changes when
+// something is written to it, and LogBuf already counts that: record_count()
+// rises on every flush, drive_starts() on every drive opened, and
+// current_drive() names the one being written. If none of the three has moved
+// since the last re-list, the answer cannot have changed and the read is
+// skipped -- so browsing the list while parked costs nothing at all, and
+// arriving at the view is instant instead of a second and a half of stall.
+//
+// While a drive IS recording the count keeps rising, so the re-list keeps
+// happening on its kRelistMs cadence. That is on purpose: the open drive's own
+// numbers grow, and they are the ones somebody watching the list wants right.
+struct RingGen {
+    size_t   records = 0;
+    size_t   starts  = 0;
+    uint32_t open    = 0;
+    bool operator!=(const RingGen& o) const {
+        return records != o.records || starts != o.starts || open != o.open;
+    }
+};
+RingGen ring_gen(gauge::LogBuf* log) {
+    return RingGen{log->record_count(), log->drive_starts(), log->current_drive()};
+}
+
+// ---- why the list waits to be looked at ---------------------------------
+// relist() reads the drive ring off flash, and on an ESP32 a flash read turns
+// the cache off for its duration. LVGL's code and its buffers live behind that
+// cache, so every re-list stalls the drawing of whatever view happens to be up.
+//
+// Measured on the board: with this running every five seconds regardless of
+// view, the tacho held 66 fps most of the time and fell to about 50 twice in
+// every ten seconds -- roughly thirty dropped frames per dip. With the re-list
+// gated on the Drives view being the one on screen, thirty consecutive samples
+// came back at 66 fps with no dip at all.
+//
+// So the rule is: the only view that reads flash is the view that shows what is
+// on it. Nothing else needs the list -- the console's own dump prints the cache
+// this task already filled, and a drive that starts while the tacho is up will
+// be found the moment somebody looks at the list.
 
 struct Entry {
     gauge::DriveInfo  info{};
@@ -82,6 +136,20 @@ bool is_hidden(uint32_t id) {
     nvs_close(h);
     return hidden != 0;
 }
+
+// Written by the LVGL task (src_watching) and read by scan_task. A plain tick
+// count either way: a torn read costs one late re-list, and both tasks would
+// have to be interleaved inside a 32-bit store for even that.
+volatile TickType_t g_watched_at   = 0;
+volatile bool       g_watch_return = false;
+
+// The ring as it stood when the cache was last built. Touched only by
+// scan_task, except for the force below.
+RingGen g_listed{};
+bool    g_listed_valid = false;
+// Set when something OTHER than a write makes the cache wrong: a lent date or
+// a hidden flag, neither of which the ring's own counters can see.
+volatile bool g_force_relist = false;
 
 SemaphoreHandle_t g_mutex = nullptr;
 Entry             g_cache[kMaxCached];
@@ -158,7 +226,19 @@ void scan_task(void*) {
         }
 
         const TickType_t now = xTaskGetTickCount();
-        const bool due = last_list == 0 || (now - last_list) >= pdMS_TO_TICKS(kRelistMs);
+        // Once at startup, so the count and the folding pass have something to
+        // work from; then only while somebody is looking at the list.
+        const TickType_t seen = g_watched_at;
+        const bool watched =
+            seen != 0 && (now - seen) <= pdMS_TO_TICKS(kWatchGraceMs);
+        bool due = last_list == 0;
+        if (watched && g_watch_return) { due = true; g_watch_return = false; }
+        if (watched && (now - last_list) >= pdMS_TO_TICKS(kRelistMs)) due = true;
+        // The gate. Everything above only says when it would be ALLOWED to
+        // read; this says whether there is anything new to read. The forced
+        // flag wins, because a lent date is a change the ring cannot report.
+        if (due && g_listed_valid && !g_force_relist && !(ring_gen(log) != g_listed))
+            due = false;
 
         // One unfolded drive per pass, newest first, so the top of the list
         // fills in first -- that is the row being looked at.
@@ -178,7 +258,13 @@ void scan_task(void*) {
         // out of the console holds this lock for as long as it takes.
         if (!drive_log_lock(30000)) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
 
-        if (due) { relist(log); last_list = now; }
+        if (due) {
+            relist(log);
+            g_listed = ring_gen(log);
+            g_listed_valid = true;
+            g_force_relist = false;
+            last_list = now;
+        }
 
         if (want_id) {
             gauge::DriveStats st;
@@ -239,7 +325,19 @@ bool src_row(int index, gauge_ui::DriveRowInfo* out) {
 
 const char* src_empty() { return g_empty; }
 
-const gauge_ui::DrivesSource kSource = { src_count, src_row, src_empty };
+// Called on every frame the Drives view is drawn, and never otherwise. Notes
+// the time, and notices a return from another view so the list is re-read on
+// arrival rather than up to kRelistMs afterwards.
+void src_watching() {
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t prev = g_watched_at;
+    if (prev == 0 || (now - prev) > pdMS_TO_TICKS(kWatchReturnMs))
+        g_watch_return = true;
+    g_watched_at = now;
+}
+
+const gauge_ui::DrivesSource kSource = { src_count, src_row, src_empty,
+                                         src_watching };
 
 }  // namespace
 
@@ -251,11 +349,15 @@ bool drives_list_set_date(uint32_t id, uint32_t epoch_s) {
     const bool ok = nvs_set_u32(h, key, epoch_s) == ESP_OK && nvs_commit(h) == ESP_OK;
     nvs_close(h);
     if (ok) {
-        // Take effect now rather than at the next five-second re-list.
+        // Take effect now rather than at the next re-list.
         xSemaphoreTake(g_mutex, portMAX_DELAY);
         for (int i = 0; i < g_count; ++i)
             if (g_cache[i].info.id == id) g_cache[i].info.epoch_s = epoch_s;
         xSemaphoreGive(g_mutex);
+        // And let the cache be re-derived from flash and NVS when it next may:
+        // the ring's own counters cannot see a lent date, so without this the
+        // gate in scan_task would skip the read for ever. See RingGen.
+        g_force_relist = true;
     }
     return ok;
 }
@@ -269,7 +371,11 @@ bool drives_list_hide(uint32_t id, bool hidden) {
     nvs_commit(h);
     nvs_close(h);
     if (ok) {
-        // Off the list now, not at the next five-second re-list.
+        // A drive being UN-hidden cannot be put back by patching the cache --
+        // it is not in it. Only a re-list can find it again, and the ring's
+        // counters cannot see a hidden flag move, so say so explicitly.
+        g_force_relist = true;
+        // Off the list now, not at the next re-list.
         xSemaphoreTake(g_mutex, portMAX_DELAY);
         int out = 0;
         for (int i = 0; i < g_count; ++i) {

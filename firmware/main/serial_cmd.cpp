@@ -11,9 +11,12 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 
+#include "esp_timer.h"
+
 #include "bsp/esp-bsp.h"
 #include "crc32.h"
 #include "drive_log.h"
+#include "drives.h"
 #include "drives_list.h"
 #include "gauge_ui.h"
 #include "imu.h"
@@ -322,6 +325,33 @@ void task(void*) {
             // measuring a path no finger ever takes.
             gauge_ui::queue_view_step(dir);
             printf("OK swipe %d\n", dir);
+        } else if (!strncmp(line, "CHROME", 6)) {
+            // BENCH: "CHROME 0" hides both, 1 scrims only, 2 bezel only, 3 both.
+            const int m = (line[6] == ' ') ? (int)strtol(line + 7, nullptr, 10) : 3;
+            bsp_display_lock(-1);
+            gauge_ui::chrome_show((m & 1) != 0, (m & 2) != 0);
+            bsp_display_unlock();
+            printf("OK chrome scrims=%d bezel=%d\n", (m & 1) != 0, (m & 2) != 0);
+        } else if (!strncmp(line, "SCROLL", 6)) {
+            // Drags the Drives list up and down for a few seconds, so the
+            // frame rate during a scroll can be read off the ui log without a
+            // thumb on the glass. "SCROLL" for 8 s, "SCROLL 20" for twenty.
+            const double secs = (line[6] == ' ') ? strtod(line + 7, nullptr) : 8.0;
+            const int64_t until = esp_timer_get_time() + (int64_t)(secs * 1e6);
+            int dy = -8, moved = 0, steps = 0;
+            bool ok = true;
+            while (ok && esp_timer_get_time() < until) {
+                bsp_display_lock(-1);
+                ok = gauge_ui::drives_scroll_by(dy);
+                bsp_display_unlock();
+                moved += dy;
+                ++steps;
+                // Turn round before the list runs out of travel, so this keeps
+                // dirtying the screen rather than pushing against the end.
+                if (moved < -320 || moved > 0) { dy = -dy; }
+                vTaskDelay(pdMS_TO_TICKS(16));
+            }
+            printf(ok ? "OK scroll %d steps\n" : "ERR not on the drives view\n", steps);
         } else if (!strncmp(line, "SWEEP", 5)) {
             // "SWEEP" for a minute, "SWEEP 20" for twenty seconds.
             const double secs = (line[5] == ' ') ? strtod(line + 6, nullptr) : 60.0;

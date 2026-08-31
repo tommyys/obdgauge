@@ -14,6 +14,11 @@ namespace {
 // created and destroyed as the list changes).
 constexpr int kMaxRows = 12;
 constexpr int kRowH    = 88;
+// Between the drive's name line and its numbers line, inside one row.
+constexpr int kLineGap = 7;
+// The hairline under each row is part of the row's own 88 px, so the text has
+// 87 to be centred in.
+constexpr int kRowRule = 1;
 
 const DrivesSource* g_src = nullptr;
 
@@ -82,6 +87,12 @@ void card_clicked(lv_event_t*) { g_open = -1; }
 
 void drives_set_source(const DrivesSource* src) { g_src = src; }
 
+bool drives_scroll_by(int dy) {
+    if (!g_list) return false;
+    lv_obj_scroll_by(g_list, 0, dy, LV_ANIM_OFF);
+    return true;
+}
+
 void drives_build(lv_obj_t* parent) {
     // The panel's width, not the parent's. drives_build runs while the
     // carousel is still being built, before LVGL has laid anything out, so
@@ -98,7 +109,11 @@ void drives_build(lv_obj_t* parent) {
     // the list while a drag left and right is left alone to change view.
     g_list = lv_obj_create(parent);
     lv_obj_remove_style_all(g_list);
-    lv_obj_set_size(g_list, w, w);
+    // As wide as its rows and no wider. A scroll invalidates the whole of this
+    // object's area every frame, and at 466 wide that was the entire panel --
+    // including 120 px of black margin either side of the rows that never has
+    // anything in it to move. Nothing looks different; the frame is smaller.
+    lv_obj_set_size(g_list, w - 120, w);
     lv_obj_center(g_list);
     lv_obj_add_flag(g_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(g_list, LV_DIR_VER);
@@ -124,9 +139,21 @@ void drives_build(lv_obj_t* parent) {
         lv_obj_set_style_border_color(r.box, lv_color_hex(0x303030), 0);
         lv_obj_set_style_border_opa(r.box, LV_OPA_COVER, 0);
 
-        r.when  = mk(r.box, &lv_font_montserrat_20, 0xF0F0F0, LV_ALIGN_TOP_LEFT, 0, 6);
-        r.dur   = mk(r.box, &lv_font_montserrat_20, 0x909090, LV_ALIGN_TOP_RIGHT, 0, 6);
-        r.stats = mk(r.box, &lv_font_montserrat_14, 0x9090A0, LV_ALIGN_TOP_LEFT, 0, 38);
+        // Centred in the row, not hung from its top. The two lines were at 6
+        // and 38 of an 88 px row, which left 6 px above the text and 32 below
+        // it -- so every row looked as though it belonged to the hairline under
+        // it rather than sitting between two of them.
+        //
+        // Measured from the fonts rather than typed in, so the block stays
+        // centred if either font ever changes size.
+        const int h_top = (int)lv_font_get_line_height(&lv_font_montserrat_20);
+        const int h_bot = (int)lv_font_get_line_height(&lv_font_montserrat_14);
+        const int y_top = (kRowH - kRowRule - h_top - kLineGap - h_bot) / 2;
+        const int y_bot = y_top + h_top + kLineGap;
+
+        r.when  = mk(r.box, &lv_font_montserrat_20, 0xF0F0F0, LV_ALIGN_TOP_LEFT, 0, y_top);
+        r.dur   = mk(r.box, &lv_font_montserrat_20, 0x909090, LV_ALIGN_TOP_RIGHT, 0, y_top);
+        r.stats = mk(r.box, &lv_font_montserrat_14, 0x9090A0, LV_ALIGN_TOP_LEFT, 0, y_bot);
         lv_obj_add_flag(r.box, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -156,6 +183,10 @@ void drives_build(lv_obj_t* parent) {
 
 void drives_update() {
     if (!g_list) return;
+    // First, because it is what lets the board refresh the list at all -- see
+    // DrivesSource::watching. Before the early returns below, so a view that
+    // has nothing to redraw still counts as being looked at.
+    if (g_src && g_src->watching) g_src->watching();
 
     const int n = g_src ? g_src->count() : 0;
 

@@ -28,6 +28,13 @@ struct DrivesSource {
     int  (*count)();                            // drives held, newest first
     bool (*row)(int index, DriveRowInfo* out);  // false when index is past the end
     const char* (*empty_note)();                // shown when count() == 0
+    // Called from drives_update, so on every frame this view is the one on
+    // screen and never otherwise. It is how the board knows it may go to flash:
+    // re-reading the ring stalls the whole gauge (an ESP32 flash read turns the
+    // cache off, and LVGL's code and buffers are behind that cache), so the
+    // board must not do it while some other view is being drawn. Cheap, and
+    // called often -- it may do nothing but note the time.
+    void (*watching)();
 };
 
 void drives_set_source(const DrivesSource* src);
@@ -36,5 +43,11 @@ void drives_set_source(const DrivesSource* src);
 // with the display lock held, from ui.cpp.
 void drives_build(lv_obj_t* parent);
 void drives_update();
+
+// Scrolls the list by `dy` pixels, as a thumb would. A bench hook, for the
+// same reason SWIPE is one: a scroll is where this view's cost shows up, and
+// measuring it should not need a person in front of the glass. False when
+// there is no list to scroll. Call with the display lock held.
+bool drives_scroll_by(int dy);
 
 }  // namespace gauge_ui

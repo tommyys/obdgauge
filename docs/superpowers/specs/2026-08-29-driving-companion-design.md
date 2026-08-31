@@ -1,7 +1,10 @@
 # The driving companion — design
 
 **Date:** 2026-08-29
-**Status:** approved design, not yet implemented
+**Status:** approved design, **parked 2026-08-31**. No implementation plan yet.
+Tommy is settling the driving logic (B3, the score definition) first, and this
+gets revisited once that is firm. The design itself does not depend on B3 —
+parking it is a sequencing choice, not a blocker.
 **Related:** `SPEC.md` §6 (the views), §11 (rpm backdrop), §14 (boot splash budget),
 B3 (driving score, still undecided — the companion does **not** depend on it)
 

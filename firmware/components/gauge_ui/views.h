@@ -57,6 +57,9 @@ enum class Layout {
     // bespoke view in the carousel rather than a ViewSpec the builder can
     // lay out. See gball.h.
     GBall,
+    // Five scrolling wheels for setting the wall clock, in gauge_ui/clock.cpp.
+    // The only view that is an input rather than a readout. See clock.h.
+    Clock,
 };
 
 // What the view says when the car cannot drive it at all. `needs` is a

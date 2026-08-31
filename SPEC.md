@@ -240,13 +240,30 @@ real life has no console attached.
 | 8 | Electrical | control-module voltage / ATRV, charge status |
 | 9 | Drives | the replayable-drive library (§12), and one drive's summary + timeline (§13) |
 
-**Eight of the nine are on the board.** Views 1–8 are built and running on the
-AMOLED (plus the not-available screens that replace any view whose channels the
-car does not supply — `gauge::view_available`, host-tested). **View 9, Drives,
-is simulator-only**: browsing a library of past drives needs drives to have been
-recorded on the board first, and on-board drive logging is still phase 3. The
-firmware's carousel is eight wide, and `gauge_ui::view_count()` is the authority
-on that.
+**The board's carousel is not the same list, and `gauge_ui::view_count()` is
+the only authority on it.** It runs **seven** views: Tacho, Engine, Driving,
+Trip, Power, Drives, Clock. Three differences, each with a reason:
+
+- **Fuel economy was absorbed into Trip** (2026-08-29). The two were the same
+  view with different heroes — both built from `gauge::Trip`, both showing fuel
+  used and cost.
+- **Thermals and Electrical folded into Engine and Trip.** Their readings are
+  on the board, on the views they belong to, rather than as two more swipes.
+- **Clock is board-only, and is the last view** — one swipe left from the
+  tacho. This board has no real-time clock (0x51 is named in the I2C table but
+  is not on the bus), so the only clock it has is one somebody handed it, and
+  until 2026-08-31 that meant a Mac on the USB socket. A drive recorded without
+  one is stamped "date unknown" for ever, which had happened to every drive so
+  far. Five scrolling wheels, date over time, seeded from the last moment a
+  previous run persisted — so a drive the next day is a nudge on two wheels
+  rather than five. The simulator has no equivalent: it takes its clock from
+  the Mac, so a setter there would set nothing. See
+  `firmware/components/gauge_ui/clock.h`.
+
+The not-available screens apply to every board view whose channels the car does
+not supply (`gauge::view_available`, host-tested). Two views are exempt on
+purpose: Drives, because an empty list is its own real answer, and Clock,
+because the clock has nothing to do with what the car reports.
 
 Fuel rail temperature was dropped from Thermals: across every capture it
 returned **2 distinct values in 375 samples** (72/73 °C), so it is a canned

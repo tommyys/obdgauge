@@ -299,6 +299,10 @@ extern "C" void app_main(void) {
     // Which way the gauge points, if a previous drive worked it out. Without
     // this the g view says LEARNING for the first six minutes of every drive.
     mount_cache_load(score.g);
+    // If it came back from NVS there is nothing new to solve or to save, and
+    // saying "solved and saved" about a value that was merely restored is a
+    // lie the console has already told once.
+    bool mount_saved = score.g.ready();
     // The headroom that overflow ate, printed so the next thing to grow a
     // frame here shows up as a number rather than as a boot loop.
     printf("main: %u bytes of stack headroom\n",
@@ -306,7 +310,6 @@ extern "C" void app_main(void) {
     int64_t t0 = esp_timer_get_time();
     int64_t last_frame_us = t0;
     double  last_imu_t = -1.0;      // so the first published sample is taken
-    bool    mount_saved = false;    // one NVS write per learning event, not per frame
 
     for (;;) {
         if (replay_ok && !have_replay && !live_mode && demo_wanted()) {

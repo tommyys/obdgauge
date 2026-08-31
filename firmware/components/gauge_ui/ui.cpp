@@ -8,6 +8,7 @@
 #include "carousel.h"
 #include "drives.h"
 #include "gball.h"
+#include "clock.h"
 #include "face.h"
 #include "slide.h"
 #include "views.h"
@@ -378,6 +379,11 @@ ViewObjs build_view(const ViewSpec& spec) {
         gball_build(c);
         return v;
     }
+    if (layout_k == Layout::Clock) {
+        // Five scrolling wheels and a button. See clock.h.
+        clock_build(c);
+        return v;
+    }
 
     int n = 0;
     while (n < 4 && spec.rows[n].label) ++n;
@@ -685,6 +691,14 @@ void update(const Model& m) {
         // list is this view's own answer. Formatting it every frame is cheap:
         // drives_update() writes a label only when its text actually changed.
         drives_update();
+        return;
+    }
+    if (s.layout == Layout::Clock) {
+        // No availability screen: the clock is not fed by the car, so no
+        // channel's absence should hide it. Formatting is cheap -- the wheels
+        // are only re-seeded while nobody is touching them, and the note is
+        // written only when its text actually changed.
+        clock_update();
         return;
     }
     if (s.layout == Layout::GBall) {

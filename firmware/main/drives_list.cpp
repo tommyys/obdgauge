@@ -18,6 +18,7 @@
 
 #include "drive_log.h"
 #include "drive_stats.h"
+#include "clock.h"
 #include "drives.h"
 #include "flight_log.h"
 #include "logbuf.h"
@@ -307,9 +308,31 @@ void drives_list_dump(void) {
     printf("OK %d rows\n", n);
 }
 
+// The Clock view's window onto the board's wall clock. It lives here rather
+// than in its own file because the two things it needs -- the running clock
+// and the floor persisted by a previous run -- both come out of the same
+// drive_log_stats_t the drives list already reads.
+const gauge_ui::ClockSource kClockSource = {
+    []() -> uint32_t {
+        drive_log_stats_t st{};
+        return drive_log_stats(&st) ? st.epoch_s : 0;
+    },
+    []() -> uint32_t {
+        drive_log_stats_t st{};
+        return drive_log_stats(&st) ? st.clock_floor_s : 0;
+    },
+    [](uint32_t epoch_s) -> bool {
+        // The same path `TIME <epoch>` takes from the console, so a clock set
+        // on the glass and a clock set from the Mac cannot behave differently.
+        drive_log_set_epoch(epoch_s);
+        return true;
+    },
+};
+
 void drives_list_init(void) {
     g_mutex = xSemaphoreCreateMutex();
     gauge_ui::drives_set_source(&kSource);
+    gauge_ui::clock_set_source(&kClockSource);
     // Priority 1: below the recorder (3) and the console (2). Nothing waits on
     // it, and every millisecond it spends is a millisecond of flash reads.
     // Core 0, with the rest of the flash work -- the UI loop owns core 1.

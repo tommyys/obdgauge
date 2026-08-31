@@ -258,9 +258,66 @@ stationary car.
 
 ---
 
-## 7. Next
+## 7. What the first two real drives showed (2026-08-31)
 
-1. Drive it, twice: once gently, once properly, and look at the g-ball.
-2. Tune the Spirited bands against that second log rather than against
-   reasoning.
-3. Check the peak figures the drive reports against what the drive felt like.
+Two drives, `logs/drive-20260831-114800.csv` (10.6 min) and
+`logs/drive-20260831-125224.csv` (5.6 min). Both dated by hand from times
+Tommy supplied — the board had no clock, because `pull_drives.py --list` was
+not run first (BOARD-CHECKS A7).
+
+**Both were gentle.** Neither passed 2900 rpm or 67 km/h, so neither earned the
+Spirited pole, and the Spirited half is still untested against real data.
+Judged over the windows where the gauge was actually upright, they score
+**80 TIDY** and **78 TIDY**. The solved forward axis came out as essentially
+−Z on both, matching 2026-08-29 — the bracket is repeatable.
+
+Three defects, in the order they were found.
+
+**1. The IMU log rate went down, not up — fixed 2026-08-31.** The drives
+recorded at 2.6 and 2.9 Hz, against 3.6–4.8 Hz before the change that was
+meant to raise it. The recorder loop delays 50 ms, and the read had been given
+a 50 ms interval of its own; a pass that came back a hair early failed
+`now - last > 50 ms`, so it fired every *other* pass. 10 Hz of reads, a
+quarter of them logged, 2.5 Hz on disk. The read now happens once per pass
+with no interval of its own — the loop's delay *is* the sample rate — and the
+flash write keeps a 200 ms deadline that **advances by one period** rather than
+being reset to now, so it cannot beat the same way one level down.
+
+**2. Moving the gauge silently corrupts the g — open.** Tommy lays the gauge
+flat to park, and started the first drive with it flat. Gravity is re-learned
+within 30 s, but **forward is not**: it stays in the old gauge frame and is
+simply wrong. That produced 1.20 g of "braking" on a drive that never passed
+67 km/h, pinned the drive's peaks, and pushed intensity to Spirited while
+parked. `kPeakSaneG` at 1.5 was too generous to catch it.
+
+*The fix, when it is wanted:* remember the down vector that forward was solved
+against, and when the live down moves more than about 25° from it, drop
+forward, go back to LEARNING, and stop reporting g. 25° clears hill pitch and
+brake dive; laying the gauge flat is 70–90°. Deferred 2026-08-31 — Tommy will
+mount it properly, and with a fixed mount it cannot happen.
+
+**3. The yaw cross-check is specified but was never written — open.** Section
+4 of this document, and the comment in `gball.h`, both say lateral g is
+cross-checked against speed × yaw rate so a pothole is not scored as a corner.
+No such code exists. The second drive's largest "corner" is **0.71 g at
+19 km/h**, where the car cannot exceed 0.60 g even on full steering lock — the
+gauge rocking on its mount after a bump, scored as bad cornering.
+
+*The fix, when it is wanted:* the cheap half needs no gyro at all. Lateral g is
+bounded by `v² / r_min`, and an MX-5 ND's tightest radius is about 4.7 m, so
+speed alone says what is possible. On these drives that gate rejects 0 % of the
+first and 2.0 % of the second, and takes that 0.71 g down to 0.47 g. The exact
+version needs the gyro projected onto down, which means logging `imu_gx` and
+`imu_gy` as well — only `imu_gz` is recorded today, and the gauge is not
+mounted with Z vertical, so the logged channel is not yaw. Deferred
+2026-08-31 for the same reason as 2.
+
+## 8. Next
+
+1. Run `pull_drives.py --list` **before** driving, every time, or the drive has
+   no timestamp for ever.
+2. Mount it firmly, then drive it properly — a backroad, not a commute. That is
+   the only thing that can tune the Spirited bands, and it also settles whether
+   2 and 3 above still matter.
+3. Confirm the log comes back at 5 Hz. The fix cannot be tested on the bench:
+   the IMU is only read once the car has actually spoken.

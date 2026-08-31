@@ -28,15 +28,24 @@ constexpr int64_t kSilenceUs = 20LL * 1000 * 1000;
 constexpr int64_t kFlushUs = 2LL * 1000 * 1000;
 // 5 Hz, not 10: the IMU is four channels against the car's twelve readings a
 // second, and 10 Hz would halve the history the partition holds (design s3).
-// How often the part is read. 20 Hz, up from 5: the driving score measures
-// jerk -- how fast braking arrives and leaves -- and at 5 Hz a whole hard
-// stop is one or two samples, which is not a rate of anything. The recorder
-// task is the only thing allowed to touch the I2C bus here, so the score
-// cannot simply read it itself from the UI loop.
-constexpr int64_t kImuPeriodUs = 50LL * 1000;
-// ...but only every fourth read is written to flash, which keeps the ring at
-// the 5 Hz it already held. The score wants resolution; the log wants hours.
-constexpr int kImuLogEvery = 4;
+// The part is read once per pass of this loop, which delays 50 ms -- so 20 Hz,
+// up from the 5 Hz it used to run at. The driving score measures jerk, how
+// fast braking arrives and leaves, and at 5 Hz a whole hard stop is one or two
+// samples, which is not a rate of anything. The recorder task is the only
+// thing allowed to touch the I2C bus, so the score cannot read it itself from
+// the UI loop.
+//
+// There is deliberately no read interval of its own. Having one set to 50 ms
+// against a 50 ms loop BEAT: an iteration that came back a hair early failed
+// `now - last > 50ms`, so it fired every other pass and the real rate was
+// 10 Hz, not 20. Measured on the 2026-08-31 drives, which recorded at 2.6 Hz
+// when they should have held 5 -- a rate that went DOWN while the code was
+// being changed to raise it. The loop's own delay is the sample rate; nothing
+// else should claim to set it.
+//
+// The flash write keeps its own interval, in time rather than in a count of
+// reads, so the log rate cannot move again when the loop's period does.
+constexpr int64_t kImuLogPeriodUs = 200LL * 1000;   // 5 Hz to the ring
 // Persist the borrowed clock this often, so a boot with no Mac has a floor.
 constexpr int64_t kClockSaveUs = 300LL * 1000 * 1000;
 
@@ -79,7 +88,6 @@ uint32_t         g_write_fail = 0;         // LogBuf calls that returned false
 uint32_t         g_epoch_at_boot = 0;      // wall clock of uptime 0, 0 if unknown
 uint32_t         g_clock_floor = 0;        // NVS wall clock from a previous run
 bool             g_have_imu = false;
-int              imu_reads = 0;
 
 // The latest accelerometer reading, for anything outside this task. Written
 // here and read from the UI loop, so it is guarded by a plain sequence
@@ -198,19 +206,29 @@ void task(void*) {
         // allowed to touch LogBuf, it is already holding the lock in the same
         // breath, and the round trip through the queue was what fed the
         // liveness timer and stopped drives from ever ending.
-        if (last_sample && g_have_imu && now - last_imu > kImuPeriodUs) {
-            last_imu = now;
+        if (last_sample && g_have_imu) {
             imu_sample_t im{};
             if (imu_read(&im)) {
                 // Publish first, whatever happens to the flash write below.
                 // The score reads this from the UI loop; it must not be
                 // coupled to whether a drive happens to be open.
                 imu_publish(im, now / 1e6);
-                // Only every fourth read reaches flash, which keeps the ring
-                // at the 5 Hz it already held. `continue` would be wrong
+                // Only every 200 ms reaches flash. `continue` would be wrong
                 // here: it would also skip the flush and the clock save below
-                // and leave the ring unflushed for three reads in four.
-                if (++imu_reads % kImuLogEvery == 0) {
+                // and leave the ring unflushed most of the time.
+                //
+                // The deadline ADVANCES by one period rather than being set to
+                // now. Setting it to now is what caused the bug this whole
+                // block was rewritten for: an interval that is a whole number
+                // of loop periods lands within a hair of the boundary every
+                // time, so half the passes fall just short and the real rate
+                // comes out a clean fraction of the intended one. Advancing
+                // keeps the average exact whichever side of the boundary a
+                // pass lands on. The resync below stops it trying to catch up
+                // after a long stall, which would burst writes into the ring.
+                if (now - last_imu >= kImuLogPeriodUs) {
+                    last_imu += kImuLogPeriodUs;
+                    if (now - last_imu > kImuLogPeriodUs) last_imu = now;
                     // Ids are looked up once: log_chan_id walks a string table.
                     static const uint16_t kImuChan[4] = {
                         gauge::log_chan_id("imu_ax"), gauge::log_chan_id("imu_ay"),

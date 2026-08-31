@@ -314,7 +314,7 @@ const ViewSpec* view_table(int* count) {
         // No `avail` entry: the clock has nothing to do with what the car
         // reports, so there is no channel whose absence should hide it.
         {
-            "CLOCK",
+            nullptr,                       // no title: the wheels are the view
             Instrument::None,
             Layout::Clock,
             {nullptr, nullptr, nullptr},
@@ -323,6 +323,7 @@ const ViewSpec* view_table(int* count) {
             nullptr,
             { nullptr, nullptr, nullptr, nullptr },
             { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
+            "CLOCK",                       // ...but the log still needs a name
         },
     };
     *count = static_cast<int>(sizeof views / sizeof views[0]);

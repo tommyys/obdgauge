@@ -26,7 +26,10 @@ namespace {
 // way to see at a glance whether the gauge knows the time -- and knowing
 // matters, because a drive recorded without a clock is stamped "date unknown"
 // for ever. Small and dim: it is a reassurance, not a readout.
-constexpr int kClockY   = -178;
+// Almost on the rim. At y=31 the round panel is still 232 px wide, which is
+// five times what "14:32" needs, and putting it up there keeps it out of the
+// way of every view's own content rather than hovering over it.
+constexpr int kClockY   = -202;
 constexpr int kTitleY   = -142;  // view name, under the top of the rim
 constexpr int kHeroY    =  -60;  // the one big number
 constexpr int kUnitY    =  -18;  // its unit, directly beneath

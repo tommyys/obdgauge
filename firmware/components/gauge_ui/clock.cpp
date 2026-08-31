@@ -65,12 +65,49 @@ int days_in(int year, int month) {
     return leap ? 29 : 28;
 }
 
-lv_obj_t* mk_roller(lv_obj_t* parent, const char* options, int w, int x, int y,
-                    const lv_font_t* font) {
+// A row's ends fade into the bezel, the way the numbers on a phone's picker
+// do. There is no alpha gradient available to do it with: this build has
+// LV_USE_DRAW_SW_COMPLEX_GRADIENTS off and LV_GRADIENT_MAX_STOPS at 2, so a
+// style gradient can move colour but not opacity, and over a black background
+// that is no fade at all. Turning the option on costs code size and draw time
+// on every gradient in the firmware, for one decoration.
+//
+// So it is stacked strips of black at decreasing opacity -- the same trick
+// SPEC.md section 4 uses for the tacho's heat band, where a real gradient was
+// also unaffordable and segments of a ramp read as smooth at this size. Built
+// once and never touched again, so it costs nothing per frame.
+constexpr int kFadeSteps = 7;
+constexpr int kFadeStepW = 5;
+
+void mk_fade(lv_obj_t* parent, int outer_x, int y, int h, int dir) {
+    for (int i = 0; i < kFadeSteps; ++i) {
+        lv_obj_t* o = lv_obj_create(parent);
+        lv_obj_remove_style_all(o);
+        lv_obj_set_size(o, kFadeStepW, h);
+        lv_obj_set_style_bg_color(o, lv_color_black(), 0);
+        // Nearly solid at the outer edge, gone by the inner one. Squared, so
+        // the fade holds on longer at the outside and lets go quickly at the
+        // inside -- a linear ramp reads as a grey band with an edge on it.
+        const double f = 1.0 - static_cast<double>(i) / kFadeSteps;
+        lv_obj_set_style_bg_opa(o, static_cast<lv_opa_t>(245.0 * f * f), 0);
+        lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+        // Not clickable, so a thumb landing on the fade still reaches the
+        // wheel underneath it.
+        lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(o, LV_ALIGN_TOP_MID,
+                     outer_x + dir * (i * kFadeStepW + kFadeStepW / 2), y);
+    }
+}
+
+lv_obj_t* mk_roller(lv_obj_t* parent, const char* options, int w, int h, int x,
+                    int y, const lv_font_t* font) {
     lv_obj_t* r = lv_roller_create(parent);
     lv_roller_set_options(r, options, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(r, 3);
-    lv_obj_set_width(r, w);
+    // Height set explicitly, not left to the font: the fade strips beside the
+    // row have to be exactly as tall as it is, and asking LVGL for a height
+    // before the first layout pass answers 0.
+    lv_obj_set_size(r, w, h);
     lv_obj_align(r, LV_ALIGN_TOP_MID, x, y);
     lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(r, 0, 0);
@@ -161,11 +198,20 @@ void clock_build(lv_obj_t* parent) {
     // the hour wheel was already over the minutes. Both rows stay on the wide
     // part of the circle, where a 466 px round screen actually has width.
     constexpr int kDateY = 74, kTimeY = 214;
-    g_roll[kDay]  = mk_roller(parent, days,   84, -118, kDateY, &lv_font_montserrat_24);
-    g_roll[kMon]  = mk_roller(parent, kMonths, 96,    0, kDateY, &lv_font_montserrat_24);
-    g_roll[kYear] = mk_roller(parent, years, 108,  118, kDateY, &lv_font_montserrat_24);
-    g_roll[kHour] = mk_roller(parent, hours,  104,  -62, kTimeY, &lv_font_montserrat_28);
-    g_roll[kMin]  = mk_roller(parent, mins,   104,   62, kTimeY, &lv_font_montserrat_28);
+    constexpr int kDateH = 96, kTimeH = 108;
+    g_roll[kDay]  = mk_roller(parent, days,    84, kDateH, -118, kDateY, &lv_font_montserrat_24);
+    g_roll[kMon]  = mk_roller(parent, kMonths, 96, kDateH,    0, kDateY, &lv_font_montserrat_24);
+    g_roll[kYear] = mk_roller(parent, years,  108, kDateH,  118, kDateY, &lv_font_montserrat_24);
+    g_roll[kHour] = mk_roller(parent, hours,  104, kTimeH,  -62, kTimeY, &lv_font_montserrat_28);
+    g_roll[kMin]  = mk_roller(parent, mins,   104, kTimeH,   62, kTimeY, &lv_font_montserrat_28);
+
+    // The ends of each row, after the wheels, so the fade sits over them.
+    // Each row's outermost edge is its outer wheel's centre plus half its
+    // width; the strips walk inwards from there.
+    mk_fade(parent, -118 -  84 / 2, kDateY, kDateH, +1);   // left of DAY
+    mk_fade(parent,  118 + 108 / 2, kDateY, kDateH, -1);   // right of YEAR
+    mk_fade(parent,  -62 - 104 / 2, kTimeY, kTimeH, +1);   // left of HOUR
+    mk_fade(parent,   62 + 104 / 2, kTimeY, kTimeH, -1);   // right of MINUTE
 
     g_set = lv_button_create(parent);
     lv_obj_set_size(g_set, 150, 52);

@@ -78,6 +78,10 @@ void advance_view(int step);
 // uses it to reproduce a gesture exactly, because the two were costing wildly
 // different amounts of time and the difference had to be pinned on something.
 void queue_view_step(int step);
+
+// BENCH ONLY: hides the scrims and the bezel scale, so what each of them costs
+// during a redraw can be measured instead of argued about.
+void chrome_show(bool scrims, bool bezel);
 int gesture_count();
 int press_count();
 int release_count();

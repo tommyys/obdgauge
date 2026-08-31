@@ -47,8 +47,150 @@ constexpr int kRowStep  =   24;  // Rows: line to line
 // ring is there and has nothing to report yet -- a ring that appears already
 // green has told you something before it knew it.
 constexpr uint32_t kVerdictGrey = 0x5A5F6A;
-// The page dots' row, below the views and above the banner.
-constexpr int kDotY = 205;
+// The scanning ring's two colours. Declared up here because the bezel arc
+// below borrows them, and a colour that two things share must have one
+// definition or it drifts.
+constexpr uint32_t kScanGreen = 0x35E06B;
+constexpr uint32_t kScanRed   = 0xFF3B30;
+
+// ---- the page indicator, on the bezel ---------------------------------
+// A row of dots was the wrong shape for this screen. Nine 6 px dots at arm's
+// length is something you count, not something you glance at; the view already
+// prints its own name; and the carousel wraps, so "4 of 9" has no start or end
+// to measure against anyway. What the indicator has to say is only "there is
+// more, and you moved this way" -- and on a round panel the honest way to say
+// that is on the rim, where the shape of the thing you are moving through is
+// already drawn.
+//
+// So: a short scale of segments along the bottom of the bezel, one per view,
+// with the view you are on lit and the rest held back. It costs the inside of
+// the panel nothing.
+//
+// It is the BOTTOM of the bezel and not the whole ring, and that is a hard
+// constraint rather than a taste. slide.cpp shifts rows 16..396 every frame and
+// paints everything outside them once, which is what keeps the banner and this
+// indicator from travelling with the view. A full ring runs through the moving
+// band, so it would smear on every swipe. Rows 396..466 are the static ones,
+// and the geometry below is chosen to stay inside them:
+//
+//   the arc's stroke reaches r=226, so y = 233 + 226*sin(angle);
+//   y >= 396 needs sin(angle) >= 0.721, so the angle stays in 46..134 degrees.
+//
+// 67.5..112.5 -- 45 degrees centred on the bottom -- is well inside that. It
+// was 84 degrees first and then 60, and both read as a wide smile across the
+// panel rather than as a detail; 45 is still enough for nine segments to be
+// told apart at 15 px each. The dial's own rim ends at r=217, so there is a
+// 4 px gap between the two and they never touch.
+//
+// LVGL measures its angles CLOCKWISE from 3 o'clock, so the FIRST view has to
+// be placed at the LAST angle: the small angles are on the right of the panel
+// and the large ones on the left. Getting that backwards is what put the tacho,
+// which is view 1, at the right-hand end of the scale.
+//
+// ---- and why they live in a box ----------------------------------------
+// An lv_arc's object is the whole 452 px square, even though it paints only a
+// 5 px band of it, and LVGL decides what to redraw from object rectangles. So
+// two arcs that size overlap almost every dirty rectangle the tacho needle
+// makes, and both were being redrawn on every single frame -- measured as 66
+// fps falling to 64, and the mean of a 40 second run from 59 to 54.
+//
+// Putting each one inside its own small container fixes it, because LVGL walks
+// the tree: a parent that does not intersect the dirty rectangle prunes its
+// children without looking at them, and an arc's drawing is clipped to its
+// parent. Each box is the bounding rectangle of the one segment inside it --
+// about 30 px square -- computed at build time from the angles.
+//
+// One box around all nine was the first version and it was not enough. Measured
+// while scrolling the Drives list, which redraws the whole screen every frame:
+// 61.4 ms a frame with the bezel hidden, 95.9 ms with it shown. Nine arcs, each
+// clipped only to a 466 x 42 strip, were costing 34.5 ms of every frame. Boxed
+// individually they are clipped to their own 30 px square instead, and only the
+// two or three under a given band are looked at at all.
+constexpr int kPanelPx      = 466;  // this board's round panel, both ways
+// How far outside the stroke each box reaches. The lit segment is 2 px wider
+// than the rest and a wider stroke grows inward, so the box has to allow for
+// the widest it will ever be, plus a pixel for the anti-aliased edge.
+constexpr int kPageBoxPad   = 4;
+constexpr int kPageArcPx    = 452;  // outer diameter, inside the 466 panel
+constexpr int kPageArcW     = 5;
+constexpr int kPageArcFrom  = 68;   // degrees, 0 = 3 o'clock, clockwise
+constexpr int kPageArcTo    = 113;  // so 90 is the bottom of the panel
+// The gap between one segment and the next, in degrees. Without it nine
+// segments read as one continuous bar and the scale says nothing.
+constexpr double kPageArcGap = 1.2;
+
+// ---- the shades -------------------------------------------------------
+// One colour per position, walked across a ramp, so the scale is a graded thing
+// rather than nine copies of the same tick.
+//
+// The ramp stays inside ONE family -- teal, through the scanning ring's own
+// green, to lime. That is deliberate and it is not timidity: on this gauge a
+// colour is a claim. Green means the car is fine, red means it is not, amber is
+// the accent. A bezel running green to red would read as a severity scale, and
+// the rightmost view would look like a fault. Shades of one family carry the
+// gradient without making a claim about anything.
+constexpr uint32_t kPageShadeA = 0x2ED9C3;  // teal, at the left
+constexpr uint32_t kPageShadeB = kScanGreen;  // the scanning ring's green
+constexpr uint32_t kPageShadeC = 0xAEE034;  // lime, at the right
+// How far back the segments you are not on are held. Their own colour, at this
+// opacity -- not grey, so the ramp is still visible across the whole scale.
+constexpr lv_opa_t kPageShadeDim = 70;
+
+// ---- the chrome scrims ------------------------------------------------
+// The clock at the top and the page indicator, the banner and the scanning
+// ring at the
+// bottom belong to the gauge, not to the view under them. A view is free to
+// put anything it likes anywhere -- and two of them do: the Drives list
+// scrolls its rows straight under both, and the Clock view's wheels are taller
+// than the text bands every other view keeps to. Chrome that a passing row can
+// hide is chrome you cannot trust, so the rim of the panel is darkened and the
+// chrome is drawn on top of that.
+//
+// Solid across the band the chrome occupies, then faded out into the content.
+// A hard edge would read as a bezel inside the bezel, which is why the fade is
+// there at all; the solid part is there because a fade that starts at the very
+// rim is weakest exactly where the clock is.
+//
+// Black, not a colour. The panel is black, the views are black, and a tinted
+// scrim on a black ground is a visible band rather than a shadow -- it would
+// announce itself instead of doing its job. Change kScrimColor if a tint is
+// wanted; everything else about it stays the same.
+//
+// Built once, never touched again, so it costs nothing per frame. Stacked
+// strips of one opacity each, because this build cannot fade alpha in a
+// gradient -- the same constraint, and the same answer, as the clock wheels'
+// own fade (see clock.cpp).
+//
+// Each strip is only as wide as the ROUND PANEL is at its own row, not the full
+// 466. That is not tidiness, it is most of what they cost: a translucent strip
+// is blended pixel by pixel, and at row 10 the glass is 135 px across, so a
+// 466 px strip there was blending 331 px of a corner the panel does not have.
+// Measured while scrolling the Drives list, which redraws everything every
+// frame: the strips cost 24.5 ms of a 61.4 ms frame before this.
+constexpr uint32_t kScrimColor = 0x000000;
+// 75%. Enough to put a white hero number below the dim grey of the clock, and
+// short of solid so the top and bottom of the dial's ring are still there --
+// blacking them out entirely makes the ring look cut off.
+constexpr lv_opa_t kScrimOpa = 190;
+// 8, and going lower buys nothing. Measured: with 4 strips of twice the height
+// -- half the objects, the same total area -- a scroll frame cost 71.8 ms
+// against 71.8 ms. The strips do not cost what they cost because there are
+// eighteen of them; they cost it because of how many pixels they blend, and
+// the only levers on that are how deep they reach and how wide the glass is
+// where they reach it.
+constexpr int kScrimSteps    = 8;   // strips in each fade
+// Both ends are mostly fade now: a scrim wants to read as the panel getting
+// darker towards its rim, and a solid band with a short ramp on it reads
+// instead as a bezel drawn inside the bezel.
+//
+// The bottom keeps the deeper solid part of the two because its chrome reaches
+// 30 px further in than the top's does -- the clock is one dim line at row 31,
+// where the bottom has the scanning ring, the car's name and the bezel arc
+// spread over rows 396 to 459.
+constexpr int kScrimTopSolid = 25;  // rows 0..25
+constexpr int kScrimTopFade  = 30;  // and gone by row 55
+constexpr int kScrimBotSolid = 426; // rows 426..466
+constexpr int kScrimBotFade  = 40;  // and gone by row 386
 // One length of the scanning bar. 1.6 s, not the 0.9 s it started at: this
 // runs for as long as the gauge is looking for the car, and a fast shuttle
 // reads as urgency where there is none to report.
@@ -56,9 +198,14 @@ constexpr int kScanRingPx = 22;     // the ring's diameter
 constexpr int kScanArcDeg = 100;    // how much of it the moving arc covers
 constexpr int kScanTurnMs = 1600;   // one turn -- slow enough to read as patience
 constexpr int kScanFadeMs = 2400;   // green to red, and back
-constexpr int kScanY      = 168;    // just above the line the car's name uses
-constexpr uint32_t kScanGreen = 0x35E06B;
-constexpr uint32_t kScanRed   = 0xFF3B30;
+// Down on the bezel, not floating in the view. It used to sit at 168 (row 401),
+// which is where the car's name goes -- the two never show at once, so nothing
+// collided, but it put a spinning ring in the middle of the readout's space.
+//
+// 185 is row 418, so the 22 px ring runs 407..429. The bezel scale's topmost
+// painted row is 442, which leaves 13 px of clear glass between the two. It was
+// 197 and that gap was 8 px, which read as the ring resting on the scale.
+constexpr int kScanY      = 185;
 // How fast it gets to its verdict. 1.2 s of time constant: slow enough to read
 // as a fade rather than a switch, quick enough that a colour is not still
 // arriving after the reading behind it has moved on.
@@ -146,8 +293,10 @@ gauge::Identity g_id;
 lv_obj_t* g_banner = nullptr;
 lv_obj_t* g_clock  = nullptr;    // "14:26" at the top of every view
 int       g_clock_min = -1;      // last minute painted; a label write is a repaint
-lv_obj_t* g_dots[16] = {nullptr};
-lv_obj_t* g_dot_active = nullptr;
+lv_obj_t* g_page_seg[16] = {nullptr};  // one segment of the bezel scale per view
+lv_obj_t* g_page_box[16] = {nullptr};  // each segment's own clipping box
+lv_obj_t* g_scrim[32] = {nullptr};     // BENCH: the strips, so they can be hidden
+int       g_scrim_n = 0;
 char g_banner_base[40] = {0};
 // A small ring that turns where the car's name will go, while the gauge is
 // still looking for the car. Small and at the bottom on purpose: the views
@@ -158,8 +307,7 @@ lv_anim_t g_scan_spin{};
 lv_anim_t g_scan_hue{};
 bool      g_scanning   = false;
 bool g_dials_on = true;
-int  g_dot_x0 = 0;
-int  g_dot_spacing = 18;
+
 int      g_gestures = 0;
 uint32_t g_last_gesture_ms = 0;
 int      g_presses = 0;
@@ -347,7 +495,7 @@ ViewObjs build_view(const ViewSpec& spec) {
     }
 
     // The tacho has no title: the dial numbering would collide with it, and the
-    // page dots already say which view you are on.
+    // page indicator already says which view you are on.
     if (spec.title) {
         v.title = mk_label(c, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, kTitleY);
         lv_label_set_text(v.title, spec.title);
@@ -459,20 +607,17 @@ int g_flip_target = 0;
 // TWICE per switch, once for the outgoing view's old area and once for the
 // incoming view's, which is ~104 ms of dead time at the measured ~52 ms
 // full-frame cost. A view change has to repaint the screen once; not twice.
+void place_page_mark();
+
 void flip_now(void*) {
     lv_obj_add_flag(g_objs[static_cast<size_t>(g_cur)].root, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(g_objs[static_cast<size_t>(g_flip_target)].root, LV_OBJ_FLAG_HIDDEN);
     g_cur = g_flip_target;
-    // The dot moves in the same breath so that the destination snapshot -- and
-    // so the sliding frame -- already shows the right page. It needs no
-    // animation of its own now that the view itself is the motion cue.
-    // Realigned, not set_x'd. The dot was built with lv_obj_align, so LVGL
-    // reads its x as an offset from CENTRE; setting an absolute coordinate on
-    // top of that offset sent the active dot off the side of the panel on the
-    // first swipe, which is what "the dots are broken" was.
-    if (g_dot_active)
-        lv_obj_align(g_dot_active, LV_ALIGN_CENTER,
-                     g_dot_x0 + g_cur * g_dot_spacing, kDotY);
+    // The segment moves in the same breath so that the destination snapshot --
+    // and so the sliding frame -- already shows the right page. It needs no
+    // animation of its own now that the view itself is the motion cue, and it
+    // sits in the rows the slide holds still, so it steps rather than travels.
+    place_page_mark();
 }
 
 void switch_to(int target, int dir) {
@@ -518,7 +663,179 @@ void gesture_cb(lv_event_t* e) {
     ++g_gestures;
 }
 
+// One scrim. `outer_y` is the panel edge the band starts at, `dir` is +1 to
+// walk down from the top edge and -1 to walk up from the bottom, and `solid`
+// is how deep the un-faded part runs.
+void mk_scrim(lv_obj_t* parent, int outer_y, int dir, int solid, int fade) {
+    const int w = lv_obj_get_width(parent);
+    const int h_panel = lv_obj_get_height(parent);
+    // Placed from the centre, in the same units kClockY is in, and
+    // sized in real pixels rather than a percentage. Both on purpose: a
+    // percentage width and a TOP_MID alignment are both measured against the
+    // parent's content area, so any padding the screen picks up would move the
+    // scrim off the edge it is supposed to be welded to.
+    // How wide the glass is across a strip that spans rows [y, y+hh). Widest at
+    // whichever of its two edges is nearer the middle of the panel, plus a
+    // couple of pixels so no seam shows at the rim.
+    auto glass_width = [&](int y, int hh) {
+        const double r = h_panel / 2.0;
+        const double top = std::fabs(y - r), bot = std::fabs(y + hh - r);
+        const double d = top < bot ? top : bot;          // nearer the equator
+        if (d >= r) return 0;
+        const int half = (int)std::sqrt(r * r - d * d) + 2;
+        return half * 2 > w ? w : half * 2;
+    };
+
+    auto strip = [&](int y, int hh, lv_opa_t opa) {
+        if (hh <= 0 || opa == 0) return;
+        const int sw = glass_width(y, hh);
+        if (sw <= 0) return;
+        lv_obj_t* o = lv_obj_create(parent);
+        lv_obj_remove_style_all(o);
+        lv_obj_set_size(o, sw, hh);
+        lv_obj_set_style_bg_color(o, lv_color_hex(kScrimColor), 0);
+        lv_obj_set_style_bg_opa(o, opa, 0);
+        lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+        // Not clickable: a thumb landing on the scrim must still reach the
+        // list or the wheel underneath it, and the gesture must still bubble
+        // to the screen. Same reason as the clock wheels' fade.
+        lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_align(o, LV_ALIGN_CENTER, 0, y + hh / 2 - h_panel / 2);
+        if (g_scrim_n < 32) g_scrim[g_scrim_n++] = o;   // BENCH
+    };
+
+    const int inner = dir > 0 ? outer_y + solid : outer_y - solid;
+    strip(dir > 0 ? outer_y : inner, solid, kScrimOpa);
+
+    // Raised cosine, so the fade leaves the solid band and arrives at nothing
+    // without a step at either end. A linear ramp puts a visible edge where it
+    // meets the solid part; a squared one puts it at the other end.
+    const int step = (fade + kScrimSteps - 1) / kScrimSteps;
+    for (int i = 0; i < kScrimSteps; ++i) {
+        const double t = (i + 0.5) / kScrimSteps;
+        const lv_opa_t opa =
+            static_cast<lv_opa_t>(kScrimOpa * 0.5 * (1.0 + std::cos(3.14159265358979 * t)));
+        const int y = dir > 0 ? inner + i * step : inner - (i + 1) * step;
+        strip(y, step, opa);
+    }
+}
+
+// A shade for position `i` of `n`, walked across the teal-green-lime ramp.
+// Two straight lines rather than a curve: at nine steps the join is not
+// something the eye finds.
+uint32_t page_shade(int i, int n) {
+    const double t = (n <= 1) ? 0.0 : static_cast<double>(i) / (n - 1);
+    const uint32_t from = (t < 0.5) ? kPageShadeA : kPageShadeB;
+    const uint32_t to   = (t < 0.5) ? kPageShadeB : kPageShadeC;
+    const double u = (t < 0.5) ? t * 2.0 : (t - 0.5) * 2.0;
+    uint32_t out = 0;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        const int a = (int)((from >> sh) & 0xFF), b = (int)((to >> sh) & 0xFF);
+        out |= (uint32_t)(a + (int)((b - a) * u + 0.5)) << sh;
+    }
+    return out;
+}
+
+// Which end of the scale a view sits at. LVGL's angles run clockwise from
+// 3 o'clock, so the LEFT of the panel is the LARGE angle -- view 0 is placed
+// from kPageArcTo and the scale is walked backwards from there. See the note
+// on kPageArcFrom.
+void page_seg_angles(int i, double* a0, double* a1) {
+    const double span = static_cast<double>(kPageArcTo - kPageArcFrom) / g_count;
+    const double end = kPageArcTo - i * span;
+    *a1 = end - kPageArcGap / 2.0;
+    *a0 = end - span + kPageArcGap / 2.0;
+}
+
+// Light the one you are on and hold the rest back. Only the two segments that
+// changed are restyled -- a style write is a repaint, and this runs on every
+// view change.
+void place_page_mark() {
+    for (int i = 0; i < g_count && i < 16; ++i) {
+        if (!g_page_seg[i]) continue;
+        const bool on = (i == g_cur);
+        lv_obj_set_style_arc_opa(
+            g_page_seg[i],
+            on ? static_cast<lv_opa_t>(LV_OPA_COVER) : kPageShadeDim,
+            LV_PART_MAIN);
+        // The lit one is thicker too. Colour alone is not enough to find at a
+        // glance when every segment already has a colour of its own.
+        // +2 and no more: a wider stroke grows INWARD (LVGL puts the arc at
+        // r = (size - width)/2), and the dial's own rim ends at r=217. At +2 the
+        // lit segment reaches r=219 and the two still do not touch.
+        lv_obj_set_style_arc_width(g_page_seg[i], on ? kPageArcW + 2 : kPageArcW,
+                                   LV_PART_MAIN);
+    }
+}
+
+// An arc drawn by its BACKGROUND part only. lv_arc's indicator part is the
+// value-tracking half of the widget and this is not a meter, so the indicator
+// and the knob are switched off and the background angles are set by hand --
+// which is also what makes the segment's two ends both movable.
+// The bounding rectangle, in panel coordinates, of the stroke between two
+// angles. Sampled rather than solved: five points along each of the two radii
+// bound a 5 degree arc to well under a pixel, and the box is padded anyway.
+void page_seg_box(double a0, double a1, int* x, int* y, int* w, int* h) {
+    const double r_out = kPageArcPx / 2.0;
+    const double r_in  = r_out - (kPageArcW + 2);
+    const double c = kPanelPx / 2.0;
+    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (int i = 0; i <= 4; ++i) {
+        const double a = (a0 + (a1 - a0) * i / 4.0) * 3.14159265358979 / 180.0;
+        for (const double r : {r_in, r_out}) {
+            const double px = c + r * std::cos(a), py = c + r * std::sin(a);
+            if (px < x0) x0 = px;
+            if (px > x1) x1 = px;
+            if (py < y0) y0 = py;
+            if (py > y1) y1 = py;
+        }
+    }
+    *x = (int)x0 - kPageBoxPad;
+    *y = (int)y0 - kPageBoxPad;
+    *w = (int)(x1 - x0) + 2 * kPageBoxPad + 1;
+    *h = (int)(y1 - y0) + 2 * kPageBoxPad + 1;
+}
+
+lv_obj_t* mk_page_arc(lv_obj_t* parent, uint32_t colour, int box_x, int box_y) {
+    lv_obj_t* a = lv_arc_create(parent);
+    lv_obj_set_size(a, kPageArcPx, kPageArcPx);
+    // Positioned by hand rather than centred, because `parent` is the segment's
+    // own little box and not the screen: the arc has to keep the PANEL's
+    // centre, so it hangs out of its parent on every side and is clipped back.
+    lv_obj_set_pos(a, (kPanelPx - kPageArcPx) / 2 - box_x,
+                   (kPanelPx - kPageArcPx) / 2 - box_y);
+    lv_obj_remove_style(a, nullptr, LV_PART_KNOB);
+    // Not clickable, and no scroll: an arc this size covers most of the panel's
+    // bounding box, and a clickable one would swallow every press on the view
+    // underneath it.
+    lv_obj_remove_flag(a, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(a, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(a, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(a, 0, 0);
+    lv_obj_set_style_arc_opa(a, LV_OPA_TRANSP, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(a, kPageArcW, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(a, lv_color_hex(colour), LV_PART_MAIN);
+    // Square ends. Rounded ones each add half the stroke width along the arc,
+    // which at this size ate the gap between one segment and the next and put
+    // the scale back to being one continuous bar.
+    lv_obj_set_style_arc_rounded(a, false, LV_PART_MAIN);
+    return a;
+}
+
 }  // namespace
+
+void chrome_show(bool scrims, bool bezel) {
+    for (int i = 0; i < g_scrim_n; ++i)
+        if (g_scrim[i]) {
+            if (scrims) lv_obj_clear_flag(g_scrim[i], LV_OBJ_FLAG_HIDDEN);
+            else        lv_obj_add_flag(g_scrim[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    for (int i = 0; i < 16; ++i)
+        if (g_page_box[i]) {
+            if (bezel) lv_obj_clear_flag(g_page_box[i], LV_OBJ_FLAG_HIDDEN);
+            else       lv_obj_add_flag(g_page_box[i], LV_OBJ_FLAG_HIDDEN);
+        }
+}
 
 void queue_view_step(int step) { g_pending_step = step; }
 
@@ -561,33 +878,32 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     lv_obj_add_event_cb(parent, [](lv_event_t*) { ++g_releases; }, LV_EVENT_RELEASED, nullptr);
     g_cur = 0;
 
-    // Page indicator. The content cut is instant because a full-screen change
-    // costs ~52ms on this single-buffered panel, so a sliding view would be
-    // about four frames of judder. Instead the *indicator* animates: a 12px dot
-    // moving 18px dirties almost nothing, so it is genuinely smooth and still
-    // tells you which way you moved and where you are in the ring.
-    const int spacing = 18;
-    const int x0 = -(g_count - 1) * spacing / 2;
+    // Before the chrome and after the views, which is the whole point: the
+    // scrims cover every view and nothing covers them except the clock, the
+    // dots and the banner. LVGL draws siblings in creation order.
+    mk_scrim(parent, 0, +1, kScrimTopSolid, kScrimTopFade);
+    mk_scrim(parent, lv_obj_get_height(parent), -1,
+             lv_obj_get_height(parent) - kScrimBotSolid, kScrimBotFade);
+
+    // Page indicator: the dim run first, then the bright segment on top of it.
+    // See kPageArcPx on why it lives on the bottom of the bezel.
     for (int i = 0; i < g_count && i < 16; ++i) {
-        g_dots[i] = lv_obj_create(parent);
-        lv_obj_remove_style_all(g_dots[i]);
-        lv_obj_set_size(g_dots[i], 6, 6);
-        lv_obj_set_style_radius(g_dots[i], LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(g_dots[i], lv_color_hex(0x3A3A3A), 0);
-        lv_obj_set_style_bg_opa(g_dots[i], LV_OPA_COVER, 0);
-        lv_obj_align(g_dots[i], LV_ALIGN_CENTER, x0 + i * spacing, kDotY);
+        double a0 = 0, a1 = 0;
+        page_seg_angles(i, &a0, &a1);
+        int bx = 0, by = 0, bw = 0, bh = 0;
+        page_seg_box(a0, a1, &bx, &by, &bw, &bh);
+        lv_obj_t* box = lv_obj_create(parent);
+        lv_obj_remove_style_all(box);
+        lv_obj_set_size(box, bw, bh);
+        lv_obj_set_pos(box, bx, by);
+        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+        g_page_box[i] = box;
+        g_page_seg[i] = mk_page_arc(box, page_shade(i, g_count), bx, by);
+        lv_arc_set_bg_angles(g_page_seg[i], static_cast<lv_value_precise_t>(a0),
+                             static_cast<lv_value_precise_t>(a1));
     }
-    g_dot_active = lv_obj_create(parent);
-    lv_obj_remove_style_all(g_dot_active);
-    lv_obj_set_size(g_dot_active, 12, 12);
-    lv_obj_set_style_radius(g_dot_active, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(g_dot_active, lv_color_hex(0xFF9500), 0);
-    lv_obj_set_style_bg_opa(g_dot_active, LV_OPA_COVER, 0);
-    lv_obj_align(g_dot_active, LV_ALIGN_CENTER, x0, kDotY);
-    // Both kept in the same space the dots were laid out in: an offset from
-    // the centre of the panel, in the units lv_obj_align takes.
-    g_dot_x0 = x0;
-    g_dot_spacing = spacing;
+    place_page_mark();
 
     // Above every view, like the banner below them, and for the same reason:
     // it belongs to the gauge rather than to any one screen.

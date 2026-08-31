@@ -50,11 +50,13 @@ constexpr int kSlideMs = 240;
 // froze the display for good.
 constexpr int kBlitRows = 32;
 
-// The make/model banner and the page dots belong to the carousel frame, not to
-// any one view, so they must not travel with the content -- a page indicator
-// that slides off the screen tells you nothing. Rows inside this band are taken
-// straight from the destination snapshot instead of being shifted. The band
-// covers the banner (centre +178) and the dots (centre +205) on a 466 panel.
+// The make/model banner and the page indicator belong to the carousel frame,
+// not to any one view, so they must not travel with the content -- a page
+// indicator that slides off the screen tells you nothing. Rows inside this band
+// are taken straight from the destination snapshot instead of being shifted.
+// The band covers the banner (centre +178) and the indicator arc, which runs
+// along the bottom of the bezel and is sized in ui.cpp to fit inside these rows
+// for exactly this reason.
 constexpr int kStaticTop = 396;
 constexpr int kStaticBot = 452;
 
@@ -63,7 +65,7 @@ constexpr int kStaticBot = 452;
 //
 //   rows 0-16    above the dial arc (434 px centred, so it spans 16..450);
 //                black in every view, so nothing to animate
-//   rows 396-466 the banner and page dots, which belong to the carousel frame
+//   rows 396-466 the banner and page indicator, which belong to the frame
 //                and must not travel, plus the black sliver below the arc
 //
 // That is 18% of the panel removed from both the memcpy and the transfer at no

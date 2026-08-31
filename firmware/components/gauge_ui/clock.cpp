@@ -114,12 +114,22 @@ lv_obj_t* mk_roller(lv_obj_t* parent, const char* options, int w, int h, int x,
     lv_obj_set_style_text_font(r, font, 0);
     lv_obj_set_style_text_color(r, lv_color_hex(0x6A737F), 0);
     lv_obj_set_style_text_align(r, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_align(r, LV_TEXT_ALIGN_CENTER, LV_PART_SELECTED);
     // The centre band: the value under it is the one that counts, so it is
     // the only part drawn at full brightness.
-    lv_obj_set_style_bg_opa(r, LV_OPA_20, LV_PART_SELECTED);
-    lv_obj_set_style_bg_color(r, lv_color_hex(0x2A3038), LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(r, LV_OPA_30, LV_PART_SELECTED);
+    lv_obj_set_style_bg_color(r, lv_color_hex(0x49535F), LV_PART_SELECTED);
     lv_obj_set_style_text_color(r, lv_color_hex(0xF0F0F0), LV_PART_SELECTED);
     lv_obj_add_event_cb(r, wheel_changed, LV_EVENT_VALUE_CHANGED, nullptr);
+    // The options live on a label inside the roller, and it is that label
+    // which lays the text out. Styling the roller alone left the columns
+    // ragged -- each wheel's widest option decided where its text started, so
+    // "Sep" and "1" did not share a centre line. Widening the label to the
+    // wheel and centring it there is what actually lines the five up.
+    if (lv_obj_t* lbl = lv_obj_get_child(r, 0)) {
+        lv_obj_set_width(lbl, LV_PCT(100));
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    }
     return r;
 }
 

@@ -65,8 +65,17 @@ int days_in(int year, int month) {
     return leap ? 29 : 28;
 }
 
-// A row's ends fade into the bezel, the way the numbers on a phone's picker
-// do. There is no alpha gradient available to do it with: this build has
+// A row fades out at its TOP and BOTTOM, the way a phone's picker does -- the
+// options roll in from nothing above and leave into nothing below, and the one
+// in the middle is the only one at full strength.
+//
+// It was left and right first. That was wrong, and wrong in a way that read as
+// a different fault: dimming the ends of a row makes the outer wheels look
+// pulled towards the middle, so five columns that were in fact centred looked
+// as though they were not. Fading top and bottom says what is actually true --
+// that the middle row is the one that counts -- and leaves the columns alone.
+//
+// There is no alpha gradient available to do it with: this build has
 // LV_USE_DRAW_SW_COMPLEX_GRADIENTS off and LV_GRADIENT_MAX_STOPS at 2, so a
 // style gradient can move colour but not opacity, and over a black background
 // that is no fade at all. Turning the option on costs code size and draw time
@@ -76,14 +85,16 @@ int days_in(int year, int month) {
 // SPEC.md section 4 uses for the tacho's heat band, where a real gradient was
 // also unaffordable and segments of a ramp read as smooth at this size. Built
 // once and never touched again, so it costs nothing per frame.
-constexpr int kFadeSteps = 7;
-constexpr int kFadeStepW = 5;
+constexpr int kFadeSteps = 6;
+constexpr int kFadeStepH = 5;      // 30 px deep, which is one row of the wheel
 
-void mk_fade(lv_obj_t* parent, int outer_x, int y, int h, int dir) {
+// `outer_y` is the row's top or bottom edge; `dir` is +1 to walk down from the
+// top, -1 to walk up from the bottom.
+void mk_fade(lv_obj_t* parent, int cx, int w, int outer_y, int dir) {
     for (int i = 0; i < kFadeSteps; ++i) {
         lv_obj_t* o = lv_obj_create(parent);
         lv_obj_remove_style_all(o);
-        lv_obj_set_size(o, kFadeStepW, h);
+        lv_obj_set_size(o, w, kFadeStepH);
         lv_obj_set_style_bg_color(o, lv_color_black(), 0);
         // Nearly solid at the outer edge, gone by the inner one. Squared, so
         // the fade holds on longer at the outside and lets go quickly at the
@@ -94,8 +105,9 @@ void mk_fade(lv_obj_t* parent, int outer_x, int y, int h, int dir) {
         // Not clickable, so a thumb landing on the fade still reaches the
         // wheel underneath it.
         lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(o, LV_ALIGN_TOP_MID,
-                     outer_x + dir * (i * kFadeStepW + kFadeStepW / 2), y);
+        const int y = dir > 0 ? outer_y + i * kFadeStepH
+                              : outer_y - (i + 1) * kFadeStepH;
+        lv_obj_align(o, LV_ALIGN_TOP_MID, cx, y);
     }
 }
 
@@ -215,13 +227,17 @@ void clock_build(lv_obj_t* parent) {
     g_roll[kHour] = mk_roller(parent, hours,  104, kTimeH,  -62, kTimeY, &lv_font_montserrat_28);
     g_roll[kMin]  = mk_roller(parent, mins,   104, kTimeH,   62, kTimeY, &lv_font_montserrat_28);
 
-    // The ends of each row, after the wheels, so the fade sits over them.
-    // Each row's outermost edge is its outer wheel's centre plus half its
-    // width; the strips walk inwards from there.
-    mk_fade(parent, -118 -  84 / 2, kDateY, kDateH, +1);   // left of DAY
-    mk_fade(parent,  118 + 108 / 2, kDateY, kDateH, -1);   // right of YEAR
-    mk_fade(parent,  -62 - 104 / 2, kTimeY, kTimeH, +1);   // left of HOUR
-    mk_fade(parent,   62 + 104 / 2, kTimeY, kTimeH, -1);   // right of MINUTE
+    // Over each row, after the wheels so the fade sits on top of them. A row
+    // is as wide as its outermost wheel edges, plus a little either side so
+    // no seam shows where the strips end.
+    constexpr int kDateL = -118 -  84 / 2, kDateR = 118 + 108 / 2;
+    constexpr int kTimeL =  -62 - 104 / 2, kTimeR =  62 + 104 / 2;
+    constexpr int kDateCx = (kDateL + kDateR) / 2, kDateW = kDateR - kDateL + 8;
+    constexpr int kTimeCx = (kTimeL + kTimeR) / 2, kTimeW = kTimeR - kTimeL + 8;
+    mk_fade(parent, kDateCx, kDateW, kDateY,           +1);   // above the date
+    mk_fade(parent, kDateCx, kDateW, kDateY + kDateH,  -1);   // below it
+    mk_fade(parent, kTimeCx, kTimeW, kTimeY,           +1);   // above the time
+    mk_fade(parent, kTimeCx, kTimeW, kTimeY + kTimeH,  -1);   // below it
 
     g_set = lv_button_create(parent);
     lv_obj_set_size(g_set, 150, 52);

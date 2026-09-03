@@ -12,7 +12,28 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # pins go nowhere here, so printf output is invisible without this.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=n
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# 10 KB, not the 8 KB this ran on for months.
+#
+# app_main does the whole of init on this stack -- the boot clip's decompressor,
+# the display and touch bring-up, the drive log, the replay library, and every
+# view's objects -- and then runs the app loop on it too. At 8 KB it reported
+# 132-220 bytes of high-water headroom, which is not a margin: 592 bytes of new
+# local in one function boot-looped the board sixteen times in twenty-two
+# seconds on 2026-08-29, and the loop re-enumerates USB faster than esptool can
+# open it, so the board goes unflashable and needs a physical replug. Since then
+# every change that touched an init path has had to be measured against that
+# figure, and a segment scale's colour ramp moved it by 80 bytes.
+#
+# Peak use measured 8,060 bytes, so 10 KB leaves about 2 KB of real margin --
+# three times the local that boot-looped it. 12 KB was tried first and gave
+# 4.2 KB, which is more margin than the evidence asks for: most internal RAM on
+# this chip is also DMA-capable, and DMA-capable RAM is the budget that actually
+# binds here (~1.7 KB free, see the panel's SPI note in gauge_ui). Every KB of
+# stack is a KB the panel might want.
+#
+# The "main: N bytes of stack headroom" line at boot is still the figure to
+# read, and it is now a margin rather than a warning.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=10240
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 
 # Fonts for the gauge readouts. LVGL ships none enabled by default beyond 14.

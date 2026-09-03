@@ -25,6 +25,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 
+#include "button.h"
 #include "metrics.h"
 #include "replay.h"
 #include "state.h"
@@ -383,6 +384,17 @@ extern "C" void app_main(void) {
         heap_caps_aligned_alloc(64, W * H * 2, MALLOC_CAP_SPIRAM));
     if (!g_fb) { printf("FATAL: no PSRAM\n"); return; }
 
+    // Why this boot happened, read before anything acts on it and cleared at
+    // once: a request survives esp_restart() and must be spent exactly once,
+    // or every reset after a button press would replay it.
+    button_init();
+    const boot_request_t boot_req = button_boot_request();
+    button_boot_request_clear();
+    if (boot_req != BOOT_NORMAL)
+        printf("boot: by button -- %s\n",
+               boot_req == BOOT_DEMO ? "skipping the splash, starting the replay"
+                                     : "skipping the splash, retrying wifi");
+
     // The board has no timezone until it is given one, so strftime() renders
     // every drive in UTC -- the 2026-08-29 drive listed as 03:24 for a drive
     // that started at 11:24. The clock the Mac lends over TIME is epoch
@@ -463,7 +475,11 @@ extern "C" void app_main(void) {
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    play_boot_clip(disp, scr);
+    // Skipped when the button asked for this boot. The splash is 4 s of the
+    // ~16 s a cold start takes, and a button restart is someone standing over
+    // the gauge waiting for it -- either to see whether the clock came back or
+    // to get into the replay. A power-on still plays it in full.
+    if (boot_req == BOOT_NORMAL) play_boot_clip(disp, scr);
     // The clip's 434 KB framebuffer is dead the moment the splash ends, and the
     // carousel slide wants three buffers of exactly that size. Hand it back
     // before the UI asks.
@@ -523,6 +539,10 @@ extern "C" void app_main(void) {
     // a car that was not there. On a desk that is a demo; in the car it is a
     // gauge lying about the engine for the thirty seconds before the adapter
     // answers. It is a bench feature now: `DEMO` on the console starts it.
+    // ...unless the button asked for demo mode on the way in. This is the one
+    // way the gauge comes up replaying without a person typing DEMO, and it
+    // still takes a deliberate three-second hold to get here.
+    if (boot_req == BOOT_DEMO) demo_request();
     size_t lib_len = 0;
     const uint8_t* lib = drive_library_map(&lib_len);
     gauge::Replay replay;
@@ -580,6 +600,11 @@ extern "C" void app_main(void) {
     double  last_imu_t = -1.0;      // so the first published sample is taken
 
     for (;;) {
+        // Once a frame, which is every 15-20 ms: fast enough to time a press
+        // and cheap enough that it costs nothing. It keeps no task and makes no
+        // allocation, which on this board is why it is a poll.
+        button_poll();
+
         if (replay_ok && !have_replay && !live_mode && demo_wanted()) {
             have_replay = true;
             supported = &channels;

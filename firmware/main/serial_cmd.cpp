@@ -1,4 +1,5 @@
 #include "serial_cmd.h"
+#include "button.h"
 #include "sweep.h"
 
 #include <cstdio>
@@ -411,6 +412,15 @@ void task(void*) {
             const double secs = (line[2] == ' ') ? strtod(line + 3, nullptr) : 60.0;
             sweep_kw_start(secs > 0 ? secs : 60.0, 0.0, 150.0);
             printf("OK kw sweep 0-150 kW for %.0fs\n", secs > 0 ? secs : 60.0);
+        } else if (!strncmp(line, "RESTART", 7)) {
+            // "RESTART" retries wifi, "RESTART DEMO" comes up replaying. The
+            // same two calls the button makes, so this console command and the
+            // button prove each other -- which is how the RTC flag, the
+            // skipped splash and the demo start were tested without a finger
+            // on the glass.
+            const bool demo = strstr(line, "DEMO") != nullptr;
+            printf("OK restarting%s\n", demo ? " into demo mode" : "");
+            button_request_restart(demo);
         } else if (!strcmp(line, "DEMO")) {
             // Starts the built-in replay. Off at power-up on purpose: see
             // demo_request() in sweep.h.

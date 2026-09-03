@@ -26,3 +26,10 @@ bool demo_wanted(void);
 
 void sweep_econ_start(double seconds, double lo, double hi);
 bool sweep_econ(double* out);
+
+// The same triangle again, for the engine view's coolant. Same reason as the
+// economy ring: the scale runs 40-120 C and a real engine takes a drive to
+// cross it, so the only way to see the whole blue-green-red ramp and the
+// segments filling is to walk the temperature end to end on the bench.
+void sweep_temp_start(double seconds, double lo, double hi);
+bool sweep_temp(double* out);

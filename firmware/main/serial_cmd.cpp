@@ -389,6 +389,17 @@ void task(void*) {
             const double secs = (line[5] == ' ') ? strtod(line + 6, nullptr) : 60.0;
             sweep_start(secs > 0 ? secs : 60.0, 1000.0, 8000.0);
             printf("OK sweep 1000-8000 rpm for %.0fs\n", secs > 0 ? secs : 60.0);
+        } else if (!strncmp(line, "TEMP", 4)) {
+            // "TEMP" for a minute, "TEMP 20" for twenty seconds. Walks coolant
+            // from 30 to 120 C and back, which is the only way to see the
+            // engine view's scale fill and change colour without a drive.
+            //
+            // Starts below the scale's 40 C floor on purpose: the bottom of
+            // that dial is where a cold car sits, and "one segment lit, not
+            // none" is the part of it worth looking at.
+            const double secs = (line[4] == ' ') ? strtod(line + 5, nullptr) : 60.0;
+            sweep_temp_start(secs > 0 ? secs : 60.0, 30.0, 120.0);
+            printf("OK temp sweep 30-120 C for %.0fs\n", secs > 0 ? secs : 60.0);
         } else if (!strcmp(line, "DEMO")) {
             // Starts the built-in replay. Off at power-up on purpose: see
             // demo_request() in sweep.h.

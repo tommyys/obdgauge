@@ -704,6 +704,9 @@ extern "C" void app_main(void) {
         // the needle and nothing else.
         double swept = 0.0;
         if (sweep_rpm(&swept)) st.set("rpm", swept);
+        // Coolant, the same way and for the same reason: the engine view's
+        // scale fills across 40-120 C, which no bench engine will do.
+        if (sweep_temp(&swept)) st.set("coolant", swept);
 
         // What the last trip round this loop actually took, not what the delay
         // below asked for: the instruments ease toward their readings and the

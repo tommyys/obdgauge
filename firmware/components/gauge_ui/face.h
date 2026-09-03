@@ -17,7 +17,7 @@
 // because it covers the panel, so every change to it repaints the panel, and
 // rpm changes constantly. Compositing the frame by hand instead, the trick that
 // rescued the boot clip, benched at 65 ms a frame, worse still. So the heat
-// lives on the rim, where it costs nothing -- see kTachoSegs below.
+// lives on the rim, where it costs nothing -- see kScaleSegs below.
 #pragma once
 #include "ease.h"
 #include "gauge_ui.h"
@@ -37,44 +37,50 @@ constexpr int kRimPx     = 434;          // outer diameter on the 466 px panel
 constexpr int kRimWidth  = 14;           // 13/104 of the simulator's drawing
 constexpr int kRimOuterR = kRimPx / 2;   // 217
 
-// ---- the tacho's rev scale -------------------------------------------------
-// The tacho does not draw a bar any more. It draws a row of separate boxes
-// around the rim, one lit per 200 rpm, cold blue at rest through amber to red
-// at the rev limit -- the same shape as the page indicator on the bezel, and
-// for the same two reasons.
+// ---- the segment scale ------------------------------------------------------
+// Neither the tacho nor the engine view draws a bar any more. Each draws a row
+// of separate boxes around the rim, lit from the cold end up to the reading --
+// the same shape as the page indicator on the bezel, and for the same two
+// reasons. The tacho runs blue through amber to red at the rev limit, one
+// segment per 200 rpm; the engine view runs blue through green to red across
+// 40-120 C, one per 2 C.
 //
-// It reads better: a rev counter is a thing you glance at, and forty lit blocks
-// say "most of the way up" faster than the end of a smooth bar does.
+// It reads better: these are things you glance at, and forty lit blocks say
+// "most of the way up" faster than the end of a smooth bar does.
 //
 // It is also cheaper, in two separate ways.
 //
-// First, nothing big moves. The old rim was a graded band with a SHUTTER arc
+// First, nothing moves. The tacho's rim was a graded band with a SHUTTER arc
 // over it, and an lv_arc's object is the whole 452 px square however little of
 // it is painted. LVGL decides what to redraw from object rectangles, so the
 // rpm digits in the middle of the screen -- which change constantly -- dragged
-// the shutter, its black mask and the needle into the walk on every frame.
-// All forty are painted by ONE object that skips every segment outside the
-// area being repainted, so the digits cost forty rectangle comparisons and no
-// drawing. Forty boxed lv_arcs did the same job -- ui.cpp's page indicator is
-// built that way -- and benched the same, but eighty objects took LVGL's pool
-// to 79% used, and 19 KB free is the figure that hangs swipes. face.cpp has
-// the measurements.
+// the shutter, its black mask and the needle into the walk on every frame. The
+// engine view was cheaper but the same shape: a graded band, 377 KB of PSRAM
+// under it, and a white mark sliding along it.
+// All forty are painted by ONE object per view that skips every segment outside
+// the area being repainted, so the digits cost forty rectangle comparisons and
+// no drawing. Forty boxed lv_arcs did the same job -- ui.cpp's page indicator
+// is built that way -- and benched the same, but eighty objects took LVGL's
+// pool to 79% used, and 19 KB free is the figure that hangs swipes. face.cpp
+// has the measurements.
 //
 // Second, most readings now change nothing at all. A segment is lit or it is
-// not, so rpm has to cross a 200 rpm boundary before any pixel is different.
-// The shutter moved on almost every sample.
+// not, so the reading has to cross a boundary before any pixel is different.
+// The shutter and the mark moved on almost every sample.
 //
 // 40 segments, because 200 rpm a step is the resolution a rev counter is
 // actually read at, and 270/40 leaves 6.75 degrees a segment -- about 25 px of
 // arc at this radius, which is wide enough to tell from its neighbour across a
-// 1.4 degree gap.
-constexpr int kTachoSegs = 40;
+// 1.4 degree gap. The engine view takes the same count rather than one of its
+// own: the two rims are the same ring (see kRimPx), and two views whose
+// segments did not line up would read as a mistake on whichever you saw second.
+constexpr int kScaleSegs = 40;
 
 // Which instrument a view wears. Three of the eight views draw a real face;
 // the rest get a plain arc or nothing, which ui.cpp handles on its own.
 enum class FaceKind {
     Tacho,    // a rev scale of lit segments, ticks per 1000 rpm, numbering
-    Engine,   // a cold-to-hot gradient rim and a white mark
+    Engine,   // a cold-to-hot scale of lit segments, and nothing else
     Power,    // ticks and kW numbering, fill arc, amber peak mark, needle
 };
 
@@ -83,12 +89,6 @@ enum class FaceKind {
 // decimal from invalidating the needle's bounding box every single frame.
 struct Face {
     FaceKind            kind       = FaceKind::Tacho;
-    // Tacho only: the one object that paints the rev scale, and how many of its
-    // segments are lit. Only the segments the reading crosses are invalidated;
-    // repainting the rim for one segment is the cost this design avoids.
-    lv_obj_t*           scale      = nullptr;
-    int                 lit        = 0;    // the scale is built unlit
-    double              rpm_max    = 0;    // to turn a reading into a count
     lv_obj_t*           needle     = nullptr;
     lv_point_precise_t* needle_pts = nullptr;
     int                 needle_q   = -1;
@@ -110,11 +110,11 @@ struct Face {
     gauge::Ease         ease;
 };
 
-// The face is built in two halves around the view's own arc. Engine and Power
-// need the split: their zones and track have to sit beneath that arc, and the
-// ticks, numbering and needle on top of it. The tacho has no arc of its own
-// left -- its rev scale IS its reading -- so it builds everything in under()
-// and puts only ticks and numbering in over().
+// The face is built in two halves around the view's own arc. Power needs the
+// split: its track has to sit beneath that arc and its ticks, numbering and
+// needle on top of it. The tacho and the engine view have no arc of their own
+// left -- the lit segments ARE the reading -- so they build their scale in
+// under(), and only the tacho puts anything (ticks and numbering) in over().
 void face_build_under(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 Face face_build_over(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 void face_update(Face& f, const Model& m);

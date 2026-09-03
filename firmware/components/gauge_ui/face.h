@@ -53,11 +53,12 @@ constexpr int kRimOuterR = kRimPx / 2;   // 217
 // it is painted. LVGL decides what to redraw from object rectangles, so the
 // rpm digits in the middle of the screen -- which change constantly -- dragged
 // the shutter, its black mask and the needle into the walk on every frame.
-// Each segment is now boxed in its own ~34 px container, exactly as ui.cpp
-// boxes the bezel's, and a parent that does not touch the dirty rectangle
-// prunes its children without looking at them. Boxing the bezel's nine
-// segments that way took 34.5 ms off a full-screen frame; this is the same
-// trick on the rim.
+// All forty are painted by ONE object that skips every segment outside the
+// area being repainted, so the digits cost forty rectangle comparisons and no
+// drawing. Forty boxed lv_arcs did the same job -- ui.cpp's page indicator is
+// built that way -- and benched the same, but eighty objects took LVGL's pool
+// to 79% used, and 19 KB free is the figure that hangs swipes. face.cpp has
+// the measurements.
 //
 // Second, most readings now change nothing at all. A segment is lit or it is
 // not, so rpm has to cross a 200 rpm boundary before any pixel is different.
@@ -82,15 +83,12 @@ enum class FaceKind {
 // decimal from invalidating the needle's bounding box every single frame.
 struct Face {
     FaceKind            kind       = FaceKind::Tacho;
-    // Tacho only: the rev scale, and how many of it are currently lit. -1 so
-    // the first update writes every segment; after that only the ones the
-    // reading actually crossed are touched, because a style write is a repaint.
-    lv_obj_t*           seg[kTachoSegs] = {nullptr};
+    // Tacho only: the one object that paints the rev scale, and how many of its
+    // segments are lit. Only the segments the reading crosses are invalidated;
+    // repainting the rim for one segment is the cost this design avoids.
+    lv_obj_t*           scale      = nullptr;
     int                 lit        = 0;    // the scale is built unlit
-    // The car's rev scale, kept so an unlit segment can be shaded by whether
-    // it is above the redline without the Model being to hand.
-    double              rpm_max    = 0;
-    double              rpm_red    = 0;
+    double              rpm_max    = 0;    // to turn a reading into a count
     lv_obj_t*           needle     = nullptr;
     lv_point_precise_t* needle_pts = nullptr;
     int                 needle_q   = -1;

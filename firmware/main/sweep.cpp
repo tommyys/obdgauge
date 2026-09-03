@@ -68,3 +68,7 @@ void sweep_kw_start(double seconds, double lo, double hi) {
 }
 bool sweep_kw(double* out) { return read(g_kw, out); }
 
+void sweep_stop_all(void) {
+    g_rpm.end_us = g_econ.end_us = g_temp.end_us = g_kw.end_us = 0;
+}
+

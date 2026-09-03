@@ -373,6 +373,27 @@ void wifi_got_time(uint32_t epoch_s) { drive_log_set_epoch(epoch_s); }
 void wifi_logged(const char* line)   { flight_log("%s", line); }
 }  // namespace
 
+// Demo mode: every dial swept at once, for half an hour.
+//
+// It was the recorded replay, and the replay is still there behind the DEMO
+// console command. This is a better demo of the gauge ITSELF: a real drive only
+// ever visits the revs, temperatures and power it actually used, so the ends of
+// every scale -- the redline, a hot engine, full power -- and the trip ring
+// walking red to green are exactly what a replayed drive never shows you.
+//
+// Half an hour rather than for ever, and cancelled the moment the car takes
+// over (sweep_stop_all): a swept dial overrides the real reading, and a gauge
+// lying about the engine is the one thing demo mode is not allowed to become.
+constexpr double kDemoSecs = 1800.0;
+
+void start_demo_sweeps() {
+    sweep_start(kDemoSecs, 1000.0, 8000.0);
+    sweep_temp_start(kDemoSecs, 30.0, 120.0);
+    sweep_kw_start(kDemoSecs, 0.0, 150.0);
+    sweep_econ_start(kDemoSecs, 4.0, 16.0);
+    printf("demo: sweeping rpm, coolant, kW and economy for %.0f s\n", kDemoSecs);
+}
+
 extern "C" void app_main(void) {
     printf("\n=== mx5-gauge %s: boot splash + home view ===\n", gauge::core_version());
     // First, so that a run which dies during display bring-up still says so,
@@ -392,7 +413,7 @@ extern "C" void app_main(void) {
     button_boot_request_clear();
     if (boot_req != BOOT_NORMAL)
         printf("boot: by button -- %s\n",
-               boot_req == BOOT_DEMO ? "skipping the splash, starting the replay"
+               boot_req == BOOT_DEMO ? "skipping the splash, sweeping every dial"
                                      : "skipping the splash, retrying wifi");
 
     // The board has no timezone until it is given one, so strftime() renders
@@ -539,10 +560,6 @@ extern "C" void app_main(void) {
     // a car that was not there. On a desk that is a demo; in the car it is a
     // gauge lying about the engine for the thirty seconds before the adapter
     // answers. It is a bench feature now: `DEMO` on the console starts it.
-    // ...unless the button asked for demo mode on the way in. This is the one
-    // way the gauge comes up replaying without a person typing DEMO, and it
-    // still takes a deliberate three-second hold to get here.
-    if (boot_req == BOOT_DEMO) demo_request();
     size_t lib_len = 0;
     const uint8_t* lib = drive_library_map(&lib_len);
     gauge::Replay replay;
@@ -595,15 +612,35 @@ extern "C" void app_main(void) {
     // frame here shows up as a number rather than as a boot loop.
     printf("main: %u bytes of stack headroom\n",
            (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    // Asked for by "RESTART DEMO" on the console: a clean boot that comes up
+    // sweeping. The button's own hold does not come through here -- it needs no
+    // restart, so it starts the sweeps where it stands.
+    if (boot_req == BOOT_DEMO) start_demo_sweeps();
+
     int64_t t0 = esp_timer_get_time();
     int64_t last_frame_us = t0;
     double  last_imu_t = -1.0;      // so the first published sample is taken
+    // How long the note stays up after a hold. It is opaque, so it is a flash
+    // of confirmation and not a screen the gauge sits behind.
+    int64_t note_until_us = 0;
+    // 0 none, 1 a plain reload, 2 a reload into demo. Set by a press or by the
+    // console, spent at the bottom of the same frame.
+    int     reload_pending = 0;
 
     for (;;) {
         // Once a frame, which is every 15-20 ms: fast enough to time a press
         // and cheap enough that it costs nothing. It keeps no task and makes no
         // allocation, which on this board is why it is a poll.
-        button_poll();
+        const button_state_t btn = button_poll();
+        if (btn == BTN_ACT_DEMO) {
+            // No restart: demo mode is the bench sweeps now, and they start
+            // where they stand. This is why the hold feels instant.
+            start_demo_sweeps();
+            note_until_us = esp_timer_get_time() + 1000000;
+        } else if (btn == BTN_ACT_RELOAD) {
+            reload_pending = 1;
+        }
+        if (const int q = button_take_queued_restart()) reload_pending = q;
 
         if (replay_ok && !have_replay && !live_mode && demo_wanted()) {
             have_replay = true;
@@ -647,6 +684,9 @@ extern "C" void app_main(void) {
                 score = gauge::DrivingScore{};
                 if (axes) score.g.restore_axes(*axes);
             }
+            // And the dials off any bench sweep. A demo left running for half
+            // an hour would otherwise keep overriding the real engine.
+            sweep_stop_all();
             printf("live: %s -- switching the views off replay\n", live::status());
         }
 
@@ -764,7 +804,25 @@ extern "C" void app_main(void) {
         bsp_display_lock(-1);   // -1 is wait-forever; 0 would be a try-lock
         gauge_ui::Model model{st, econ_demo ? demo_trip : trip, score, id, supported, dt_s};
         gauge_ui::update(model);
+        // The button's answer, on the glass, in the same frame the press was
+        // seen. Naming the gesture while the finger is still down is what
+        // replaced "there is a lag before it responds": a press is
+        // acknowledged instantly, and a hold says what it is about to do
+        // before it does it.
+        if (reload_pending == 2)        gauge_ui::note_show("DEMO\nrestarting");
+        else if (reload_pending)        gauge_ui::note_show("RELOADING\nretrying wifi");
+        else if (btn == BTN_HELD_LONG)  gauge_ui::note_show("RELEASE\nFOR DEMO");
+        else if (btn == BTN_HELD_SHORT) gauge_ui::note_show("RELEASE\nTO RELOAD");
+        else if (esp_timer_get_time() < note_until_us)
+                                        gauge_ui::note_show("DEMO\nsweeping every dial");
+        else                            gauge_ui::note_hide();
         bsp_display_unlock();
+
+        // Outside the lock, and only now: the note above has to be RENDERED
+        // before the gauge disappears, and rendering is the LVGL task's job --
+        // which cannot have the display lock while this loop is holding it.
+        // button_request_restart() waits for that frame before it resets.
+        if (reload_pending) button_request_restart(reload_pending == 2);
 
         // Reprinted for the first minute, because a console attached after the
         // boot print has missed it -- see flight_log_replay().

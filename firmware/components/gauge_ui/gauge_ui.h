@@ -79,6 +79,13 @@ void advance_view(int step);
 // different amounts of time and the difference had to be pinned on something.
 void queue_view_step(int step);
 
+// A full-screen message over everything, for the moments when the gauge is
+// about to leave the glass for a few seconds -- a button restart, so far. Both
+// calls need the display lock, like every other UI write. See note_show() in
+// ui.cpp on why it is opaque.
+void note_show(const char* text);
+void note_hide(void);
+
 // BENCH ONLY: hides the scrims and the bezel scale, so what each of them costs
 // during a redraw can be measured instead of argued about.
 void chrome_show(bool scrims, bool bezel);

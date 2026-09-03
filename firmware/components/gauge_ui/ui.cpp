@@ -298,6 +298,11 @@ char g_banner_base[40] = {0};
 // stay readable behind it, and this is a footnote about the link, not the
 // gauge's headline.
 lv_obj_t* g_scan       = nullptr;   // a plain arc, turned by hand
+// The note: one full-screen message over everything, for the moments when the
+// gauge is about to do something that takes it off the glass for a few seconds.
+// A button press was the reason it exists -- see note_show().
+lv_obj_t* g_note       = nullptr;
+lv_obj_t* g_note_text  = nullptr;
 lv_anim_t g_scan_spin{};
 lv_anim_t g_scan_hue{};
 bool      g_scanning   = false;
@@ -915,6 +920,35 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
 
     lv_obj_add_flag(g_scan, LV_OBJ_FLAG_HIDDEN);
 
+    // The note, over everything the gauge draws.
+    //
+    // It exists because a button press had no visible answer. A short press
+    // restarts the gauge, and the first thing a restart does is take the panel
+    // away for several seconds -- so the gauge simply went dark and the press
+    // read as a gauge that had crashed rather than one that had heard you.
+    // This is drawn, and given a frame to reach the glass, BEFORE the restart.
+    //
+    // Fully opaque black, not a scrim: the message has to be the only thing on
+    // the screen, and an AMOLED holds its last frame after a software reset --
+    // so what is on the panel when the reset fires is what the driver keeps
+    // looking at while the gauge comes back. A part-transparent note would
+    // leave a frozen dial under it, which reads as a hang.
+    g_note = lv_obj_create(parent);
+    lv_obj_remove_style_all(g_note);
+    lv_obj_set_size(g_note, screen_w(), screen_w());
+    lv_obj_center(g_note);
+    lv_obj_set_style_bg_color(g_note, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(g_note, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(g_note, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(g_note, LV_OBJ_FLAG_CLICKABLE);
+    g_note_text = lv_label_create(g_note);
+    lv_obj_set_style_text_font(g_note_text, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(g_note_text, lv_color_hex(0xE8E8E8), 0);
+    lv_obj_set_style_text_align(g_note_text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(g_note_text, "");
+    lv_obj_center(g_note_text);
+    lv_obj_add_flag(g_note, LV_OBJ_FLAG_HIDDEN);
+
     // Last, because it measures the screen and wants the PSRAM the boot clip
     // has just given back.
     slide_init(parent);
@@ -1143,6 +1177,29 @@ void set_scanning(bool scanning) {
     show_obj(g_scan, scanning);
     if (scanning) { lv_anim_start(&g_scan_spin); lv_anim_start(&g_scan_hue); }
     else            lv_anim_delete(g_scan, nullptr);
+}
+
+// The full-screen message. Called from the app loop with the display lock held,
+// like every other UI write.
+//
+// A style write is a repaint, so the text is only set when it changes: the
+// button holds this up for as long as a finger is down, which is every frame
+// for three seconds.
+void note_show(const char* text) {
+    if (!g_note || !g_note_text) return;
+    const char* cur = lv_label_get_text(g_note_text);
+    if (!cur || strcmp(cur, text) != 0) {
+        lv_label_set_text(g_note_text, text);
+        lv_obj_center(g_note_text);
+    }
+    if (lv_obj_has_flag(g_note, LV_OBJ_FLAG_HIDDEN))
+        lv_obj_clear_flag(g_note, LV_OBJ_FLAG_HIDDEN);
+}
+
+void note_hide() {
+    if (!g_note) return;
+    if (!lv_obj_has_flag(g_note, LV_OBJ_FLAG_HIDDEN))
+        lv_obj_add_flag(g_note, LV_OBJ_FLAG_HIDDEN);
 }
 
 int gesture_count() { return g_gestures; }

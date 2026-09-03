@@ -39,3 +39,12 @@ bool sweep_temp(double* out);
 // see the whole blue-cyan-white ramp is to use all of the engine on a road.
 void sweep_kw_start(double seconds, double lo, double hi);
 bool sweep_kw(double* out);
+
+// Cancels all four at once.
+//
+// The button's demo mode starts every sweep for half an hour, and a sweep
+// OVERRIDES whatever the dial was being fed -- so a gauge left in demo and then
+// plugged into the car would spend that half hour lying about the engine. The
+// app loop calls this the moment the real car takes the views over, which is
+// the rule the replay already follows.
+void sweep_stop_all(void);

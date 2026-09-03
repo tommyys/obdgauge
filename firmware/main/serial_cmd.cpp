@@ -420,7 +420,10 @@ void task(void*) {
             // on the glass.
             const bool demo = strstr(line, "DEMO") != nullptr;
             printf("OK restarting%s\n", demo ? " into demo mode" : "");
-            button_request_restart(demo);
+            // Queued rather than done here, so it goes out through the app
+            // loop exactly as a press does -- note on the glass first, then
+            // the reset. Restarting from this task would skip the screen.
+            button_queue_restart(demo);
         } else if (!strcmp(line, "DEMO")) {
             // Starts the built-in replay. Off at power-up on purpose: see
             // demo_request() in sweep.h.

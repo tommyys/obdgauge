@@ -90,8 +90,8 @@ constexpr uint32_t kScanRed   = 0xFF3B30;
 // ---- and why they live in a box ----------------------------------------
 // An lv_arc's object is the whole 452 px square, even though it paints only a
 // 5 px band of it, and LVGL decides what to redraw from object rectangles. So
-// two arcs that size overlap almost every dirty rectangle the tacho needle
-// makes, and both were being redrawn on every single frame -- measured as 66
+// two arcs that size overlap almost every dirty rectangle the tacho's rpm
+// digits make, and both were being redrawn on every single frame -- as 66
 // fps falling to 64, and the mean of a 40 second run from 59 to 54.
 //
 // Putting each one inside its own small container fixes it, because LVGL walks
@@ -247,15 +247,11 @@ struct ViewObjs {
     lv_obj_t* unit   = nullptr;
     lv_obj_t* word   = nullptr;
     lv_obj_t* arc    = nullptr;
-    // Tacho only: a black arc under the shutter, two pixels wider, that hides
-    // the redline's anti-aliased edges. Invisible on a black face, so it costs
-    // the rim no apparent thickness -- see build_view.
-    lv_obj_t* arc_mask = nullptr;
     lv_obj_t* rlabel[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* rvalue[4] = {nullptr, nullptr, nullptr, nullptr};
     // The dial's drawn value as it chases the reading. Separate from the
-    // face's own ease and stepped in the same breath, so the shutter and the
-    // needle it sits under never describe two different readings -- see
+    // face's own ease and stepped in the same breath, so a view's arc and the
+    // face's mark never describe two different readings -- see
     // gauge_core/ease.h on why that holds exactly.
     gauge::Ease dial_ease;
     Face face;                 // tacho, engine and power fill this in
@@ -403,49 +399,20 @@ ViewObjs build_view(const ViewSpec& spec) {
     const bool power = face_k == Instrument::Power;
     v.has_face = tacho || power || face_k == Instrument::Engine;
 
-    // The track, the zones and the heat band go on before the value arc,
-    // because the value arc has to cover them as it fills.
+    // The track and the zones go on before the value arc, because the value arc
+    // has to cover them as it fills. The tacho builds its whole rev scale here
+    // and has no value arc at all.
     if (v.has_face) {
         face_build_under(c, g_id, tacho ? FaceKind::Tacho
                                         : power ? FaceKind::Power : FaceKind::Engine);
     }
 
-    // The engine face reads by mark position over fixed zones, so it has no
-    // fill arc at all; every other dial that has a value gets one.
-    const bool wants_arc = spec.dial.value && face_k != Instrument::Engine;
+    // Two faces read by position over a fixed rim rather than by a filling arc,
+    // so neither gets one: the engine's mark over its zones, and the tacho's
+    // count of lit segments (face.h). Every other dial with a value does.
+    const bool wants_arc = spec.dial.value && face_k != Instrument::Engine && !tacho;
     if (wants_arc) {
         const bool score_ring = face_k == Instrument::VerdictRing;
-
-        // The tacho's shutter has to hide a bright redline arc lying directly
-        // under it. At equal size it cannot: both are anti-aliased, so the
-        // shutter's edge pixels are part-transparent and the red beneath shows
-        // through as a hairline. Making the shutter bigger fixed that but left
-        // the rim visibly thicker where it covered than where the heat band
-        // showed, with a step at the needle.
-        //
-        // So the oversized arc is here instead, and it is BLACK -- the face's
-        // own colour. It hides the redline's edges and shows nothing itself, so
-        // every ring the eye can actually see is kRimPx by kRimWidth. It tracks
-        // the shutter's angle exactly and is created first, so the shutter
-        // draws on top of it.
-        if (tacho) {
-            v.arc_mask = lv_arc_create(c);
-            lv_obj_set_size(v.arc_mask, kRimShutterPx, kRimShutterPx);
-            lv_obj_center(v.arc_mask);
-            lv_arc_set_bg_angles(v.arc_mask, 135, 45);
-            lv_arc_set_mode(v.arc_mask, LV_ARC_MODE_REVERSE);
-            lv_obj_remove_style(v.arc_mask, nullptr, LV_PART_KNOB);
-            lv_obj_remove_flag(v.arc_mask, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_arc_width(v.arc_mask, kRimShutterWidth, LV_PART_MAIN);
-            lv_obj_set_style_arc_width(v.arc_mask, kRimShutterWidth, LV_PART_INDICATOR);
-            lv_obj_set_style_arc_opa(v.arc_mask, LV_OPA_TRANSP, LV_PART_MAIN);
-            lv_obj_set_style_arc_color(v.arc_mask, lv_color_black(), LV_PART_INDICATOR);
-            // Square, and this one matters: a rounded cap is drawn OUTSIDE the
-            // angle it is given, and this arc is both black and wider than the
-            // shutter, so a rounded end would paint black past the shutter and
-            // over the lit band -- a dark line sitting at the needle.
-            lv_obj_set_style_arc_rounded(v.arc_mask, false, LV_PART_INDICATOR);
-        }
 
         v.arc = lv_arc_create(c);
         // Every ring on every view is now the same ring; see face.h.
@@ -457,23 +424,7 @@ ViewObjs build_view(const ViewSpec& spec) {
         const int w = kRimWidth;
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_MAIN);
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_INDICATOR);
-        if (tacho) {
-            // Not a fill but a shutter. face_build_under() has laid the heat
-            // band all the way round; this arc covers the part the engine has
-            // not reached, and REVERSE makes it retreat from the value to the
-            // end of the sweep as rpm climbs. Its length is the only thing on
-            // the rim that changes, and lv_arc invalidates just the sector that
-            // moved -- which is the whole reason the heat can live out here.
-            lv_arc_set_mode(v.arc, LV_ARC_MODE_REVERSE);
-            lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
-            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x23262E), LV_PART_INDICATOR);
-            // Square for the same reason. The shutter's moving end sits AT the
-            // needle, so a rounded cap there reaches two degrees back over the
-            // band the engine has already lit -- a dark lip travelling with the
-            // needle. The ring's rounded silhouette comes from the band's own
-            // ends (face.cpp), which is where it belongs: those never move.
-            lv_obj_set_style_arc_rounded(v.arc, false, LV_PART_INDICATOR);
-        } else if (power) {
+        if (power) {
             // The face drew the track, so this arc is the fill alone.
             lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
             lv_obj_set_style_arc_color(v.arc, lv_color_hex(0xCFE0FF), LV_PART_INDICATOR);
@@ -486,8 +437,8 @@ ViewObjs build_view(const ViewSpec& spec) {
         }
     }
 
-    // Ticks, numbering and the needle go over the value arc, matching the
-    // order the simulator draws them in.
+    // Ticks, numbering and any needle go over the value arc, matching the order
+    // the simulator draws them in.
     if (v.has_face) {
         v.face = face_build_over(c, g_id, tacho ? FaceKind::Tacho
                                                 : power ? FaceKind::Power : FaceKind::Engine);
@@ -507,8 +458,11 @@ ViewObjs build_view(const ViewSpec& spec) {
     // unit line sat right on it. The simulator never collides because its hero
     // is 21cqw -- 98 px -- and simply covers the boss; LVGL's largest built-in
     // Montserrat is 48 px, so here the two have to be moved apart instead.
-    const int hub_lift = (face_k == Instrument::TachoDial ||
-                          face_k == Instrument::Power) ? 24 : 0;
+    //
+    // The tacho is no longer one of them: its needle and boss went when the rim
+    // became a segment scale, so its rpm digits sit on the dial's own centre
+    // again, where the simulator puts them.
+    const int hub_lift = (face_k == Instrument::Power) ? 24 : 0;
     if (spec.hero) {
         v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, kHeroY - hub_lift);
         v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, kUnitY - hub_lift);
@@ -1107,7 +1061,6 @@ void update(const Model& m) {
 
     if (v.arc && s.dial.value) {
         double val = 0.0;
-        const bool tacho = s.face == Instrument::TachoDial;
         if (s.dial.value(m, &val)) {
             // Eased before it is quantised, not after: the ease is what puts a
             // new position under the needle on the frames between two
@@ -1123,24 +1076,14 @@ void update(const Model& m) {
                 // 270-degree sweep): visually identical, and most frames now
                 // leave the dial alone and redraw only the small text areas.
                 // Same lesson as the section 11 backdrop: the win is in not
-                // touching big objects, not in drawing them faster.
+                // touching big objects, not in drawing them faster. The tacho
+                // took the idea further and has no arc left at all (face.h).
                 int steps = kDialSteps;
                 int q = static_cast<int>((val - lo) / (hi - lo) * steps + 0.5);
                 if (q < 0) q = 0;
                 if (q > steps) q = steps;
                 lv_arc_set_range(v.arc, 0, steps);
-                if (v.arc_mask) lv_arc_set_range(v.arc_mask, 0, steps);
-                // The shutter runs backwards on purpose. LVGL's REVERSE mode
-                // maps the value from the END of the sweep to the start -- at
-                // the minimum it covers nothing, at the maximum it covers
-                // everything -- so feeding it rpm directly left the rim fully
-                // hot at idle and going dark as the engine picked up, with the
-                // needle sweeping the other way. Inverting here puts the edge
-                // of the shutter exactly under the needle.
-                lv_arc_set_value(v.arc, tacho ? steps - q : q);
-                // The mask is the shutter's own shape; it must never lag, or
-                // the redline's edge reappears for a frame at the seam.
-                if (v.arc_mask) lv_arc_set_value(v.arc_mask, steps - q);
+                lv_arc_set_value(v.arc, q);
             }
             // A ring that carries its verdict as colour says what the
             // thresholds are in its own view, not here.
@@ -1154,15 +1097,6 @@ void update(const Model& m) {
                     lv_obj_set_style_arc_color(v.arc, lv_color_hex(col), LV_PART_INDICATOR);
                 }
             }
-            if (g_dials_on) show_obj(v.arc, true);
-        } else if (tacho) {
-            v.dial_ease.reset();
-            // The shutter is not a reading, it is the absence of one: closed
-            // over the whole band, so a car that is not reporting rpm shows a
-            // cold dial rather than a dial pinned at the redline. Closed is the
-            // MAXIMUM here, for the inversion described above.
-            lv_arc_set_value(v.arc, kDialSteps);
-            if (v.arc_mask) lv_arc_set_value(v.arc_mask, kDialSteps);
             if (g_dials_on) show_obj(v.arc, true);
         } else {
             v.dial_ease.reset();
@@ -1193,6 +1127,9 @@ void set_band_enabled(bool on) { face_set_band_enabled(on); }
 void set_dial_enabled(bool on) {
     if (g_dials_on == on) return;
     g_dials_on = on;
+    // The tacho's dial is not an arc any more, so it does not appear in the
+    // loop below -- face.cpp hides its segments instead.
+    face_set_rev_scale_enabled(on);
     for (auto& v : g_objs) {
         if (!v.arc) continue;
         if (on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);

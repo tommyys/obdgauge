@@ -5,7 +5,6 @@
 #include <optional>
 
 #include "esp_heap_caps.h"
-#include "glow.h"
 
 
 namespace gauge_ui {
@@ -22,14 +21,6 @@ constexpr double kArcR = 210;
 constexpr double kTickOuterR = kArcR * (93.0 / 104.0);
 constexpr double kTickInnerR = kArcR * (84.0 / 104.0);
 constexpr double kNumR       = kArcR * (71.0 / 104.0);
-constexpr double kNeedleR    = kArcR * (86.0 / 104.0);
-// Where the needle STARTS, which the simulator does not need and this panel
-// does. There the rpm number is 21cqw -- 98 px -- and simply covers the inner
-// half of the needle. LVGL's largest built-in Montserrat is 48 px, so the
-// number here cannot hide anything, and a needle run to the centre crosses the
-// digits instead. Starting it clear of the number's box keeps both readable;
-// the boss at the centre is what still makes it read as a needle.
-constexpr double kNeedleInnerR = 66;
 constexpr double kHubR       = kArcR * ( 7.5 / 104.0);
 
 // ---- engine and power, same 104-unit source drawing ----------------------
@@ -61,7 +52,29 @@ constexpr int kNeedleSteps = 270;
 
 // The simulator's palette, unchanged.
 constexpr uint32_t kTrack     = 0x23262E;
-constexpr uint32_t kRedline   = 0xFF3B30;
+
+// ---- the rev scale's ramp -------------------------------------------------
+// Blue at rest, amber halfway up, red at the limiter. seg_colour() explains
+// why the middle stop is there rather than mixing blue straight to red.
+//
+// The blue is deliberately deeper than the engine view's cold blue (0x4D96FF).
+// On this gauge a colour is a claim, and the two views are saying different
+// things -- "the engine is cold" against "you are off the cam". A shade apart
+// keeps them from reading as the same statement.
+constexpr uint32_t kRevCold   = 0x2F6BFF;
+constexpr uint32_t kRevMid    = 0xFFC53D;   // the gauge's accent amber
+constexpr uint32_t kRevHot    = 0xFF3B30;   // the simulator's redline red
+// An unlit segment, and an unlit segment above the redline. See seg_dim_opa.
+constexpr lv_opa_t kRevDim    = 55;
+constexpr lv_opa_t kRevDimRed = 90;
+// The gap between one segment and the next, in degrees. Without it forty
+// segments read as one continuous bar and the scale says nothing new.
+constexpr double kTachoSegGap = 1.4;
+// How far outside the stroke each clipping box reaches: a pixel for the
+// anti-aliased edge, and a couple more so a rounding disagreement between the
+// sampled box and LVGL's own arc rasteriser can never clip a segment's corner.
+constexpr int kTachoSegPad = 3;
+constexpr int kPanelPx     = 466;          // this board's round panel, both ways
 
 // How finely the heat band is graded.
 //
@@ -178,11 +191,18 @@ struct Band {
     uint16_t*     px = nullptr;      // its own PSRAM canvas, 377 KB
     lv_draw_buf_t db{};
 };
-Band g_tacho_band;
 Band g_engine_band;
-// Diagnostic handle. The band is 54 arcs and the only heavy object the tacho
-// has that no other view does -- see face_set_band_enabled.
+// Diagnostic handle. The band is 54 arcs painted into one object, and since the
+// tacho became a segment scale the engine view is the only one that has one --
+// see face_set_band_enabled.
 lv_obj_t* g_band_obj = nullptr;
+// The tacho's rev scale, in dial order. Held here as well as in the Face so
+// build_under_tacho can fill it before face_build_over runs; the Face copies
+// the pointers and does the lighting.
+lv_obj_t* g_tacho_seg[kTachoSegs] = {nullptr};
+// Their clipping boxes, kept only so the bench can hide the whole rev scale
+// and read what it costs -- see face_set_rev_scale_enabled.
+lv_obj_t* g_tacho_box[kTachoSegs] = {nullptr};
 
 bool areas_overlap(const lv_area_t& a, const lv_area_t& b) {
     return a.x1 <= b.x2 && a.x2 >= b.x1 && a.y1 <= b.y2 && a.y2 >= b.y1;
@@ -298,6 +318,113 @@ lv_obj_t* mk_band(lv_obj_t* root, Band& band, const char* who) {
     return obj;
 }
 
+// ---- the tacho's rev scale ----------------------------------------------
+// Built here rather than in ui.cpp because the segments ARE the tacho's face
+// now: there is no band under them and no shutter over them.
+
+// Where segment `i` starts and ends, in LVGL's clockwise-from-3-o'clock
+// degrees. Left unwrapped -- past 360 for the last few -- because seg_box()
+// below feeds them to cos() and sin(), which do not care; only the angles
+// handed to LVGL are brought back into range.
+void seg_angles(int i, double* a0, double* a1) {
+    const double span = kSweepDeg / kTachoSegs;
+    *a0 = kStartDeg + i * span + kTachoSegGap / 2.0;
+    *a1 = kStartDeg + (i + 1) * span - kTachoSegGap / 2.0;
+}
+
+// Segment `i`'s colour, fixed for the life of the view.
+//
+// Blue at rest, amber halfway to the limiter, red at it. Two straight mixes
+// rather than one blue-to-red, because a single mix between those two passes
+// through purple and grey in the middle -- the revs you spend most of your
+// driving at would be the muddiest part of the dial. Amber in the middle is
+// also the colour this gauge already uses for an accent, so the ramp says
+// "climbing" on the way up and only says "limit" at the top.
+//
+// Above the redline every segment is the flat red, so the top of the dial
+// still reads as a limit rather than as more colour.
+uint32_t seg_colour(int i, const gauge::Identity& id) {
+    const double mid_rpm = (i + 0.5) / kTachoSegs * id.rpm_max;
+    const double red = (id.rpm_red > 0) ? id.rpm_red : id.rpm_max;
+    if (mid_rpm >= red) return kRevHot;
+    double f = (red > 0) ? mid_rpm / red : 0.0;
+    if (f < 0) f = 0;
+    if (f > 1) f = 1;
+    return (f < 0.5) ? mix(kRevCold, kRevMid, f * 2.0)
+                     : mix(kRevMid, kRevHot, (f - 0.5) * 2.0);
+}
+
+// How far back an unlit segment is held. Its own colour, not grey, so the ramp
+// is readable across the whole dial before the engine has reached it -- the
+// same choice the bezel's page scale makes, and the reason the tacho needs no
+// separate track ring at all.
+//
+// Past the redline the unlit shade is stronger, so the limit is still marked
+// on a cold dial. That is what the old separate redline arc was for, and it
+// was a 434 px object on the rim; this costs nothing.
+lv_opa_t seg_dim_opa(int i, double rpm_max, double rpm_red) {
+    const double mid_rpm = (i + 0.5) / kTachoSegs * rpm_max;
+    const double red = (rpm_red > 0) ? rpm_red : rpm_max;
+    return (mid_rpm >= red) ? kRevDimRed : kRevDim;
+}
+
+// The bounding rectangle, in panel coordinates, of one segment's stroke.
+// Sampled rather than solved, as ui.cpp does for the bezel: five points along
+// each radius bound seven degrees of arc to well under a pixel, and the box is
+// padded anyway.
+void seg_box(double a0, double a1, int* x, int* y, int* w, int* h) {
+    const double r_out = kArcOuterR, r_in = kArcOuterR - kArcWidth;
+    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (int i = 0; i <= 4; ++i) {
+        const double a = (a0 + (a1 - a0) * i / 4.0) * M_PI / 180.0;
+        for (const double r : {r_in, r_out}) {
+            const double px = kCx + r * std::cos(a), py = kCy + r * std::sin(a);
+            if (px < x0) x0 = px;
+            if (px > x1) x1 = px;
+            if (py < y0) y0 = py;
+            if (py > y1) y1 = py;
+        }
+    }
+    *x = static_cast<int>(x0) - kTachoSegPad;
+    *y = static_cast<int>(y0) - kTachoSegPad;
+    *w = static_cast<int>(x1 - x0) + 2 * kTachoSegPad + 1;
+    *h = static_cast<int>(y1 - y0) + 2 * kTachoSegPad + 1;
+}
+
+// One segment: an arc drawn by its BACKGROUND part only, so both of its ends
+// can be placed by hand. The indicator and knob are the value-tracking half of
+// lv_arc and this is not a meter -- what the reading changes is which segments
+// are lit, not any one segment's length.
+lv_obj_t* mk_seg_arc(lv_obj_t* box, uint32_t colour, int box_x, int box_y,
+                     double a0, double a1) {
+    lv_obj_t* a = lv_arc_create(box);
+    lv_obj_set_size(a, kRimPx, kRimPx);
+    // Positioned by hand rather than centred, because the parent is the
+    // segment's own little box and not the view: the arc has to keep the
+    // PANEL's centre, so it hangs out of its parent on every side and is
+    // clipped back to it.
+    lv_obj_set_pos(a, kPanelPx / 2 - kRimPx / 2 - box_x,
+                      kPanelPx / 2 - kRimPx / 2 - box_y);
+    lv_obj_remove_style(a, nullptr, LV_PART_KNOB);
+    lv_obj_remove_flag(a, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(a, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(a, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(a, 0, 0);
+    lv_obj_set_style_arc_opa(a, LV_OPA_TRANSP, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(a, kArcWidth, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(a, lv_color_hex(colour), LV_PART_MAIN);
+    // Square ends. A rounded cap adds half the stroke width along the arc at
+    // each end -- 7 px here, against a gap of about 5 -- so rounding would eat
+    // the gaps and put the dial back to being one continuous bar.
+    lv_obj_set_style_arc_rounded(a, false, LV_PART_MAIN);
+    // LVGL wants its angles in range, and the segment that straddles 3 o'clock
+    // ends up with a start larger than its end. That is the same wrap the
+    // 135-to-45 rings use and lv_arc reads it the same way.
+    lv_arc_set_bg_angles(a, static_cast<lv_value_precise_t>(std::fmod(a0, 360.0)),
+                            static_cast<lv_value_precise_t>(std::fmod(a1, 360.0)));
+    return a;
+}
+
 lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa,
                      bool rounded = true) {
     lv_obj_t* arc = lv_arc_create(root);
@@ -319,7 +446,7 @@ lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t o
 // ---- the dial face -------------------------------------------------------
 
 void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
-    // The rim carries the heat, because the screen cannot.
+    // The rim carries the revs, because the middle of the screen cannot.
     //
     // The simulator warms the whole display as the engine picks up. Measured on
     // this board that costs 5-20 fps however it is drawn -- a backdrop covers
@@ -327,52 +454,37 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
     // constantly. Painting the frame by hand instead benched at 15 fps, worse
     // still.
     //
-    // The rim does the same job for nothing, by making the colour a property of
-    // POSITION on the dial rather than of time. The band is coloured once, cool
-    // through ember to red, using the same gauge::glow_for ramp the simulator's
-    // backdrop uses; rpm then only decides how much of it you can see. Nothing
-    // ever changes colour, so nothing ever costs a repaint -- and what you read
-    // at a glance, the dial getting hotter as you rev, is the same.
-    Band& band = g_tacho_band;
-    band.n = 0;
-    for (int i = 0; i < kHeatBands; ++i) {
-        const double f0 = static_cast<double>(i) / kHeatBands;
-        const double f1 = static_cast<double>(i + 1) / kHeatBands;
-        // Read at the middle of the segment, and at full precision: the band
-        // never repaints, so it has nothing to gain from the stepped form and
-        // everything to lose -- the steps were the thing that looked wrong.
-        const double h = gauge::glow_heat((f0 + f1) / 2 * id.rpm_max, id.rpm_red);
-        const uint32_t hot = mix(gauge::kGlowEmber, gauge::kGlowRed, h);
-        band.seg[band.n].colour = mix(kTrack, hot, h * gauge::kGlowMaxOpa);
-        band.seg[band.n].a0 = static_cast<int16_t>(
-            (static_cast<int>(kStartDeg) + i * kBandDeg) % 360);
-        // One degree of overlap onto the next segment, because arcs that
-        // merely abut leave a hairline of background between them the whole way
-        // round -- but NOT on the last segment, which has no neighbour to meet.
-        // Overlapping there pushed the band one degree past the end of the
-        // sweep, and the shutter that covers the band only spans the sweep, so
-        // that degree was never covered: a sliver of the hottest, reddest
-        // segment showing past the end of the grey rim at bottom right.
-        const bool last = (i == kHeatBands - 1);
-        band.seg[band.n].a1 = static_cast<int16_t>(
-            (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + (last ? 0 : 1)) % 360);
-        ++band.n;
-    }
-    g_band_obj = mk_band(root, band, "tacho");
+    // The rim does the same job for almost nothing, by making the colour a
+    // property of POSITION on the dial rather than of time. Every segment is
+    // coloured once at build time, blue at rest through amber to red at the rev
+    // limit; rpm then only decides how many of them are lit. Nothing ever
+    // changes colour, so nothing ever costs a repaint for its colour -- and
+    // what you read at a glance, the dial climbing and getting hotter as you
+    // rev, is the same thing the simulator says with a bar.
+    for (int i = 0; i < kTachoSegs; ++i) {
+        double a0 = 0, a1 = 0;
+        seg_angles(i, &a0, &a1);
+        int bx = 0, by = 0, bw = 0, bh = 0;
+        seg_box(a0, a1, &bx, &by, &bw, &bh);
 
-    // Past the redline the band is unambiguous rather than merely hot, so the
-    // top of the dial still reads as a limit and not just as more colour.
-    if (id.rpm_red > 0 && id.rpm_max > id.rpm_red) {
-        const int a0 = static_cast<int>(std::lround(dial_angle(id.rpm_red, id.rpm_max))) % 360;
-        // Rounded, so the redline ends in the same shape as the band beneath it
-        // and as every other ring. A rounded cap is drawn OUTSIDE the angles it
-        // is given, by half the arc width -- 7 px, which at radius 210 is very
-        // nearly 2 degrees -- so the start angle is pushed 2 degrees late and
-        // the cap puts it back. Without that the red would reach two degrees
-        // below the redline. At the far end the overshoot is wanted: it lands
-        // exactly where the band's own rounded end lands.
-        constexpr int kCapDeg = 2;
-        mk_rim_arc(root, (a0 + kCapDeg) % 360, 45, kRedline, LV_OPA_COVER, true);
+        // Its own little clipping box, which is the whole performance argument
+        // -- see kTachoSegs in face.h. An lv_arc's object is the full 434 px
+        // square whatever it paints, so forty of them loose in the view would
+        // each be walked by every dirty rectangle the rpm digits make. Boxed,
+        // LVGL prunes the ones the digits do not touch, which is all of them.
+        lv_obj_t* box = lv_obj_create(root);
+        lv_obj_remove_style_all(box);
+        lv_obj_set_size(box, bw, bh);
+        lv_obj_set_pos(box, bx, by);
+        lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+        g_tacho_box[i] = box;
+        g_tacho_seg[i] = mk_seg_arc(box, seg_colour(i, id), bx, by, a0, a1);
+        // Built unlit, because the gauge comes up before the car has answered
+        // and a dial that starts fully lit would flash the whole rev range on
+        // the first frame of a swipe onto the tacho.
+        lv_obj_set_style_arc_opa(g_tacho_seg[i],
+                                 seg_dim_opa(i, id.rpm_max, id.rpm_red), LV_PART_MAIN);
     }
 }
 
@@ -409,7 +521,7 @@ void build_under_engine(lv_obj_t* root) {
             (static_cast<int>(kStartDeg) + (i + 1) * kBandDeg + (last ? 0 : 1)) % 360);
         ++band.n;
     }
-    mk_band(root, band, "engine");
+    g_band_obj = mk_band(root, band, "engine");
 }
 
 // Power's track only. The fill arc over it is the view's own lv_arc, built by
@@ -453,29 +565,20 @@ Face build_over_tacho(lv_obj_t* root, const gauge::Identity& id) {
                             static_cast<int32_t>(np.y) - lv_obj_get_height(num) / 2);
     }
 
+    // No needle, and no hub for it to pivot on.
+    //
+    // The scale already says the revs, and a needle saying them a second time
+    // was the last object on this view that moved every frame: a line from the
+    // middle of the panel out to the rim, so its bounding box swept a quarter
+    // of the screen, and it was invalidated by its own movement AND recoloured
+    // as it heated. Forty boxed segments that change only when the reading
+    // crosses 200 rpm cost a fraction of that.
     Face f;
-    f.needle_pts = new lv_point_precise_t[2];
-    f.needle = lv_line_create(root);
-    lv_obj_set_style_line_width(f.needle, 7, 0);
-    lv_obj_set_style_line_rounded(f.needle, true, 0);
-    lv_obj_set_style_line_color(f.needle, lv_color_hex(kNeedle), 0);
-    set_line(f.needle, f.needle_pts, polar(kNeedleInnerR, kStartDeg),
-             polar(kNeedleR, kStartDeg));
-
-    // The hub last, so the needle's blunt end is covered by it rather than
-    // ending in mid-air at the centre of the screen.
-    const int32_t hub = static_cast<int32_t>(std::lround(kHubR * 2));
-    lv_obj_t* boss = lv_obj_create(root);
-    lv_obj_remove_style_all(boss);
-    lv_obj_set_size(boss, hub, hub);
-    lv_obj_set_pos(boss, static_cast<int32_t>(kCx) - hub / 2,
-                         static_cast<int32_t>(kCy) - hub / 2);
-    lv_obj_set_style_radius(boss, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(boss, lv_color_hex(kHubFill), 0);
-    lv_obj_set_style_bg_opa(boss, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(boss, 5, 0);
-    lv_obj_set_style_border_color(boss, lv_color_hex(kNeedle), 0);
-    lv_obj_set_style_border_opa(boss, LV_OPA_COVER, 0);
+    for (int i = 0; i < kTachoSegs; ++i) f.seg[i] = g_tacho_seg[i];
+    f.lit = 0;
+    // Remembered for the dim shades, which differ above the redline.
+    f.rpm_max = id.rpm_max;
+    f.rpm_red = id.rpm_red;
     return f;
 }
 
@@ -600,36 +703,39 @@ void set_line_opa(lv_obj_t* line, int& last, int opa) {
 }
 
 void update_tacho(Face& f, const Model& m) {
-    if (!f.needle) return;
+    if (!f.seg[0]) return;
     const auto raw = m.st.get("rpm");
-    // Eased, and everything below reads the eased figure -- including the
-    // colour, so that the needle's heat and its position never describe two
-    // different engine speeds.
+    // Eased, then quantised to whole segments. Easing first is what puts a new
+    // segment up on the frames between two readings; quantising first would
+    // throw those frames away again.
     const auto rpm = ease_reading(f, raw, m);
 
-    // Recoloured, unlike the band, because a needle is small: the area this
-    // invalidates is a fraction of the screen, and the needle is being
-    // invalidated by its own movement in the same frame regardless.
-    const gauge::Glow g = gauge::glow_for(rpm, m.id.rpm_red);
-    if (g.step != f.heat) {
-        f.heat = g.step;
-        lv_obj_set_style_line_color(
-            f.needle, lv_color_hex(mix(kNeedle, gauge::kGlowRed, g.opa / 255.0)), 0);
-    }
-
-    // No reading: the needle stays parked at zero and dims, rather than being
-    // hidden -- an instrument with no needle at all reads as broken, where a
-    // dim one at rest reads as waiting (SPEC.md section 4).
-    set_line_opa(f.needle, f.needle_opa, rpm ? LV_OPA_COVER : 64);
-
+    // No reading: nothing lit, rather than the scale hidden. An instrument with
+    // nothing on it reads as broken, where a dim dial at rest reads as waiting
+    // (SPEC.md section 4) -- and every unlit segment still carries its own
+    // colour, so the dial is legible before the car has said anything.
     const double v = rpm ? *rpm : 0.0;
-    int q = static_cast<int>(std::lround(dial_angle(v, m.id.rpm_max) - kStartDeg));
-    if (q < 0) q = 0;
-    if (q > kNeedleSteps) q = kNeedleSteps;
-    if (q == f.needle_q) return;
-    f.needle_q = q;
-    set_line(f.needle, f.needle_pts, polar(kNeedleInnerR, kStartDeg + q),
-             polar(kNeedleR, kStartDeg + q));
+    int lit = (f.rpm_max > 0)
+        ? static_cast<int>(v / f.rpm_max * kTachoSegs + 0.5) : 0;
+    if (lit < 0) lit = 0;
+    if (lit > kTachoSegs) lit = kTachoSegs;
+
+    // The whole point of the segments: rpm has to cross a 200 rpm boundary
+    // before a single pixel changes. Most readings land here and stop.
+    if (lit == f.lit) return;
+    const int from = (lit < f.lit) ? lit : f.lit;
+    const int to   = (lit < f.lit) ? f.lit : lit;
+    f.lit = lit;
+    // Only the segments the reading actually crossed. A style write is a
+    // repaint whether or not the value changed, so writing "still dim" to the
+    // other thirty-odd would repaint the whole rim on every step.
+    for (int i = from; i < to; ++i) {
+        if (!f.seg[i]) continue;
+        lv_obj_set_style_arc_opa(
+            f.seg[i], (i < lit) ? static_cast<lv_opa_t>(LV_OPA_COVER)
+                                : seg_dim_opa(i, f.rpm_max, f.rpm_red),
+            LV_PART_MAIN);
+    }
 }
 
 // Engine: the mark tracks coolant along the gradient. It is never hidden --
@@ -684,13 +790,24 @@ void update_power(Face& f, const Model& m) {
              polar(kPwrNeedleR, kStartDeg + q));
 }
 
-// Diagnostic: hide the heat band. A slide INTO the tacho costs 283 ms against
-// 56-96 ms for every other view, and hiding the rim dial changed nothing --
-// this is what is left to blame.
+// Diagnostic: hide the engine view's gradient band. This is how the tacho's
+// old 54-segment band was caught costing 210 ms of every full render, back
+// when the tacho had one; the engine view still does.
 void face_set_band_enabled(bool on) {
     if (!g_band_obj) return;
     if (on) lv_obj_clear_flag(g_band_obj, LV_OBJ_FLAG_HIDDEN);
     else    lv_obj_add_flag(g_band_obj, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Diagnostic: hide the whole rev scale. The tacho's dial used to be one arc
+// that "DIALS 0" could hide; it is forty boxed segments now, so this is what
+// that command reaches for -- see gauge_ui::set_dial_enabled.
+void face_set_rev_scale_enabled(bool on) {
+    for (lv_obj_t* box : g_tacho_box) {
+        if (!box) continue;
+        if (on) lv_obj_clear_flag(box, LV_OBJ_FLAG_HIDDEN);
+        else    lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void face_update(Face& f, const Model& m) {

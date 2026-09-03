@@ -31,21 +31,30 @@ constexpr double kTempLo = 40, kTempHi = 120;
 // ON the scale rather than a line under it.
 constexpr double kPwrPeakOutR = kArcR * ( 98.0 / 104.0);
 constexpr double kPwrPeakInR  = kArcR * ( 88.0 / 104.0);
-constexpr uint32_t kPwrPeak   = 0xFFC53D;
+// White, not the amber it was. The amber sat a shade away from the top of the
+// power ramp below it, so the mark disappeared into the dial exactly when it
+// mattered -- at the moment the car reaches its best. White is the only thing
+// on this view that no segment can be.
+constexpr uint32_t kPwrPeak   = 0xFFFFFF;
 
 // ---- the power dial's ramp -------------------------------------------------
-// Deep blue, through cyan, to near-white at the car's ceiling.
+// Pale yellow at rest, saturating to a strong electric yellow at the car's
+// ceiling. Power is the one thing on this gauge that is genuinely electrical,
+// and the dial should look like it is being charged up.
 //
 // NOT the tacho's blue-amber-red. On this gauge a colour is a claim: red means
 // the car is not fine, and there is nothing wrong with using all of the engine
 // -- a power dial pinned at its top is the car working, not a fault. So the
-// ramp stays inside one family and says INTENSITY instead, the way the bezel's
-// page scale stays inside one family to avoid claiming anything. It reads as
-// the dial getting brighter the harder you work the car, and white at the top
-// is unmistakable on a black panel.
-constexpr uint32_t kPwrCold   = 0x2F6BFF;   // the same rest blue as the revs
-constexpr uint32_t kPwrMid    = 0x6FD3FF;
-constexpr uint32_t kPwrHot    = 0xEAF6FF;
+// ramp stays inside ONE family, the way the bezel's page scale does to avoid
+// claiming anything, and what changes along it is saturation: washed out where
+// the engine is barely working, full yellow where it is giving everything.
+//
+// The middle stop is there for the reason the other two ramps have one. A
+// single mix from pale to saturated yellow dips through a flat sandy shade in
+// the middle, which is where most driving sits.
+constexpr uint32_t kPwrCold   = 0xFFF7CC;   // pale, almost cream
+constexpr uint32_t kPwrMid    = 0xFFE23D;
+constexpr uint32_t kPwrHot    = 0xFFB800;   // full, saturated
 
 // Bottom-left, clockwise over the top, to bottom-right. The same pair ui.cpp
 // hands lv_arc_set_bg_angles.

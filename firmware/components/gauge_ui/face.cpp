@@ -38,23 +38,28 @@ constexpr double kPwrPeakInR  = kArcR * ( 88.0 / 104.0);
 constexpr uint32_t kPwrPeak   = 0xFFFFFF;
 
 // ---- the power dial's ramp -------------------------------------------------
-// Pale yellow at rest, saturating to a strong electric yellow at the car's
-// ceiling. Power is the one thing on this gauge that is genuinely electrical,
-// and the dial should look like it is being charged up.
+// Dark gold at rest, brightening through gold to a bright electric yellow at
+// the car's ceiling. Power is the one thing on this gauge that is genuinely
+// electrical, and the dial should look like it is charging up.
 //
-// NOT the tacho's blue-amber-red. On this gauge a colour is a claim: red means
-// the car is not fine, and there is nothing wrong with using all of the engine
-// -- a power dial pinned at its top is the car working, not a fault. So the
-// ramp stays inside ONE family, the way the bezel's page scale does to avoid
-// claiming anything, and what changes along it is saturation: washed out where
-// the engine is barely working, full yellow where it is giving everything.
+// It BRIGHTENS as it fills, and that is the point. The first version ran pale
+// cream up to saturated yellow, which is more saturated at the top but LESS
+// bright -- so the bar visibly dimmed as power rose, the opposite of what the
+// tacho and the engine view do as they fill. Whatever the palette, a scale
+// filling toward its limit has to gain intensity, or the sweep reads backwards.
 //
-// The middle stop is there for the reason the other two ramps have one. A
-// single mix from pale to saturated yellow dips through a flat sandy shade in
-// the middle, which is where most driving sits.
-constexpr uint32_t kPwrCold   = 0xFFF7CC;   // pale, almost cream
-constexpr uint32_t kPwrMid    = 0xFFE23D;
-constexpr uint32_t kPwrHot    = 0xFFB800;   // full, saturated
+// Still one family, and still not the tacho's red at the top: on this gauge a
+// colour is a claim, red means the car is not fine, and a power dial pinned at
+// its ceiling is the car working. The bezel's page scale stays inside one
+// family for the same reason.
+//
+// The middle stop is there for the reason the other two ramps have one: a
+// single mix from dark gold to bright yellow passes through a flat sandy shade
+// in the middle, which is where most driving sits.
+constexpr uint32_t kPwrCold   = 0x6B4E00;   // dark gold, barely working
+constexpr uint32_t kPwrMid    = 0xFFC400;
+constexpr uint32_t kPwrHot    = 0xFFE81F;   // bright, and short of white so the
+                                            // peak mark still reads (kPwrPeak)
 
 // Bottom-left, clockwise over the top, to bottom-right. The same pair ui.cpp
 // hands lv_arc_set_bg_angles.

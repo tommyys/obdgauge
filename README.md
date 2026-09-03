@@ -101,10 +101,11 @@ OBD-II is universal; what each car *reports* is not. The gauge adapts:
   convincing zero. A drive with no torque channels gates the Power view, and
   one with no catalyst sensor leaves that figure as a dash.
 
-- **It wakes like a cluster.** A boot splash holds the screen for 2.5 s and the
-  instruments are withheld until it finishes — no half-populated dials on the
-  way up. The clip is `mx5gauge/web/boot.mp4`; `BOOT_MS` at the top of
-  `mx5gauge/state.py` sets how long it holds, and the clip is trimmed to match.
+- **It wakes like a cluster.** A boot splash holds the screen for 4 s, then
+  pushes into the car's own centre as it dims to black over 1.2 s, and only
+  then are the instruments built — no half-populated dials on the way up. The
+  clip is `mx5gauge/web/boot.mp4`; `BOOT_MS` and `BOOT_FADE_MS` at the top of
+  `mx5gauge/state.py` set the two durations, and the clip is trimmed to match.
   There is no shutdown animation: the gauge runs on ignition-switched power, so
   key-off is a hard cut with no frame left to draw in.
 

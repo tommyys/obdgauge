@@ -711,17 +711,36 @@ capture, still labelled as a preview on screen and still refused in live mode.
 
 ## 14. The boot splash (B1, shipped in the simulator)
 
-The gauge holds a splash for `BOOT_MS` (2.5 s) when it wakes, then reveals the
+The gauge holds a splash for `BOOT_MS` (4 s) when it wakes, then reveals the
 carousel. The instruments are **withheld rather than covered**: nothing shows
 until the splash finishes, which is how a cluster behaves and which also spares
 you the first second of half-populated channels.
 
-`state.Boot` is a two-phase tracker — `WAKING` then `RUNNING` — fed the drive's
-**logical** clock, the same one the metrics use. A capture replayed at 8x
-therefore splashes for 2.5 s *of the drive*, not of your afternoon, and live
-and replay need no special cases between them. Scrubbing backwards rebases the
-start rather than stranding the splash waiting out an interval that has already
-gone by.
+`state.Boot` is a three-phase tracker — `WAKING`, `FADING`, then `RUNNING` —
+fed the drive's **logical** clock, the same one the metrics use. A capture
+replayed at 8x therefore splashes for 4 s *of the drive*, not of your afternoon,
+and live and replay need no special cases between them. Scrubbing backwards
+rebases the start rather than stranding the splash waiting out an interval that
+has already gone by.
+
+### The hand-off
+
+`FADING` lasts `BOOT_FADE_MS` (1.2 s) and is what keeps the clip and the
+instruments from colliding. The clip ends on a lit car filling the screen, and
+cutting straight from that to a dial reads as a glitch rather than a hand-off.
+
+So the last frame is **pushed into its own centre while it darkens** — a zoom
+to 1.35x, easing *in*, against a brightness that eases *out* of full. The
+ordering is the point: fading both linearly would hide the movement in the dark.
+The car appears to recede into the instrument rather than the screen appearing
+to switch off.
+
+Both ends implement the same two curves, and must keep matching or the desk
+preview stops being a preview: `fade_zoom_to_black()` in
+`firmware/main/main.cpp` resamples the frame itself (nearest-neighbour, 16.16
+fixed point, with per-channel brightness ramps), and the simulator drives a CSS
+`transform: scale()` and `opacity` off the same progress figure. On the board
+this runs at 15 fps, the clip's own rate, so the two read as one movement.
 
 There is deliberately no `ASLEEP` phase. A car that is off is a board with no
 power, not a board in a state, and modelling something the hardware cannot be

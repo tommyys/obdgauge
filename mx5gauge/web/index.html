@@ -62,8 +62,12 @@
      round bezel take the corners, which is what it is framed for */
   video.bootfx{object-fit:cover;background:#000;z-index:5;}
   /* the dip is driven from the 100ms poll, so smooth between its steps or the
-     fade arrives in six visible jumps */
-  video.bootfx,canvas.bootfx{transition:opacity .12s linear;}
+     fade arrives in six visible jumps. Transform rides the same easing as
+     opacity: the firmware pushes the last frame into its own centre while it
+     darkens, and the two have to agree or the desk preview stops being a
+     preview. */
+  video.bootfx,canvas.bootfx{transition:opacity .12s linear, transform .12s linear;
+    transform-origin:50% 50%;}
   .bootfx[hidden]{display:none;}
   /* what the clip fades out onto */
   .bootblack{position:absolute;inset:0;z-index:3;background:#000;
@@ -1058,12 +1062,14 @@ const pageOpened=performance.now();
    Live keeps the gauge's phase. Refreshing the page mid-drive should not
    blank the instruments for three seconds while you are moving. */
 function localBoot(b){
-  const bootMs=b.ms||2500, fadeMs=b.fade_ms||600;
+  const bootMs=b.ms||4000, fadeMs=b.fade_ms||1200;
   const e=performance.now()-pageOpened;
   if(e<bootMs)        return {phase:'WAKING', progress:e/bootMs};
   if(e<bootMs+fadeMs) return {phase:'FADING', progress:(e-bootMs)/fadeMs};
   return {phase:'RUNNING', progress:1};
 }
+// matches kFadeZoom in firmware/main/main.cpp
+const BOOT_ZOOM=1.35;
 let bootBroken=false, bootPlaying=false;
 bootVid.addEventListener('error',()=>{bootBroken=true;});
 bootVid.querySelector('source').addEventListener('error',()=>{bootBroken=true;});
@@ -1103,11 +1109,21 @@ function applyBoot(b){
   bootVid.hidden=!useVideo;
   bootCanvas.hidden=!(booting && bootBroken);
 
-  // the dip: the clip dissolves into the black layer behind it, and only then
-  // does the carousel fade up out of that same black
-  const shown = fading ? 1-b.progress : 1;
+  // the dip: the clip pushes into its own centre as it dissolves into the
+  // black layer behind it, and only then does the carousel fade up out of that
+  // same black.
+  //
+  // The two curves are the firmware's, from fade_zoom_to_black() in
+  // firmware/main/main.cpp: the zoom eases IN and the brightness eases OUT of
+  // full, so the push is visible for a beat before the picture has gone. Fading
+  // both linearly hides the movement in the dark.
+  const p = fading ? b.progress : 0;
+  const shown = 1 - p*p*(3 - 2*p);
+  const zoom  = 1 + (BOOT_ZOOM - 1) * p*p;
   bootVid.style.opacity=shown;
   bootCanvas.style.opacity=shown;
+  bootVid.style.transform='scale('+zoom.toFixed(4)+')';
+  bootCanvas.style.transform='scale('+zoom.toFixed(4)+')';
 
   if(useVideo){
     if(!bootPlaying){

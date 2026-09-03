@@ -91,8 +91,8 @@ def plausible(key, value):
 
 # How long the boot clip holds the screen, in milliseconds of the drive's own
 # clock, and how long it then dips to black before the instruments arrive.
-BOOT_MS = 2500
-BOOT_FADE_MS = 600
+BOOT_MS = 4000
+BOOT_FADE_MS = 1200
 
 
 class Boot(object):
@@ -104,7 +104,7 @@ class Boot(object):
     than a hand-off.
 
     Told the time rather than reading a clock, so a capture replayed at 8x
-    splashes for the same 2.5 seconds *of the drive* that a car in front of you
+    splashes for the same 4 seconds *of the drive* that a car in front of you
     does — and so the whole thing is testable without sleeping.
 
     There is no 'ASLEEP'. The gauge is fed from an ignition-switched supply, so

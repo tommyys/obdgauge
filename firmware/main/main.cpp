@@ -3,13 +3,15 @@
 // Section 14's rule is that the instruments are *withheld rather than covered*:
 // nothing shows until the splash finishes, which is how a cluster behaves and
 // spares you the first second of half-populated channels. So the sequence here
-// is WAKING (the clip) -> FADING (a dip to black) -> RUNNING (the gauge), and
-// the gauge objects are not even created until the dip is over.
+// is WAKING (the clip) -> FADING (a push into the centre, dimming to black) ->
+// RUNNING (the gauge), and the gauge objects are not even created until the dip
+// is over.
 //
-// The clip is 31 frames of raw RGB565 in the `assets` partition, paced by the
+// The clip is 60 deflated RGB565 frames in the `assets` partition, paced by the
 // wall clock across BOOT_MS. Pacing by time rather than by frame index means a
 // panel that cannot keep up drops frames instead of running the animation slow
-// -- the splash always lasts 2.5 s, which is what section 14 specifies.
+// -- the splash always lasts BOOT_MS (4 s), which is what section 14 specifies,
+// and the fade another BOOT_FADE_MS (1.2 s) on top.
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -43,25 +45,126 @@
 #include "slide.h"
 #include "esp_lv_adapter.h"
 #include "version.h"
+// tinfl_decompress_mem_to_mem lives in the ESP32-S3 ROM (esp32s3.rom.ld), so
+// the clip is decompressed at no cost in flash or code size.
+#include "miniz.h"
 
 namespace {
 
-// state.py: BOOT_MS = 2500, BOOT_FADE_MS = 600
-constexpr int64_t kBootUs = 2500 * 1000;
-constexpr int64_t kFadeUs = 600 * 1000;
+// state.py: BOOT_MS = 4000, BOOT_FADE_MS = 1200
+constexpr int64_t kBootUs = 4000 * 1000;
+constexpr int64_t kFadeUs = 1200 * 1000;
 
 constexpr int W = BSP_LCD_H_RES;
 constexpr int H = BSP_LCD_V_RES;
 
+// Written by tools/build_boot_asset.sh, which is where the format and the
+// measurements behind it are documented. Frames are individually raw-deflated
+// and stored in the panel's byte order; a frames+1 table of absolute file
+// offsets follows this header, so frame k is [off[k], off[k+1]).
 struct AssetHeader {
-    char     magic[4];   // "MX5B"
+    char     magic[4];   // "MX5C"
     uint16_t w, h;
     uint16_t frames;
     uint16_t fps;
+    uint32_t flags;      // bit 0: pixels big-endian.  bit 1: raw-deflated
+    uint32_t max_comp;   // biggest compressed frame, so one buffer fits them all
     uint32_t reserved;
 } __attribute__((packed));
 
+constexpr uint32_t kFlagBigEndian = 1;
+constexpr uint32_t kFlagDeflate   = 2;
+
 uint16_t* g_fb = nullptr;
+
+// ---- the hand-off: zoom into the centre while dipping to black ------------
+
+// How far in the push goes by the time the screen is black. 1.35 is a third
+// again: enough that the movement is unmistakable on a 466 px round panel,
+// little enough that nearest-neighbour resampling never shows a stair edge --
+// the frames it magnifies are a dark car on black, with no fine detail to
+// break up.
+constexpr float kFadeZoom = 1.35f;
+
+// The frame is stored, and wanted back, in the panel's byte order; the
+// unpacking in between has to happen in the CPU's. Two swaps a pixel is
+// cheaper than keeping a second little-endian copy of a 434 KB frame.
+inline uint16_t bswap16(uint16_t v) { return static_cast<uint16_t>((v >> 8) | (v << 8)); }
+
+// `frame` is the last clip frame and is only ever read, so every fade frame is
+// resampled from the original rather than from its own predecessor -- zooming a
+// zoom would soften the car a little more each time.
+//
+// Paced by time exactly as the clip is: a slow frame costs that frame, and the
+// dip still ends when BOOT_FADE_MS says. If either buffer cannot be had, the
+// old behaviour -- straight to black, then wait -- is the fallback, because a
+// hard cut is worse than a splash but better than a stall.
+void fade_zoom_to_black(lv_display_t* disp, const uint16_t* frame) {
+    constexpr int kPix = W * H;
+    // 64-byte aligned and DMA-reachable for the same reason g_fb is: the panel
+    // reads it directly after a cache sync.
+    uint16_t* dst = static_cast<uint16_t*>(
+        heap_caps_aligned_alloc(64, kPix * 2, MALLOC_CAP_SPIRAM));
+    // 5- and 6-bit channel ramps, rebuilt once per fade frame. Heap, not
+    // locals: app_main's stack has about 200 bytes spare, and this is 192.
+    uint8_t* lut = static_cast<uint8_t*>(malloc(32 + 64));
+    if (!dst || !lut) {
+        printf("boot: no room to fade (%d KB + 96 B) -- cutting to black\n", kPix * 2 / 1024);
+        heap_caps_free(dst);
+        free(lut);
+        int64_t f0 = esp_timer_get_time();
+        while (esp_timer_get_time() - f0 < kFadeUs) vTaskDelay(pdMS_TO_TICKS(20));
+        return;
+    }
+    uint8_t* lut5 = lut;        // red and blue
+    uint8_t* lut6 = lut + 32;   // green
+
+    const int64_t f0 = esp_timer_get_time();
+    int frames = 0;
+    for (;;) {
+        const int64_t elapsed = esp_timer_get_time() - f0;
+        if (elapsed >= kFadeUs) break;
+        const float p = static_cast<float>(elapsed) / static_cast<float>(kFadeUs);
+
+        // The zoom eases IN (p*p) and the brightness eases OUT of full
+        // (smoothstep), so the push is visible for a beat before the picture
+        // has gone -- fading them both linearly hides the movement in the dark.
+        const float scale  = 1.0f + (kFadeZoom - 1.0f) * p * p;
+        const float bright = 1.0f - p * p * (3.0f - 2.0f * p);
+        for (int i = 0; i < 32; ++i) lut5[i] = static_cast<uint8_t>(i * bright + 0.5f);
+        for (int i = 0; i < 64; ++i) lut6[i] = static_cast<uint8_t>(i * bright + 0.5f);
+
+        // 16.16 fixed point. step < 1 source pixel per destination pixel is
+        // what makes this a zoom IN: the frame is sampled from a window
+        // narrower than the panel, centred on the middle.
+        const int32_t step = static_cast<int32_t>(65536.0f / scale);
+        const int32_t half = W / 2;
+        for (int y = 0; y < H; ++y) {
+            int32_t sy = ((y - half) * step >> 16) + half;
+            if (sy < 0) sy = 0; else if (sy >= H) sy = H - 1;
+            const uint16_t* srow = frame + static_cast<size_t>(sy) * W;
+            uint16_t* drow = dst + static_cast<size_t>(y) * W;
+            int32_t sx_f = -half * step;
+            for (int x = 0; x < W; ++x, sx_f += step) {
+                int32_t sx = (sx_f >> 16) + half;
+                if (sx < 0) sx = 0; else if (sx >= W) sx = W - 1;
+                const uint16_t v = bswap16(srow[sx]);
+                drow[x] = bswap16(static_cast<uint16_t>(
+                    (lut5[(v >> 11) & 31] << 11) |
+                    (lut6[(v >> 5) & 63] << 5) |
+                     lut5[v & 31]));
+            }
+        }
+        gauge_ui::direct_draw_frame(disp, dst, W, H, /*pixels_big_endian=*/true);
+        ++frames;
+    }
+    const int64_t took = esp_timer_get_time() - f0;
+    printf("boot: fade %d frames in %.2f s (%.1f fps), zoom to %.2fx\n",
+           frames, took / 1e6, frames * 1e6 / static_cast<double>(took ? took : 1),
+           static_cast<double>(kFadeZoom));
+    heap_caps_free(dst);
+    free(lut);
+}
 
 // ---- the boot clip -------------------------------------------------------
 
@@ -72,74 +175,168 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
 
     AssetHeader hdr{};
     if (esp_partition_read(part, 0, &hdr, sizeof hdr) != ESP_OK ||
-        memcmp(hdr.magic, "MX5B", 4) != 0) {
-        printf("boot: no clip in assets (magic mismatch) -- skipping splash\n");
+        memcmp(hdr.magic, "MX5C", 4) != 0) {
+        // "MX5B" was the uncompressed format this replaced. Naming it is worth
+        // a line: the symptom of flashing a stale asset is a missing splash,
+        // which otherwise looks like a firmware fault rather than a rebuild.
+        printf("boot: no MX5C clip in assets (found '%.4s') -- skipping splash\n",
+               hdr.magic);
         return false;
     }
     if (hdr.w != W || hdr.h != H) {
         printf("boot: clip is %ux%u, panel is %dx%d -- skipping\n", hdr.w, hdr.h, W, H);
         return false;
     }
+    if ((hdr.flags & (kFlagBigEndian | kFlagDeflate)) !=
+        (kFlagBigEndian | kFlagDeflate)) {
+        printf("boot: clip flags %08x unsupported -- skipping\n", (unsigned)hdr.flags);
+        return false;
+    }
     const size_t frame_bytes = static_cast<size_t>(hdr.w) * hdr.h * 2;
-    printf("boot: %u frames %ux%u @%u fps\n", hdr.frames, hdr.w, hdr.h, hdr.fps);
+    printf("boot: %u frames %ux%u @%u fps, biggest %u B compressed\n",
+           hdr.frames, hdr.w, hdr.h, hdr.fps, (unsigned)hdr.max_comp);
+
+    // Everything here is heap, never a local: app_main runs on an 8 KB stack
+    // with about 200 bytes to spare, and a frame-sized array here would
+    // overflow it into a boot loop (it has, once, from a 592-byte local).
+    const size_t table_bytes = sizeof(uint32_t) * (hdr.frames + 1);
+    uint32_t* offs = static_cast<uint32_t*>(malloc(table_bytes));
+    // The compressed source is read into PSRAM and only ever read by the CPU,
+    // so unlike the frame buffer it needs no alignment and no DMA capability.
+    uint8_t*  src  = static_cast<uint8_t*>(heap_caps_malloc(hdr.max_comp, MALLOC_CAP_SPIRAM));
+
+    // The decompressor's own state is 10.6 KB -- three Huffman tables -- and it
+    // is why `tinfl_decompress_mem_to_mem` cannot be used from here: that
+    // wrapper puts the whole struct on the CALLER's stack, so it smashed
+    // app_main's 8 KB and the gauge panicked in the next SPI call, with a
+    // corrupted semaphore handle and a backtrace pointing at the blit rather
+    // than at anything to do with decoding. The streaming entry point takes the
+    // state as a pointer, which is the only reason this fits.
+    //
+    // Internal RAM by preference: this is touched for every output byte, and in
+    // PSRAM it would give back the time the compression just won. PSRAM is the
+    // fallback rather than a failure, because a slower splash beats no splash.
+    tinfl_decompressor* inf = static_cast<tinfl_decompressor*>(
+        heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_INTERNAL));
+    const bool inf_internal = inf != nullptr;
+    if (!inf)
+        inf = static_cast<tinfl_decompressor*>(
+            heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_SPIRAM));
+
+    if (!offs || !src || !inf ||
+        esp_partition_read(part, sizeof(AssetHeader), offs, table_bytes) != ESP_OK) {
+        printf("boot: cannot hold the frame table (%u B), a frame (%u B) or the "
+               "decompressor (%u B) -- skipping\n",
+               (unsigned)table_bytes, (unsigned)hdr.max_comp,
+               (unsigned)sizeof(tinfl_decompressor));
+        free(offs);
+        heap_caps_free(src);
+        heap_caps_free(inf);
+        return false;
+    }
+    printf("boot: decompressor %u B in %s RAM\n",
+           (unsigned)sizeof(tinfl_decompressor), inf_internal ? "internal" : "PS");
 
     // Straight to the panel, past LVGL. An lv_canvas here cost 154 ms a frame
     // -- a full LVGL redraw of a full-screen PSRAM image, every frame -- so the
     // splash showed 17 of 31 frames, at an uneven 6.5 fps. The carousel slide
     // was already pushing full-width frames through
     // esp_lv_adapter_dummy_draw_blit; this is that same path, and it now costs
-    // 19 ms a frame.
+    // 28 ms a frame.
     if (!gauge_ui::direct_draw_begin(disp)) {
         printf("boot: direct draw unavailable -- skipping splash\n");
+        free(offs);
+        heap_caps_free(src);
+        heap_caps_free(inf);
         return false;
     }
 
     int64_t t0 = esp_timer_get_time();
-    int shown = 0, last = -1;
-    int64_t read_us = 0, swap_us = 0, sync_us = 0, blit_us = 0;
+    int shown = 0, dropped = 0, last = -1;
+    int64_t read_us = 0, inflate_us = 0, swap_us = 0, sync_us = 0, blit_us = 0;
     bool ok = true;
     for (;;) {
         int64_t elapsed = esp_timer_get_time() - t0;
         if (elapsed >= kBootUs) break;
-        // Which frame *should* be on screen at this instant.
+        // Which frame *should* be on screen at this instant. Time-paced, not
+        // index-paced, so a slow frame costs that frame rather than delaying
+        // every frame after it: the splash always ends when BOOT_MS says.
         int idx = static_cast<int>(elapsed * hdr.frames / kBootUs);
         if (idx >= hdr.frames) idx = hdr.frames - 1;
         if (idx != last) {
+            if (last >= 0) dropped += idx - last - 1;
+            const size_t comp = offs[idx + 1] - offs[idx];
             const int64_t r0 = esp_timer_get_time();
-            esp_partition_read(part, sizeof(AssetHeader) + static_cast<size_t>(idx) * frame_bytes,
-                               g_fb, frame_bytes);
-            read_us += esp_timer_get_time() - r0;
-            // Swaps g_fb in place, which is why every frame is re-read from
-            // flash rather than any of them being re-blitted.
-            if (!gauge_ui::direct_draw_frame(disp, g_fb, W, H,
-                                            &swap_us, &sync_us, &blit_us))
+            esp_partition_read(part, offs[idx], src, comp);
+            const int64_t r1 = esp_timer_get_time();
+            // 67 KB in, 434 KB out, 31 ms -- against 47 ms just to read the
+            // 434 KB raw. Decompressing is the faster way to get a frame off
+            // this flash, as well as the smaller one.
+            //
+            // One call per frame: the whole compressed frame is already in
+            // `src` and the whole output fits, so NON_WRAPPING_OUTPUT_BUF lets
+            // tinfl copy matches straight out of what it has written rather
+            // than keeping a 32 KB dictionary of its own. No HAS_MORE_INPUT,
+            // because there is none -- that is what makes DONE mean finished.
+            tinfl_init(inf);
+            size_t in_bytes = comp, out_bytes = frame_bytes;
+            const tinfl_status st = tinfl_decompress(
+                inf, src, &in_bytes,
+                reinterpret_cast<uint8_t*>(g_fb), reinterpret_cast<uint8_t*>(g_fb),
+                &out_bytes, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+            const size_t got = (st == TINFL_STATUS_DONE) ? out_bytes : 0;
+            const int64_t r2 = esp_timer_get_time();
+            read_us    += r1 - r0;
+            inflate_us += r2 - r1;
+            if (got != frame_bytes) {
+                // A corrupt frame is worth saying out loud rather than showing:
+                // g_fb still holds the previous frame, so skipping it reads as a
+                // stutter instead of as a screenful of noise.
+                printf("boot: frame %d inflated to %u of %u bytes\n",
+                       idx, (unsigned)got, (unsigned)frame_bytes);
                 ok = false;
+            } else if (!gauge_ui::direct_draw_frame(disp, g_fb, W, H,
+                                                    /*pixels_big_endian=*/true,
+                                                    &swap_us, &sync_us, &blit_us)) {
+                ok = false;
+            } else {
+                ++shown;
+            }
             last = idx;
-            ++shown;
         }
     }
     const int64_t total_us = esp_timer_get_time() - t0;
+    // Handed back before the fade, not after: the decompressor is 10.6 KB of
+    // internal RAM and the fade wants none of it -- only PSRAM and 96 bytes.
+    free(offs);
+    heap_caps_free(src);
+    heap_caps_free(inf);
     // Per-stage, because "the splash is choppy" was answerable only by knowing
-    // which of the four stages owns the frame time. Whatever the next attempt
-    // to speed this up is, this line is what tells it whether it worked.
-    printf("boot: showed %d of %u frames in %.2f s (%.1f fps)%s\n", shown, hdr.frames,
+    // which of the stages owns the frame time. Whatever the next attempt to
+    // speed this up is, this line is what tells it whether it worked.
+    printf("boot: showed %d of %u frames (%d skipped) in %.2f s (%.1f fps)%s\n",
+           shown, hdr.frames, dropped,
            total_us / 1e6, shown * 1e6 / static_cast<double>(total_us ? total_us : 1),
-           ok ? "" : " -- BLIT OR SYNC FAILED");
+           ok ? "" : " -- A FRAME FAILED");
     if (shown)
-        printf("boot: per frame read %lldms swap %lldms sync %lldms blit %lldms\n",
-               read_us / shown / 1000, swap_us / shown / 1000,
+        printf("boot: per frame read %lldms inflate %lldms swap %lldms sync %lldms blit %lldms\n",
+               read_us / shown / 1000, inflate_us / shown / 1000, swap_us / shown / 1000,
                sync_us / shown / 1000, blit_us / shown / 1000);
 
-    // FADING: dip to black. The clip ends on a lit car filling the screen, and
+    // FADING (section 14). The clip ends on a lit car filling the screen, and
     // cutting straight from that to a dial would read as a glitch rather than a
-    // hand-off (section 14). Handing the panel back triggers a full LVGL
-    // refresh, which is what actually paints the black.
+    // hand-off. Until 2026-09-03 this "fade" was a cut to black followed by a
+    // wait, which is why it needed a dip at all; it now pushes in towards the
+    // car's own centre while it darkens, so the hand-off reads as the car
+    // receding into the instrument rather than as a screen being switched off.
+    fade_zoom_to_black(disp, g_fb);
+
+    // Handing the panel back triggers a full LVGL refresh, which is what paints
+    // the black the instruments are then built on top of.
     gauge_ui::direct_draw_end(disp);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_invalidate(scr);
     lv_refr_now(disp);
-    int64_t f0 = esp_timer_get_time();
-    while (esp_timer_get_time() - f0 < kFadeUs) vTaskDelay(pdMS_TO_TICKS(20));
     return true;
 }
 

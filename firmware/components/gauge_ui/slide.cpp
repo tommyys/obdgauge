@@ -394,12 +394,15 @@ void direct_draw_end(lv_display_t* disp) {
 }
 
 bool direct_draw_frame(lv_display_t* disp, uint16_t* frame, int w, int h,
+                       bool pixels_big_endian,
                        int64_t* out_swap_us, int64_t* out_sync_us,
                        int64_t* out_blit_us) {
     const int64_t t0 = esp_timer_get_time();
     // The panel takes RGB565 big-endian and this path bypasses the adapter's
     // flush, which is where the swap would otherwise happen (see slide_run).
-    lv_draw_sw_rgb565_swap(frame, static_cast<uint32_t>(w) * h);
+    // A caller whose pixels are already in that order pays nothing here.
+    if (!pixels_big_endian)
+        lv_draw_sw_rgb565_swap(frame, static_cast<uint32_t>(w) * h);
     const int64_t t1 = esp_timer_get_time();
     // The CPU just wrote this through a write-back cache; the panel's DMA reads
     // PSRAM directly and would otherwise see stale lines (see slide_run).

@@ -413,7 +413,7 @@ extern "C" void app_main(void) {
     button_boot_request_clear();
     if (boot_req != BOOT_NORMAL)
         printf("boot: by button -- %s\n",
-               boot_req == BOOT_DEMO ? "skipping the splash, sweeping every dial"
+               boot_req == BOOT_DEMO ? "the full splash, then sweeping every dial"
                                      : "skipping the splash, retrying wifi");
 
     // The board has no timezone until it is given one, so strftime() renders
@@ -496,11 +496,14 @@ extern "C" void app_main(void) {
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    // Skipped when the button asked for this boot. The splash is 4 s of the
-    // ~16 s a cold start takes, and a button restart is someone standing over
-    // the gauge waiting for it -- either to see whether the clock came back or
-    // to get into the replay. A power-on still plays it in full.
-    if (boot_req == BOOT_NORMAL) play_boot_clip(disp, scr);
+    // Skipped for a wifi retry only.
+    //
+    // A short press is someone standing over the gauge waiting to see whether
+    // the clock came back, and the splash is 5.2 s of the ~16 s that takes. A
+    // DEMO restart is the opposite: the animation is the best thing the gauge
+    // does and demo mode exists to show the gauge to somebody, so it plays in
+    // full. A power-on plays it too.
+    if (boot_req != BOOT_QUICK) play_boot_clip(disp, scr);
     // The clip's 434 KB framebuffer is dead the moment the splash ends, and the
     // carousel slide wants three buffers of exactly that size. Hand it back
     // before the UI asks.
@@ -633,10 +636,12 @@ extern "C" void app_main(void) {
         // allocation, which on this board is why it is a poll.
         const button_state_t btn = button_poll();
         if (btn == BTN_ACT_DEMO) {
-            // No restart: demo mode is the bench sweeps now, and they start
-            // where they stand. This is why the hold feels instant.
-            start_demo_sweeps();
-            note_until_us = esp_timer_get_time() + 1000000;
+            // A restart, and deliberately so: demo mode opens with the startup
+            // animation, and the clip cannot be replayed where it stands. It
+            // draws from a 434 KB PSRAM framebuffer that is handed to the
+            // carousel's three slide buffers the instant the splash ends -- so
+            // the only way to see it again is to come up again.
+            reload_pending = 2;
         } else if (btn == BTN_ACT_RELOAD) {
             reload_pending = 1;
         }
@@ -809,7 +814,7 @@ extern "C" void app_main(void) {
         // replaced "there is a lag before it responds": a press is
         // acknowledged instantly, and a hold says what it is about to do
         // before it does it.
-        if (reload_pending == 2)        gauge_ui::note_show("DEMO\nrestarting");
+        if (reload_pending == 2)        gauge_ui::note_show("LAUNCHING\nDEMO MODE");
         else if (reload_pending)        gauge_ui::note_show("RELOADING\nretrying wifi");
         else if (btn == BTN_HELD_LONG)  gauge_ui::note_show("RELEASE\nFOR DEMO");
         else if (btn == BTN_HELD_SHORT) gauge_ui::note_show("RELEASE\nTO RELOAD");

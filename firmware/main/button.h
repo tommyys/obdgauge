@@ -17,12 +17,20 @@
 // the only thing that can work: it restarts, and the boot order retries WiFi
 // properly on the way up.
 //
-// ---- what the hold does, and what it no longer does ----------------------
-// The hold was going to restart into the replay, and it does not: demo mode is
-// the four bench sweeps now -- revs, coolant, kW and the trip ring's economy
-// walking red to green -- and none of them needs a reboot. So the hold takes
-// effect the instant the button comes up, with no dark screen at all. Only the
-// short press still has to restart, because only WiFi does.
+// ---- what the hold does --------------------------------------------------
+// It restarts into demo mode: the startup animation in full, and then every
+// dial sweeping -- revs, coolant, kW and the trip ring's economy walking red to
+// green. Demo mode is for showing the gauge to somebody, and the animation is
+// the best thing it does, so the restart is not a cost here but the point.
+//
+// The sweeps themselves need no reboot; the ANIMATION does. It draws from a
+// 434 KB PSRAM framebuffer that is handed straight to the carousel's slide
+// buffers the moment the splash ends, so there is no way to play it again
+// without coming up again.
+//
+// Neither gesture leaves the driver guessing while that happens: the gauge puts
+// what it is about to do on the glass first, and an AMOLED holds its last frame
+// through a software reset, so the message stays up while the panel is away.
 //
 // ---- and why they act on RELEASE -----------------------------------------
 // GPIO0 held low THROUGH a reset is what puts an ESP32-S3 into USB download

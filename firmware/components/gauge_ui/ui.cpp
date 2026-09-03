@@ -407,10 +407,15 @@ ViewObjs build_view(const ViewSpec& spec) {
                                         : power ? FaceKind::Power : FaceKind::Engine);
     }
 
-    // Two faces read by position over a fixed rim rather than by a filling arc,
-    // so neither gets one: the engine's mark over its zones, and the tacho's
-    // count of lit segments (face.h). Every other dial with a value does.
-    const bool wants_arc = spec.dial.value && face_k != Instrument::Engine && !tacho;
+    // No face reads by a filling arc any more: all three count lit segments on
+    // the rim instead (face.h). What still wants an arc is the views that have
+    // a value but no face -- the driving score's ring and the trip's economy
+    // ring, which are a colour rather than an instrument.
+    //
+    // This was "not Engine and not tacho", and it left the power dial with its
+    // old pale-blue fill arc drawn straight over its new segments: the dial
+    // read as one continuous progress bar with the boxes hidden underneath it.
+    const bool wants_arc = spec.dial.value && !v.has_face;
     if (wants_arc) {
         const bool score_ring = face_k == Instrument::VerdictRing;
 
@@ -424,21 +429,15 @@ ViewObjs build_view(const ViewSpec& spec) {
         const int w = kRimWidth;
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_MAIN);
         lv_obj_set_style_arc_width(v.arc, w, LV_PART_INDICATOR);
-        if (power) {
-            // The face drew the track, so this arc is the fill alone.
-            lv_obj_set_style_arc_opa(v.arc, LV_OPA_TRANSP, LV_PART_MAIN);
-            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0xCFE0FF), LV_PART_INDICATOR);
-        } else {
-            lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
-            // The score ring is recoloured by its own value in update(); the
-            // green here is only what it looks like before the first reading.
-            lv_obj_set_style_arc_color(v.arc, lv_color_hex(score_ring ? 0x35E06B : 0xFF9500),
-                                       LV_PART_INDICATOR);
-        }
+        lv_obj_set_style_arc_color(v.arc, lv_color_hex(0x1C1C1C), LV_PART_MAIN);
+        // The score ring is recoloured by its own value in update(); the green
+        // here is only what it looks like before the first reading.
+        lv_obj_set_style_arc_color(v.arc, lv_color_hex(score_ring ? 0x35E06B : 0xFF9500),
+                                   LV_PART_INDICATOR);
     }
 
-    // Ticks, numbering and any needle go over the value arc, matching the order
-    // the simulator draws them in.
+    // Ticks, numbering and the power dial's peak mark go over the scale,
+    // matching the order the simulator draws them in.
     if (v.has_face) {
         v.face = face_build_over(c, g_id, tacho ? FaceKind::Tacho
                                                 : power ? FaceKind::Power : FaceKind::Engine);
@@ -454,15 +453,11 @@ ViewObjs build_view(const ViewSpec& spec) {
     // Thermals has no hero -- the view IS the comparison between its three
     // temperatures, so promoting one of them would misrepresent it.
     //
-    // Faces with a needle carry a boss at the centre, 30 px across, and the
-    // unit line sat right on it. The simulator never collides because its hero
-    // is 21cqw -- 98 px -- and simply covers the boss; LVGL's largest built-in
-    // Montserrat is 48 px, so here the two have to be moved apart instead.
-    //
-    // The tacho is no longer one of them: its needle and boss went when the rim
-    // became a segment scale, so its rpm digits sit on the dial's own centre
-    // again, where the simulator puts them.
-    const int hub_lift = (face_k == Instrument::Power) ? 24 : 0;
+    // Every face used to carry a needle and a boss at the centre, 30 px across,
+    // and the unit line sat right on it, so both were lifted clear of it. The
+    // bosses went when the rims became segment scales, so the digits sit on the
+    // dial's own centre again, where the simulator puts them.
+    const int hub_lift = 0;
     if (spec.hero) {
         v.hero = mk_label(c, &lv_font_montserrat_48, 0xFFFFFF, LV_ALIGN_CENTER, 0, kHeroY - hub_lift);
         v.unit = mk_label(c, &lv_font_montserrat_20, 0x9A9A9A, LV_ALIGN_CENTER, 0, kUnitY - hub_lift);

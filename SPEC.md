@@ -226,7 +226,7 @@ real life has no console attached.
 
 ---
 
-## 6. The nine views
+## 6. The views
 
 | # | View | Fed by |
 |---|---|---|
@@ -249,16 +249,23 @@ Trip, Power, Drives, Clock. Three differences, each with a reason:
   used and cost.
 - **Thermals and Electrical folded into Engine and Trip.** Their readings are
   on the board, on the views they belong to, rather than as two more swipes.
-- **Clock is board-only, and is the last view** — one swipe left from the
-  tacho. This board has no real-time clock (0x51 is named in the I2C table but
-  is not on the bus), so the only clock it has is one somebody handed it, and
-  until 2026-08-31 that meant a Mac on the USB socket. A drive recorded without
-  one is stamped "date unknown" for ever, which had happened to every drive so
-  far. Five scrolling wheels, date over time, seeded from the last moment a
-  previous run persisted — so a drive the next day is a nudge on two wheels
-  rather than five. The simulator has no equivalent: it takes its clock from
-  the Mac, so a setter there would set nothing. See
-  `firmware/components/gauge_ui/clock.h`.
+- **The Clock view is gone, removed 2026-09-03.** It was a board-only ninth
+  view: five scrolling wheels, date over time, set by thumb in the car,
+  because this board has no real-time clock (0x51 is named in the I2C table but
+  is not on the bus) and the only clock it had was one somebody handed it. The
+  WiFi sync of s16 made it dead weight — the gauge now sets its own clock in
+  3.6 s at boot, before the display even starts. `git log` has the wheels if
+  they are ever wanted back.
+
+  **What was given up:** a boot with no reachable network now has no in-car way
+  to set the clock at all. `TIME <epoch>` from the Mac over USB is the only
+  manual route left, and iOS switching the phone hotspot off by itself is a
+  real way to arrive at an undated drive. Accepted deliberately; the wheels had
+  never once been used to date a drive.
+
+  What remains of `gauge_ui/clock.{h,cpp}` is the read-only seam the header
+  clock draws from, and the header still shows "--:--" rather than a plausible
+  lie when the gauge has no time.
 
 The not-available screens apply to every board view whose channels the car does
 not supply (`gauge::view_available`, host-tested). Two views are exempt on
@@ -927,7 +934,8 @@ checked on the bus 2026-08-31. So every power-on begins not knowing the time,
 and §15's recorder stamps a drive it cannot date `drive-unknown-<id>` for
 ever. Every drive recorded up to this point carries that stamp. The two cures
 that existed both need a human: `pull_drives.py` lending the Mac's clock over
-USB, or the Clock view's five wheels turned by hand in the car.
+USB, or the Clock view's five wheels turned by hand in the car. That view has
+since been removed (s6) -- the sync replaced it.
 
 WiFi replaces both. The split is the usual one for this project — the policy
 in `gauge_core`, host-tested on the Mac; the radio in `gauge_platform`.

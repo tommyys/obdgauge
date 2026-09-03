@@ -61,9 +61,10 @@ window first, or the puller reports the port busy rather than hanging.
 
 The board has no clock chip. `0x51` is named in its I2C table but the part is
 not fitted, so every power-on starts not knowing the time — and a drive
-recorded without one is stamped `drive-unknown-<id>` for ever. Until now the
-only cures were the Mac (`pull_drives.py` lends it its clock) or the Clock
-view's five wheels, by hand, in the car.
+recorded without one is stamped `drive-unknown-<id>` for ever. The cures used
+to be the Mac (`pull_drives.py` lends it its clock) or a Clock view with five
+wheels, set by hand in the car — that view was removed on 2026-09-03 once this
+sync proved fast enough to replace it.
 
 The gauge can now fetch the time itself. Give it your networks once:
 
@@ -88,6 +89,10 @@ time, on top of the seconds the panel already takes.
 **iOS switches the hotspot off by itself** when nothing has connected to it for
 a while — that is the phone, not the gauge. Seen twice while testing this. If
 a drive comes back undated, that is the first thing to check.
+
+**There is no manual clock on the gauge any more.** With the Clock view removed,
+a boot that reaches no network has no in-car way to set the time; `TIME <epoch>`
+from the Mac is the only manual route left.
 
 Nothing is required of you in the car. If no network is reachable the gauge
 behaves exactly as it did before, and says so in the flight log.
@@ -210,7 +215,7 @@ a better match or the exact address:
 macOS will ask for Bluetooth permission the first time; allow it for your
 terminal app or the scan returns nothing.
 
-## The eight views
+## The views
 
 Swipe, drag, use ← →, or tap a dot.
 
@@ -392,7 +397,7 @@ USB socket with no laptop attached, it goes from power-on to live engine data in
 | `sources.LiveSource` | `gauge_platform/ble_transport.cpp` (NimBLE), `gauge_core/elm327.cpp`, `main/live_link.cpp` |
 | `state.py` | `gauge_core/state.cpp` |
 | `vehicle.py`, `ignition.py` | `gauge_core/vehicle.cpp`, `ignition.cpp` |
-| `web/index.html` | `gauge_ui/ui.cpp` — eight of the nine views |
+| `web/index.html` | `gauge_ui/ui.cpp` — the shared views |
 
 Building and flashing, from `firmware/`:
 

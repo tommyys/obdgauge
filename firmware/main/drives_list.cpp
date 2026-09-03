@@ -414,21 +414,18 @@ void drives_list_dump(void) {
     printf("OK %d rows\n", n);
 }
 
-// The Clock view's window onto the board's wall clock. It lives here rather
-// than in its own file because the two things it needs -- the running clock
-// and the floor persisted by a previous run -- both come out of the same
+// The header clock's window onto the board's wall clock. It lives here rather
+// than in its own file because the running clock comes out of the same
 // drive_log_stats_t the drives list already reads.
+//
+// Read-only now. The Clock view that used to write through this seam was
+// removed on 2026-09-03: the gauge sets its own clock over WiFi at boot
+// (SPEC.md s16), and `TIME <epoch>` from the console still goes straight to
+// drive_log_set_epoch().
 const gauge_ui::ClockSource kClockSource = {
-    // Both lock-free: the header asks for the time every frame, and
+    // Lock-free: the header asks for the time every frame, and
     // drive_log_stats() waits on the flash writer's mutex.
     []() -> uint32_t { return drive_log_now(); },
-    []() -> uint32_t { return drive_log_clock_floor(); },
-    [](uint32_t epoch_s) -> bool {
-        // The same path `TIME <epoch>` takes from the console, so a clock set
-        // on the glass and a clock set from the Mac cannot behave differently.
-        drive_log_set_epoch(epoch_s);
-        return true;
-    },
 };
 
 void drives_list_init(void) {

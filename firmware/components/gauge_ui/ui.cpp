@@ -140,11 +140,10 @@ constexpr lv_opa_t kPageShadeDim = 70;
 // The clock at the top and the page indicator, the banner and the scanning
 // ring at the
 // bottom belong to the gauge, not to the view under them. A view is free to
-// put anything it likes anywhere -- and two of them do: the Drives list
-// scrolls its rows straight under both, and the Clock view's wheels are taller
-// than the text bands every other view keeps to. Chrome that a passing row can
-// hide is chrome you cannot trust, so the rim of the panel is darkened and the
-// chrome is drawn on top of that.
+// put anything it likes anywhere -- and the Drives list does, scrolling its
+// rows straight under both. Chrome that a passing row can hide is chrome you
+// cannot trust, so the rim of the panel is darkened and the chrome is drawn on
+// top of that.
 //
 // Solid across the band the chrome occupies, then faded out into the content.
 // A hard edge would read as a bezel inside the bezel, which is why the fade is
@@ -538,12 +537,6 @@ ViewObjs build_view(const ViewSpec& spec) {
         gball_build(c);
         return v;
     }
-    if (layout_k == Layout::Clock) {
-        // Five scrolling wheels and a button. See clock.h.
-        clock_build(c);
-        return v;
-    }
-
     int n = 0;
     while (n < 4 && spec.rows[n].label) ++n;
 
@@ -1010,13 +1003,15 @@ void watch_for_touch() {
 
 // The header clock. Repainted only when the minute changes -- a label write
 // is a repaint, and this one sits on every view, so writing it every frame
-// would cost the panel on all seven.
+// would cost the panel on all of them.
 void draw_header_clock() {
     if (!g_clock) return;
     const uint32_t now = clock_now();
     if (!now) {
         // Honest: the gauge does not know the time. It says so rather than
-        // showing a plausible one, and the Clock view is one swipe away.
+        // showing a plausible one. The gauge sets its own clock over WiFi at
+        // boot (SPEC.md s16); this shows when no network was reachable, and
+        // `TIME <epoch>` from the Mac is the remaining way in.
         if (g_clock_min != -1) {
             g_clock_min = -1;
             lv_label_set_text(g_clock, "--:--");
@@ -1053,14 +1048,6 @@ void update(const Model& m) {
         // list is this view's own answer. Formatting it every frame is cheap:
         // drives_update() writes a label only when its text actually changed.
         drives_update();
-        return;
-    }
-    if (s.layout == Layout::Clock) {
-        // No availability screen: the clock is not fed by the car, so no
-        // channel's absence should hide it. Formatting is cheap -- the wheels
-        // are only re-seeded while nobody is touching them, and the note is
-        // written only when its text actually changed.
-        clock_update();
         return;
     }
     if (s.layout == Layout::GBall) {

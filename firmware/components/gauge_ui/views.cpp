@@ -301,30 +301,6 @@ const ViewSpec* view_table(int* count) {
             { nullptr, nullptr, nullptr, nullptr },
             { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
         },
-        // 7 --- Clock. Last, which on a wrapping carousel is one swipe left
-        // from the tacho. The only view you give something to rather than
-        // read something from.
-        //
-        // It exists because this board has no real-time clock -- 0x51 is named
-        // in the I2C table but is not on the bus -- so the only clock the gauge
-        // has is one somebody handed it. Until now that meant a Mac on the USB
-        // socket, and a drive recorded without one is stamped "date unknown"
-        // for ever. That had happened to every drive recorded so far.
-        //
-        // No `avail` entry: the clock has nothing to do with what the car
-        // reports, so there is no channel whose absence should hide it.
-        {
-            nullptr,                       // no title: the wheels are the view
-            Instrument::None,
-            Layout::Clock,
-            {nullptr, nullptr, nullptr},
-            nullptr,
-            nullptr,
-            nullptr,
-            { nullptr, nullptr, nullptr, nullptr },
-            { {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr} },
-            "CLOCK",                       // ...but the log still needs a name
-        },
     };
     *count = static_cast<int>(sizeof views / sizeof views[0]);
     return views;

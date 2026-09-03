@@ -20,7 +20,6 @@ constexpr double kArcR = 210;
 constexpr double kTickOuterR = kArcR * (93.0 / 104.0);
 constexpr double kTickInnerR = kArcR * (84.0 / 104.0);
 constexpr double kNumR       = kArcR * (71.0 / 104.0);
-constexpr double kHubR       = kArcR * ( 7.5 / 104.0);
 
 // ---- the engine view's scale, on the same 104-unit source drawing --------
 // The temperature scale it is laid out on. 120, not the 110 the plain arc
@@ -28,25 +27,37 @@ constexpr double kHubR       = kArcR * ( 7.5 / 104.0);
 // throw every zone boundary off.
 constexpr double kTempLo = 40, kTempHi = 120;
 
-// Power's needle stops short of the fill arc; its peak mark sits across the
-// arc's inner edge so the two never occupy the same pixels.
-constexpr double kPwrNeedleR  = kArcR * ( 88.0 / 104.0);
+// Power's peak mark sits across the rim's inner edge, so it reads as a pointer
+// ON the scale rather than a line under it.
 constexpr double kPwrPeakOutR = kArcR * ( 98.0 / 104.0);
 constexpr double kPwrPeakInR  = kArcR * ( 88.0 / 104.0);
 constexpr uint32_t kPwrPeak   = 0xFFC53D;
+
+// ---- the power dial's ramp -------------------------------------------------
+// Deep blue, through cyan, to near-white at the car's ceiling.
+//
+// NOT the tacho's blue-amber-red. On this gauge a colour is a claim: red means
+// the car is not fine, and there is nothing wrong with using all of the engine
+// -- a power dial pinned at its top is the car working, not a fault. So the
+// ramp stays inside one family and says INTENSITY instead, the way the bezel's
+// page scale stays inside one family to avoid claiming anything. It reads as
+// the dial getting brighter the harder you work the car, and white at the top
+// is unmistakable on a black panel.
+constexpr uint32_t kPwrCold   = 0x2F6BFF;   // the same rest blue as the revs
+constexpr uint32_t kPwrMid    = 0x6FD3FF;
+constexpr uint32_t kPwrHot    = 0xEAF6FF;
 
 // Bottom-left, clockwise over the top, to bottom-right. The same pair ui.cpp
 // hands lv_arc_set_bg_angles.
 constexpr double kStartDeg = 135, kSweepDeg = 270;
 
-// The needle is quantised for the reason the arc is: it is a big object, and
-// every position it takes costs its bounding box. One degree of a 270-degree
-// sweep moves the tip about three pixels, which is below what the eye follows
-// on a needle that is already easing toward its target.
-constexpr int kNeedleSteps = 270;
+// The peak mark is quantised for the reason the needles were: every position it
+// takes costs its bounding box. One degree of a 270-degree sweep moves it about
+// three pixels, which is below what the eye follows on a mark that is already
+// easing toward its target.
+constexpr int kMarkSteps = 270;
 
 // The simulator's palette, unchanged.
-constexpr uint32_t kTrack     = 0x23262E;
 
 // ---- the rev scale's ramp -------------------------------------------------
 // Blue at rest, amber halfway up, red at the limiter. seg_colour() explains
@@ -78,8 +89,6 @@ constexpr int kArcWidth  = kRimWidth;
 constexpr uint32_t kTick      = 0x7D818B;
 constexpr uint32_t kTickHot   = 0xFF5B52;
 constexpr uint32_t kNumber    = 0xC9CCD4;
-constexpr uint32_t kNeedle    = 0xE1000A;
-constexpr uint32_t kHubFill   = 0x1A1C22;
 
 // The engine rim's colour ramp: cold blue, through green where the engine is
 // happy, to red. temp_colour() lays it out.
@@ -138,10 +147,10 @@ int power_label_step(double p_max) {
 
 // An lv_line sizes itself to the bounding box of its points, measured from the
 // object's own top-left. Giving it absolute coordinates therefore makes the
-// object span the whole way from the parent's origin -- which for the needle
-// would be most of the screen, and so most of the screen invalidated every
-// time it moves. Placing the object at the points' own bounding box instead
-// keeps the invalidated area to the needle.
+// object span the whole way from the parent's origin -- most of the screen,
+// and so most of the screen invalidated every time it moves. Placing the
+// object at the points' own bounding box instead keeps the invalidated area to
+// the line itself.
 void set_line(lv_obj_t* line, lv_point_precise_t* pts, lv_point_precise_t a,
               lv_point_precise_t b) {
     const lv_value_precise_t x0 = LV_MIN(a.x, b.x), y0 = LV_MIN(a.y, b.y);
@@ -190,6 +199,7 @@ struct Scale {
 // both exist for the life of the program, so neither can borrow the other's.
 Scale g_rev_scale;                  // the tacho's revs
 Scale g_temp_scale;                 // the engine view's coolant
+Scale g_pwr_scale;                  // the power dial's kW
 
 // Where segment `i` starts and ends. Kept unwrapped -- past 360 for the last
 // few -- because the drawing takes angles in that form; only a comparison
@@ -285,6 +295,18 @@ void seg_box(double a0, double a1, lv_area_t* out) {
     out->y1 = static_cast<int32_t>(y0) - kTachoSegPad;
     out->x2 = static_cast<int32_t>(x1) + kTachoSegPad;
     out->y2 = static_cast<int32_t>(y1) + kTachoSegPad;
+}
+
+// The power dial's ramp. Two straight mixes through cyan, for the reason the
+// other two ramps have a middle stop: a single mix from blue to white washes
+// out through grey in the middle, which is where most driving sits.
+__attribute__((noinline))
+uint32_t pwr_colour(double kw, double kw_max) {
+    double f = (kw_max > 0) ? kw / kw_max : 0.0;
+    if (f < 0) f = 0;
+    if (f > 1) f = 1;
+    return (f < 0.5) ? mix(kPwrCold, kPwrMid, f * 2.0)
+                     : mix(kPwrMid, kPwrHot, (f - 0.5) * 2.0);
 }
 
 // Paints the segments that touch the area being redrawn, and skips the rest
@@ -384,21 +406,6 @@ void scale_update(Scale& sc, std::optional<double> v, double lo, double hi,
     }
 }
 
-lv_obj_t* mk_rim_arc(lv_obj_t* root, int a0, int a1, uint32_t colour, lv_opa_t opa,
-                     bool rounded = true) {
-    lv_obj_t* arc = lv_arc_create(root);
-    lv_obj_set_size(arc, kRimPx, kRimPx);
-    lv_obj_center(arc);
-    lv_obj_remove_style(arc, nullptr, LV_PART_KNOB);
-    lv_obj_remove_style(arc, nullptr, LV_PART_INDICATOR);
-    lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-    lv_arc_set_bg_angles(arc, a0, a1);
-    lv_obj_set_style_arc_width(arc, kRimWidth, LV_PART_MAIN);
-    lv_obj_set_style_arc_rounded(arc, rounded, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc, lv_color_hex(colour), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(arc, opa, LV_PART_MAIN);
-    return arc;
-}
 
 }  // namespace
 
@@ -471,17 +478,34 @@ void build_under_engine(lv_obj_t* root) {
     mk_scale(root, sc);
 }
 
-// Power's track only. The fill arc over it is the view's own lv_arc, built by
-// ui.cpp, and the ticks and numbering go on top in build_over_power().
-void build_under_power(lv_obj_t* root) {
-    mk_rim_arc(root, static_cast<int>(kStartDeg), 45, kTrack, LV_OPA_COVER);
+// Power's rim, on the same segment scale as the other two. The blue fill arc
+// that used to sweep over a grey track is gone with them: the lit segments ARE
+// the reading, so there is no arc and no track to put under one. The amber peak
+// mark stays -- see build_over_power.
+void build_under_power(lv_obj_t* root, const gauge::Identity& id) {
+    const double p_max = id.power_max > 0 ? id.power_max : 140.0;
+    Scale& sc = g_pwr_scale;
+    for (int i = 0; i < kScaleSegs; ++i) {
+        double a0 = 0, a1 = 0;
+        seg_angles(i, &a0, &a1);
+        // Read at the middle of the segment, as the other two do.
+        const double kw = (i + 0.5) / kScaleSegs * p_max;
+        sc.seg[i].a0     = static_cast<int16_t>(std::lround(a0)) % 360;
+        sc.seg[i].a1     = static_cast<int16_t>(std::lround(a1)) % 360;
+        sc.seg[i].colour = pwr_colour(kw, p_max);
+        // No zone held back harder at the top: unlike a redline or a coolant
+        // gauge, the end of this scale is not a place you should not be.
+        sc.seg[i].dim    = seg_dim(false);
+        seg_box(a0, a1, &sc.seg[i].area);
+    }
+    mk_scale(root, sc);
 }
 
 void face_build_under(lv_obj_t* root, const gauge::Identity& id, FaceKind kind) {
     switch (kind) {
         case FaceKind::Tacho:  build_under_tacho(root, id); break;
         case FaceKind::Engine: build_under_engine(root);    break;
-        case FaceKind::Power:  build_under_power(root);     break;
+        case FaceKind::Power:  build_under_power(root, id); break;
     }
 }
 
@@ -527,37 +551,6 @@ Face build_over_tacho(lv_obj_t* root, const gauge::Identity& id) {
     return f;
 }
 
-// A line from the hub outward, at the dial's start position. Shared by every
-// face: what differs between them is colour, width and length, not the object.
-lv_obj_t* mk_needle(lv_obj_t* root, lv_point_precise_t* pts, uint32_t colour,
-                    int width, double r) {
-    lv_obj_t* n = lv_line_create(root);
-    lv_obj_set_style_line_width(n, width, 0);
-    lv_obj_set_style_line_rounded(n, true, 0);
-    lv_obj_set_style_line_color(n, lv_color_hex(colour), 0);
-    set_line(n, pts, {static_cast<lv_value_precise_t>(kCx),
-                      static_cast<lv_value_precise_t>(kCy)},
-             polar(r, kStartDeg));
-    return n;
-}
-
-// The hub, drawn last so a needle's blunt inner end is covered rather than
-// left hanging in the middle of the screen.
-void mk_hub(lv_obj_t* root) {
-    const int32_t hub = static_cast<int32_t>(std::lround(kHubR * 2));
-    lv_obj_t* boss = lv_obj_create(root);
-    lv_obj_remove_style_all(boss);
-    lv_obj_set_size(boss, hub, hub);
-    lv_obj_set_pos(boss, static_cast<int32_t>(kCx) - hub / 2,
-                         static_cast<int32_t>(kCy) - hub / 2);
-    lv_obj_set_style_radius(boss, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(boss, lv_color_hex(kHubFill), 0);
-    lv_obj_set_style_bg_opa(boss, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(boss, 5, 0);
-    lv_obj_set_style_border_color(boss, lv_color_hex(kNeedle), 0);
-    lv_obj_set_style_border_opa(boss, LV_OPA_COVER, 0);
-}
-
 // Engine: no ticks, no numbering, and no mark.
 //
 // The zones ARE the scale -- you read "in the green", not "94 degrees" -- and
@@ -572,9 +565,7 @@ Face build_over_engine(lv_obj_t* root) {
     return f;
 }
 
-// Power: a tick and a kW number every `step`, then the peak mark and the
-// needle. The peak goes on before the needle so that when the two coincide --
-// which is exactly when you are at your best -- the red needle is on top.
+// Power: a tick and a kW number every `step`, then the amber peak mark.
 Face build_over_power(lv_obj_t* root, const gauge::Identity& id) {
     const double p_max = id.power_max > 0 ? id.power_max : 140.0;
     const int step = power_label_step(p_max);
@@ -597,6 +588,11 @@ Face build_over_power(lv_obj_t* root, const gauge::Identity& id) {
                             static_cast<int32_t>(np.y) - lv_obj_get_height(num) / 2);
     }
 
+    // The needle and its boss went the way of the tacho's: the lit segments say
+    // what the needle said. The amber peak mark did NOT, because it is the one
+    // thing on this view the lit level cannot tell you -- the best the car has
+    // managed this drive, which is behind where it is now almost all the time.
+    // It is now the only moving object on the dial, and it moves rarely.
     Face f;
     f.kind = FaceKind::Power;
     f.peak_pts = new lv_point_precise_t[2];
@@ -607,10 +603,6 @@ Face build_over_power(lv_obj_t* root, const gauge::Identity& id) {
     set_line(f.peak, f.peak_pts, polar(kPwrPeakOutR, kStartDeg),
              polar(kPwrPeakInR, kStartDeg));
     lv_obj_set_style_line_opa(f.peak, LV_OPA_TRANSP, 0);
-
-    f.needle_pts = new lv_point_precise_t[2];
-    f.needle = mk_needle(root, f.needle_pts, kNeedle, 7, kPwrNeedleR);
-    mk_hub(root);
     return f;
 }
 
@@ -669,33 +661,23 @@ void update_engine(Face& f, const Model& m) {
 // zero would claim the car has been measured at zero rather than not yet
 // measured at all.
 void update_power(Face& f, const Model& m) {
-    if (!f.needle) return;
     const double p_max = m.id.power_max > 0 ? m.id.power_max : 140.0;
     const auto kw = ease_reading(f, m.st.get("power_kw"), m);
-    set_line_opa(f.needle, f.needle_opa, kw ? LV_OPA_COVER : 64);
+    // Floor of zero, like the tacho: a car making no power should show none.
+    scale_update(g_pwr_scale, kw, 0.0, p_max, 0);
 
+    // The peak is hidden until there is one. A mark sitting at zero would claim
+    // the car has been measured at zero rather than not yet measured at all.
+    if (!f.peak) return;
     const double peak = m.st.peak_kw();
-    if (f.peak) {
-        set_line_opa(f.peak, f.peak_opa, (kw && peak > 0) ? LV_OPA_COVER : LV_OPA_TRANSP);
-        int pq = static_cast<int>(std::lround(dial_angle(peak, p_max) - kStartDeg));
-        if (pq < 0) pq = 0;
-        if (pq > kNeedleSteps) pq = kNeedleSteps;
-        if (pq != f.peak_q) {
-            f.peak_q = pq;
-            set_line(f.peak, f.peak_pts, polar(kPwrPeakOutR, kStartDeg + pq),
-                     polar(kPwrPeakInR, kStartDeg + pq));
-        }
-    }
-
-    const double v = kw ? *kw : 0.0;
-    int q = static_cast<int>(std::lround(dial_angle(v, p_max) - kStartDeg));
-    if (q < 0) q = 0;
-    if (q > kNeedleSteps) q = kNeedleSteps;
-    if (q == f.needle_q) return;
-    f.needle_q = q;
-    set_line(f.needle, f.needle_pts,
-             {static_cast<lv_value_precise_t>(kCx), static_cast<lv_value_precise_t>(kCy)},
-             polar(kPwrNeedleR, kStartDeg + q));
+    set_line_opa(f.peak, f.peak_opa, (kw && peak > 0) ? LV_OPA_COVER : LV_OPA_TRANSP);
+    int pq = static_cast<int>(std::lround(dial_angle(peak, p_max) - kStartDeg));
+    if (pq < 0) pq = 0;
+    if (pq > kMarkSteps) pq = kMarkSteps;
+    if (pq == f.peak_q) return;
+    f.peak_q = pq;
+    set_line(f.peak, f.peak_pts, polar(kPwrPeakOutR, kStartDeg + pq),
+             polar(kPwrPeakInR, kStartDeg + pq));
 }
 
 // Diagnostic: hide the engine view's scale. Kept pointed at that view because
@@ -705,11 +687,12 @@ void face_set_band_enabled(bool on) {
     show_scale(g_temp_scale, on);
 }
 
-// Diagnostic: hide the whole rev scale. The tacho's dial used to be one arc
-// that "DIALS 0" could hide; it is forty boxed segments now, so this is what
-// that command reaches for -- see gauge_ui::set_dial_enabled.
-void face_set_rev_scale_enabled(bool on) {
+// Diagnostic: hide the two dial scales. "DIALS 0" used to hide one arc per
+// view; the tacho's and the power dial's are segment scales now, so this is
+// what that command reaches for -- see gauge_ui::set_dial_enabled.
+void face_set_dial_scales_enabled(bool on) {
     show_scale(g_rev_scale, on);
+    show_scale(g_pwr_scale, on);
 }
 
 void face_update(Face& f, const Model& m) {

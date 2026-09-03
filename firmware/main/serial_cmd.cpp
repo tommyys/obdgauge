@@ -400,6 +400,17 @@ void task(void*) {
             const double secs = (line[4] == ' ') ? strtod(line + 5, nullptr) : 60.0;
             sweep_temp_start(secs > 0 ? secs : 60.0, 30.0, 120.0);
             printf("OK temp sweep 30-120 C for %.0fs\n", secs > 0 ? secs : 60.0);
+        } else if (!strncmp(line, "KW", 2)) {
+            // "KW" for a minute, "KW 20" for twenty seconds. Walks power from
+            // 0 to 150 kW and back, which is the only way to see the power
+            // dial's scale fill and brighten without a road.
+            //
+            // 150 rather than the car's own ceiling: the profile's figure is
+            // what the dial is scaled to, so sweeping exactly to it never shows
+            // the top segment lit for long. A little past it does.
+            const double secs = (line[2] == ' ') ? strtod(line + 3, nullptr) : 60.0;
+            sweep_kw_start(secs > 0 ? secs : 60.0, 0.0, 150.0);
+            printf("OK kw sweep 0-150 kW for %.0fs\n", secs > 0 ? secs : 60.0);
         } else if (!strcmp(line, "DEMO")) {
             // Starts the built-in replay. Off at power-up on purpose: see
             // demo_request() in sweep.h.

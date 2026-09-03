@@ -4,9 +4,9 @@
 
 namespace {
 
-// One sweeper per thing being swept. There are three: the tacho's rpm, the
-// trip ring's economy and the engine view's coolant, and they have to be able
-// to run independently.
+// One sweeper per thing being swept. There are four: the tacho's rpm, the trip
+// ring's economy, the engine view's coolant and the power dial's kW, and they
+// have to be able to run independently.
 struct Sweep {
     int64_t end_us = 0;
     int64_t t0_us  = 0;
@@ -15,6 +15,7 @@ struct Sweep {
 Sweep g_rpm;
 Sweep g_econ;
 Sweep g_temp;
+Sweep g_kw;
 
 // Ten seconds end to end. Slow enough to see a seam or a colour step as the
 // needle passes it, quick enough that a whole up-and-down fits in the time
@@ -61,4 +62,9 @@ void sweep_temp_start(double seconds, double lo, double hi) {
     start(g_temp, seconds, lo, hi);
 }
 bool sweep_temp(double* out) { return read(g_temp, out); }
+
+void sweep_kw_start(double seconds, double lo, double hi) {
+    start(g_kw, seconds, lo, hi);
+}
+bool sweep_kw(double* out) { return read(g_kw, out); }
 

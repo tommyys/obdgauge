@@ -81,12 +81,13 @@ constexpr int kScaleSegs = 40;
 enum class FaceKind {
     Tacho,    // a rev scale of lit segments, ticks per 1000 rpm, numbering
     Engine,   // a cold-to-hot scale of lit segments, and nothing else
-    Power,    // ticks and kW numbering, fill arc, amber peak mark, needle
+    Power,    // a kW scale of lit segments, ticks, numbering, amber peak mark
 };
 
-// A view's moving parts, and the last positions they were drawn at. The
-// quantised `_q` fields are what stop a reading that jitters in the last
-// decimal from invalidating the needle's bounding box every single frame.
+// A view's moving parts, and the last positions they were drawn at. Only the
+// power dial has one left -- its amber peak mark. The quantised `_q` field is
+// what stops a reading that jitters in the last decimal from invalidating that
+// mark's bounding box every single frame.
 struct Face {
     FaceKind            kind       = FaceKind::Tacho;
     lv_obj_t*           needle     = nullptr;
@@ -110,15 +111,15 @@ struct Face {
     gauge::Ease         ease;
 };
 
-// The face is built in two halves around the view's own arc. Power needs the
-// split: its track has to sit beneath that arc and its ticks, numbering and
-// needle on top of it. The tacho and the engine view have no arc of their own
-// left -- the lit segments ARE the reading -- so they build their scale in
-// under(), and only the tacho puts anything (ticks and numbering) in over().
+// The face is built in two halves. No view has a value arc of its own any more
+// -- the lit segments ARE the reading on all three -- so under() builds the
+// scale and over() puts on whatever has to sit above it: the tacho's ticks and
+// numbering, the power dial's ticks, numbering and peak mark, and for the
+// engine view nothing at all.
 void face_build_under(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 Face face_build_over(lv_obj_t* root, const gauge::Identity& id, FaceKind kind);
 void face_update(Face& f, const Model& m);
 void face_set_band_enabled(bool on);
-void face_set_rev_scale_enabled(bool on);
+void face_set_dial_scales_enabled(bool on);
 
 }  // namespace gauge_ui

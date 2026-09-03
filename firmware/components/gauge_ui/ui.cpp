@@ -1127,9 +1127,9 @@ void set_band_enabled(bool on) { face_set_band_enabled(on); }
 void set_dial_enabled(bool on) {
     if (g_dials_on == on) return;
     g_dials_on = on;
-    // The tacho's dial is not an arc any more, so it does not appear in the
-    // loop below -- face.cpp hides its segments instead.
-    face_set_rev_scale_enabled(on);
+    // The tacho's and the power dial's are not arcs any more, so they do not
+    // appear in the loop below -- face.cpp hides their segments instead.
+    face_set_dial_scales_enabled(on);
     for (auto& v : g_objs) {
         if (!v.arc) continue;
         if (on) lv_obj_clear_flag(v.arc, LV_OBJ_FLAG_HIDDEN);

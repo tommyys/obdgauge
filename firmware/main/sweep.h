@@ -33,3 +33,9 @@ bool sweep_econ(double* out);
 // segments filling is to walk the temperature end to end on the bench.
 void sweep_temp_start(double seconds, double lo, double hi);
 bool sweep_temp(double* out);
+
+// And once more for the power dial's kW. Power is derived from rpm, load and
+// air mass, so a sweep of rpm alone does not walk it; the only other way to
+// see the whole blue-cyan-white ramp is to use all of the engine on a road.
+void sweep_kw_start(double seconds, double lo, double hi);
+bool sweep_kw(double* out);

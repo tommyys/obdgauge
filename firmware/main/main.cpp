@@ -707,6 +707,11 @@ extern "C" void app_main(void) {
         // Coolant, the same way and for the same reason: the engine view's
         // scale fills across 40-120 C, which no bench engine will do.
         if (sweep_temp(&swept)) st.set("coolant", swept);
+        // And kW. Like the rpm sweep, this goes into the state the view reads,
+        // so the drive's peak reads the sweep's high while it runs -- SWEEP has
+        // always done that to peak rpm. ECON is the one that needs a stand-in,
+        // because it would otherwise write into a recorded drive's totals.
+        if (sweep_kw(&swept)) st.set("power_kw", swept);
 
         // What the last trip round this loop actually took, not what the delay
         // below asked for: the instruments ease toward their readings and the

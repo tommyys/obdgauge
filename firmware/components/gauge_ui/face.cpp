@@ -383,6 +383,41 @@ lv_opa_t seg_dim(double mid_rpm, const gauge::Identity& id) {
     return (red > 0 && mid_rpm >= red) ? kRevDimRed : kRevDim;
 }
 
+// The rectangle one segment's stroke can paint in, in the object's own
+// coordinates. Sampled rather than solved, as ui.cpp does for the bezel: five
+// points along each of the two radii bound seven degrees of arc to well under a
+// pixel, and the box is padded anyway.
+//
+// Not lv_draw_arc_get_area(), which would do the same job: that call sits on
+// app_main's init chain, whose stack high-water mark is down to a couple of
+// hundred bytes and has boot-looped this board once already. Plain arithmetic
+// costs the chain nothing.
+void seg_box(double a0, double a1, lv_area_t* out) {
+    // Floats and no container: this frame is the deepest point of app_main's
+    // init chain, and doubles plus an initializer_list cost it 88 of the 220
+    // bytes it had left.
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    // Ten samples, not nine: five angles across the segment at BOTH radii. The
+    // outer radius at the far end is a corner of the box, and an odd count
+    // left it out.
+    for (int i = 0; i < 10; ++i) {
+        const float a = static_cast<float>(
+            (a0 + (a1 - a0) * (i / 2) / 4.0) * M_PI / 180.0);
+        const float r = (i & 1) ? static_cast<float>(kArcOuterR)
+                                : static_cast<float>(kArcOuterR - kArcWidth);
+        const float px = kRimPx / 2.0f + r * cosf(a);
+        const float py = kRimPx / 2.0f + r * sinf(a);
+        if (px < x0) x0 = px;
+        if (px > x1) x1 = px;
+        if (py < y0) y0 = py;
+        if (py > y1) y1 = py;
+    }
+    out->x1 = static_cast<int32_t>(x0) - kTachoSegPad;
+    out->y1 = static_cast<int32_t>(y0) - kTachoSegPad;
+    out->x2 = static_cast<int32_t>(x1) + kTachoSegPad;
+    out->y2 = static_cast<int32_t>(y1) + kTachoSegPad;
+}
+
 // Paints the segments that touch the area being redrawn, and skips the rest
 // before any drawing happens -- which is the whole point of caching the
 // rectangles. Same shape as paint_band(), and centred the same way: at
@@ -472,12 +507,12 @@ void build_under_tacho(lv_obj_t* root, const gauge::Identity& id) {
         g_rev[i].a1     = static_cast<int16_t>(std::lround(a1)) % 360;
         g_rev[i].colour = seg_colour(mid_rpm, id);
         g_rev[i].dim    = seg_dim(mid_rpm, id);
-        // The rectangle this segment can paint in, cached once, in the
-        // object's own coordinates. This is what lets a redraw skip 39 of the
-        // 40 and a lit segment invalidate only itself.
-        lv_draw_arc_get_area(kRimPx / 2, kRimPx / 2, kArcOuterR,
-                             g_rev[i].a0, g_rev[i].a1, kArcWidth, false,
-                             &g_rev[i].area);
+        // The rectangle this segment can paint in, cached once. This is what
+        // lets a redraw skip 39 of the 40 and a lit segment invalidate only
+        // itself. Taken from the UNWRAPPED angles, because a segment that
+        // straddles 3 o'clock has a start larger than its end and sampling
+        // between them the short way round would bound the wrong arc.
+        seg_box(a0, a1, &g_rev[i].area);
     }
     // Built unlit, because the gauge comes up before the car has answered and
     // a dial that starts fully lit would flash the whole rev range on the first

@@ -918,3 +918,104 @@ half-pulled drive into `logs/` as though it were whole. Run it with
 the USB-CDC port open at a time — leaving a monitor window running is the
 most likely reason the puller can't connect, and it says so rather than
 hanging.
+
+## 16. The clock, over WiFi
+
+**Shipped 2026-09-03.** The board has no real-time clock. `0x51` is named in
+the vendored BSP's I2C table as a PCF85063, but the part is not fitted —
+checked on the bus 2026-08-31. So every power-on begins not knowing the time,
+and §15's recorder stamps a drive it cannot date `drive-unknown-<id>` for
+ever. Every drive recorded up to this point carries that stamp. The two cures
+that existed both need a human: `pull_drives.py` lending the Mac's clock over
+USB, or the Clock view's five wheels turned by hand in the car.
+
+WiFi replaces both. The split is the usual one for this project — the policy
+in `gauge_core`, host-tested on the Mac; the radio in `gauge_platform`.
+
+| Piece | What it owns |
+|---|---|
+| `gauge_core/wifi_plan.{h,cpp}` | Which network next, what each attempt gets, when to give up, when to try again, and whether an epoch is believable. No ESP-IDF. Proven by `test_wifi_plan.cpp`. |
+| `gauge_platform/wifi_time.{h,cpp}` | The station, the SNTP exchange, and the teardown. Reports back through two callbacks so it does not depend on `main`. |
+| `main/wifi_creds.h` | The networks, compiled in. Gitignored; `wifi_creds.h.example` is the template. Included through `__has_include`, so a clone without it still builds. |
+
+### Where it sits in the boot
+
+There is exactly one window WiFi fits in, and both of its edges were found the
+hard way on 2026-09-03.
+
+```
+TZ -> BLE radio_init -> WIFI SYNC (waits) -> blit band -> display -> recorder -> console
+      30,720 contiguous   ~30 KB, released    29,824      14,912                 12,288
+```
+
+**Not later.** Bringing the station up takes the internal heap from 130,831
+bytes free to 35,511, and the largest hole from 63,488 to 23,552. Started
+during display bring-up -- on the reasoning that the five seconds the panel
+takes are dead time -- `bsp_display_start()` could not get its 14,912-byte
+secondary buffer, asserted, and the gauge boot-looped. Display bring-up is not
+idle time; it is when the display *allocates*.
+
+**Not earlier either, and not alone.** `esp_phy_disable()` only closes the RF
+and drops the shared modem clock when the caller is the last user of it. That
+ordering matters more for what surrounds it than for WiFi itself.
+
+**app_main waits for it.** `wifi_time::wait()` blocks until the radio is down,
+capped at the plan's budget plus a second. Budgets: 5 s a network, 11 s the
+lot, 6 s for the time server, and an attempt is clamped to what is left of the
+budget so the last network in a list cannot overrun it. Two servers
+(`pool.ntp.org`, `time.google.com`) because one did not answer inside three
+seconds on home WiFi at -73 dBm.
+
+**Measured cost:** 3.6 s on the hotspot, 7.7 s when the hotspot is absent and
+home WiFi answers second. That is dark screen, on top of the seconds the panel
+already takes.
+
+### It starved the serial console, silently
+
+The worst bug in this work was not in the WiFi code. Linking the WiFi and lwip
+stacks costs about 17 KB of internal RAM permanently -- radio or no radio
+(net80211 12,350 + lwip 3,823 + esp_wifi 886, from `idf.py size-components`).
+That was enough that `serial_cmd_init()`'s 12,288-byte task stack could no
+longer be allocated: 18,663 bytes free, largest hole 9,728.
+
+`xTaskCreatePinnedToCore`'s result was not checked, so nothing said so. The
+gauge booted, drew at 66 fps, logged normally -- and never answered a serial
+command again. `STATS` and `tools/pull_drives.py` simply hung. It reads exactly
+like the wedged-USB failure in BOARD-CHECKS, and it is not one.
+
+Two changes came out of it, and both are worth more than the feature:
+
+- **The task creation is checked and shouts.** A console that cannot start now
+  prints what it needed and what was free.
+- **`serial_cmd_init()` prints when the console driver installs.** A console
+  that takes no input is otherwise completely silent about it.
+
+The memory itself was won back by turning off WiFi's IRAM optimisations
+(`CONFIG_ESP_WIFI_IRAM_OPT`, `..._RX_IRAM_OPT`, `..._SLP_IRAM_OPT`). On the S3
+the IRAM and DRAM come out of the same SRAM, so moving WiFi code into IRAM for
+speed is paid for in the exact resource the console and the display are short
+of -- and this gauge does not move WiFi packets. That returned about 18 KB.
+IPv6, the SoftAP, WPA3, the DHCP server and enterprise auth are off for the
+same reason: footprint, not throughput.
+
+### Refusing a bad answer
+
+`wifi_epoch_believable()` rejects anything outside 2026–2036. The stamp on a
+drive is permanent and there is nothing to check it against afterwards, so a
+wrong clock is worse than no clock: "date unknown" is at least honest.
+
+### There is no keep-alive flag
+
+One was designed, on the reasoning that holding the radio costs frames and the
+cost should be measured rather than argued about. The board answered instead:
+the station holds 30,252 bytes of internal RAM while it is up, and the display
+cannot then get its 14,912-byte contiguous buffer. Leaving WiFi up does not
+cost frames on this board -- it stops the panel starting at all.
+
+So there is nothing to trade off. `WIFI KEEP` remains as a command only so that
+asking gets that answer rather than silence.
+
+### Deliberately not in this
+
+No firmware updates over WiFi, no pulling drives over WiFi, no WiFi settings
+view, no captive portal. WiFi fetches 48 bytes of time and leaves.

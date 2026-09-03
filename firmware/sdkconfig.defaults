@@ -185,3 +185,51 @@ CONFIG_BT_CTRL_BLE_ADV_REPORT_FLOW_CTRL_SUPP=n
 # The recorder's task and live_link's poll task stay on core 0 deliberately: a
 # flash erase must not land on the display's core.
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
+
+# --- WiFi: fetching the clock, and nothing else ----------------------------
+# The gauge has no real-time clock (gauge_ui/clock.h), so every boot began not
+# knowing the time and every drive recorded so far is stamped "date unknown".
+# WiFi exists here to fetch 48 bytes from a time server during display
+# bring-up and then hand the radio back -- see gauge_platform/wifi_time.cpp.
+#
+# Every setting below is about footprint, because internal RAM is the scarce
+# resource on this board: the BT controller wants one contiguous 30,720-byte
+# block and the carousel's blit band another 29,824, and a shattered internal
+# heap is what broke the BLE link on 2026-08-28. WiFi's buffers come from the
+# same pool, so they are turned down to the smallest set that still completes
+# a DHCP lease and one SNTP exchange.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_TX_BUFFER_TYPE=1
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=0
+# Aggregation is for throughput. There is none to have here, and both
+# directions cost buffers.
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+# The credentials are compiled in, so there is nothing to persist -- and this
+# keeps WiFi out of the NVS partition the flight log and the recorder use.
+CONFIG_ESP_WIFI_NVS_ENABLED=n
+# Both radios are now built in, so the controller must arbitrate between them
+# rather than assume it owns the front end.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+# Two time servers, not one: a single pool.ntp.org did not answer inside
+# three seconds on home WiFi at -73 dBm (measured 2026-09-03).
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+# CONFIG_LWIP_IPV6 is not set
+# CONFIG_LWIP_DHCPS is not set
+# CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
+# CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT is not set
+# CONFIG_ESP_WIFI_ENABLE_WPA3_SAE is not set
+CONFIG_LWIP_MAX_SOCKETS=4
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=8
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=8
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=6
+CONFIG_LWIP_MAX_ACTIVE_TCP=4
+CONFIG_LWIP_MAX_LISTENING_TCP=4
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
+# CONFIG_ESP_WIFI_IRAM_OPT is not set
+# CONFIG_ESP_WIFI_RX_IRAM_OPT is not set
+# CONFIG_ESP_WIFI_SLP_IRAM_OPT is not set
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=0
+CONFIG_LWIP_DNS_MAX_SERVERS=2

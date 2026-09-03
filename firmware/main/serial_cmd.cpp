@@ -11,6 +11,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "bsp/esp-bsp.h"
@@ -21,6 +22,7 @@
 #include "gauge_ui.h"
 #include "imu.h"
 #include "logbuf.h"
+#include "wifi_time.h"
 
 // USB-Serial-JTAG blocking reads
 // ------------------------------
@@ -56,8 +58,15 @@ void install_blocking_console_reads() {
     usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
     // Already installed by the console/USB stack in some configs; either
     // outcome leaves us free to switch the VFS to the (now blocking) driver.
-    usb_serial_jtag_driver_install(&cfg);
+    const esp_err_t e = usb_serial_jtag_driver_install(&cfg);
     usb_serial_jtag_vfs_use_driver();
+    // Printed because a console that takes no input is otherwise completely
+    // silent about it: the board still talks, so nothing looks wrong until
+    // `STATS` or pull_drives.py sits there getting no reply. On 2026-09-03
+    // that cost an hour of bisecting a WiFi change that had nothing to do
+    // with it.
+    printf("serial: console driver %s (%s)\n",
+           e == ESP_OK ? "installed" : "NOT installed", esp_err_to_name(e));
     // Line buffered, so a full "TIME 1756300000\n" reaches fgets() as one
     // unit rather than dribbling through stdio's own buffering games.
     setvbuf(stdin, nullptr, _IOLBF, 128);
@@ -236,8 +245,14 @@ void cmd_get(uint32_t id) {
 // read_drive's 4,080-byte sector buffer plus printf.
 volatile uint32_t g_stack_low = 0xFFFFFFFFu;
 
+// Set by serial_cmd_enable(). The task is created early to claim its stack
+// while the internal heap is whole, but must not answer a command before the
+// recorder and the views it reaches into exist.
+volatile bool g_enabled = false;
+
 void task(void*) {
     install_blocking_console_reads();
+    while (!g_enabled) vTaskDelay(pdMS_TO_TICKS(50));
     char line[64];
     for (;;) {
         {
@@ -290,6 +305,23 @@ void task(void*) {
             // read from a tool call, so without this the only way to check the
             // view is to be in front of the gauge.
             drives_list_dump();
+        } else if (!strncmp(line, "WIFI KEEP", 9)) {
+            // There was going to be a flag here. The board settled it
+            // instead. Measured 2026-09-03: the station holds 30,252 bytes of
+            // internal RAM while it is up, and the display then cannot get
+            // its own 14,912-byte contiguous buffer -- bsp_display_start()
+            // asserts and the gauge boot-loops. Leaving WiFi up does not cost
+            // frames here; it stops the panel starting at all. The command
+            // stays so that asking gets an answer rather than silence.
+            printf("ERR wifi cannot stay up on this board -- it holds 30,252 "
+                   "bytes of internal RAM while up, and the display cannot "
+                   "start without it. See SPEC.md s16.\n");
+        } else if (!strcmp(line, "WIFI")) {
+            printf("WIFI %s\n", gauge_platform::wifi_time::status());
+            printf("WIFI busy=%s epoch=%u\n",
+                   gauge_platform::wifi_time::busy() ? "yes" : "no",
+                   (unsigned)gauge_platform::wifi_time::epoch());
+            printf("OK\n");
         } else if (!strcmp(line, "I2C")) {
             cmd_i2c();
         } else if (!strcmp(line, "STATS")) {
@@ -392,6 +424,8 @@ void task(void*) {
 
 extern "C" uint32_t serial_cmd_stack_headroom(void) { return g_stack_low; }
 
+extern "C" void serial_cmd_enable(void) { g_enabled = true; }
+
 extern "C" void serial_cmd_init(void) {
     // Priority 2: below the recorder, well below the UI. Nothing waits on it.
     // 12288 bytes, not 8192: cmd_get's own frame holds read_drive's 4,080-byte
@@ -399,5 +433,18 @@ extern "C" void serial_cmd_init(void) {
     // stack in ESP-IDF on its own. (The DriveInfo table that grew from 32 to
     // 64 entries with the truncation fix is static, so it is not on this
     // stack -- but 8 KB was thin before that and has never once run.)
-    xTaskCreatePinnedToCore(task, "serialcmd", 12288, nullptr, 2, nullptr, 0);
+    // The result is checked, and loudly. A silent failure here reads exactly
+    // like a wedged board: the gauge runs, draws and logs perfectly, and
+    // simply never answers a command again -- `STATS` and pull_drives.py hang
+    // with no error anywhere. That is what linking the WiFi and lwip stacks
+    // in did on 2026-09-03: their static footprint left less internal RAM
+    // than this 12 KB stack needed, and nothing said so.
+    const size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (xTaskCreatePinnedToCore(task, "serialcmd", 12288, nullptr, 2, nullptr, 0)
+            != pdPASS) {
+        printf("serial: FAILED to start the console task -- no commands will "
+               "work. Internal RAM: %u free, largest block %u, needed 12288\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)big);
+    }
 }

@@ -1,0 +1,21 @@
+// Your WiFi networks. Copy this file to `wifi_creds.h` and fill it in.
+//
+//   cp firmware/main/wifi_creds.h.example firmware/main/wifi_creds.h
+//
+// `wifi_creds.h` is gitignored and must stay that way -- it holds real
+// passwords. Nothing else in the tree references it directly: main.cpp
+// includes it only if it exists, so a fresh clone still builds and simply
+// boots without WiFi.
+//
+// ORDER MATTERS. The gauge tries these in the order written, and each one
+// costs a few seconds of the boot budget. Put the phone hotspot first: it is
+// the network that is present wherever the car is. Home WiFi second, for the
+// bench and the driveway.
+//
+// The SSID is the network's name exactly as it appears on the phone,
+// apostrophes and all. Leave the password as "" for an open network.
+#pragma once
+
+#define GAUGE_WIFI_NETWORKS                       \
+    { "Tommy's iPhone", "hotspot-password-here" }, \
+    { "HomeNetwork",    "home-password-here"    },

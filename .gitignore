@@ -28,3 +28,6 @@ firmware/managed_components/
 
 # extracted from mx5gauge/web/boot.mp4 by tools/build_boot_asset.sh
 build-assets/
+
+# WiFi passwords, compiled in. Template: firmware/main/wifi_creds.h.example
+firmware/main/wifi_creds.h

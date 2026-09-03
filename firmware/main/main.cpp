@@ -32,6 +32,7 @@
 #include "drive_source.h"
 #include "live_link.h"
 #include "ble_transport.h"
+#include "wifi_time.h"
 #include "imu.h"
 #include "mount_cache.h"
 #include "flight_log.h"
@@ -342,6 +343,35 @@ bool play_boot_clip(lv_display_t* disp, lv_obj_t* scr) {
 
 }  // namespace
 
+// The networks to try for the time, in order. Compiled in rather than typed
+// on the gauge: a WPA password on a 466 px round panel is a worse experience
+// than editing one header, and the file never enters git.
+//
+// __has_include rather than a hard include so that a fresh clone -- which has
+// no wifi_creds.h -- still builds and boots. It simply has no networks, and
+// wifi_time::start() does nothing with an empty list.
+#if defined(__has_include)
+#  if __has_include("wifi_creds.h")
+#    include "wifi_creds.h"
+#  endif
+#endif
+
+namespace {
+#ifdef GAUGE_WIFI_NETWORKS
+const gauge::WifiNetwork kWifiNets[] = { GAUGE_WIFI_NETWORKS };
+constexpr std::size_t kWifiCount = sizeof kWifiNets / sizeof kWifiNets[0];
+#else
+const gauge::WifiNetwork* kWifiNets = nullptr;
+constexpr std::size_t kWifiCount = 0;
+#endif
+
+// wifi_time may not depend on main, so the two things it needs from the
+// gauge -- somewhere to put the clock, somewhere to put its log -- are handed
+// over as functions.
+void wifi_got_time(uint32_t epoch_s) { drive_log_set_epoch(epoch_s); }
+void wifi_logged(const char* line)   { flight_log("%s", line); }
+}  // namespace
+
 extern "C" void app_main(void) {
     printf("\n=== mx5-gauge %s: boot splash + home view ===\n", gauge::core_version());
     // First, so that a run which dies during display bring-up still says so,
@@ -353,6 +383,14 @@ extern "C" void app_main(void) {
         heap_caps_aligned_alloc(64, W * H * 2, MALLOC_CAP_SPIRAM));
     if (!g_fb) { printf("FATAL: no PSRAM\n"); return; }
 
+    // The board has no timezone until it is given one, so strftime() renders
+    // every drive in UTC -- the 2026-08-29 drive listed as 03:24 for a drive
+    // that started at 11:24. The clock the Mac lends over TIME is epoch
+    // seconds and is unaffected; this is only how it is shown. POSIX gets the
+    // sign backwards on purpose: -8 means eight hours EAST of UTC.
+    setenv("TZ", "MYT-8", 1);
+    tzset();
+
     // Before the display and before the recorder, because the BT controller
     // needs one contiguous 30,720-byte block of internal RAM and this is the
     // last moment the internal heap is whole. Started later it failed with
@@ -361,6 +399,46 @@ extern "C" void app_main(void) {
     // this only claims the memory.
     const bool radio_up = gauge_platform::BleTransport::radio_init();
     flight_log("radio %s", radio_up ? "up" : "FAILED");
+
+
+
+    // The clock, over WiFi. Third, and both neighbours are load-bearing.
+    //
+    // AFTER the BT controller, and not merely for memory. Both radios share
+    // the PHY, and esp_phy_disable() only closes the RF and drops the shared
+    // modem clock when the caller is the *last* user of it. With WiFi going
+    // first and alone, its own teardown took that clock down -- and the USB
+    // console's input died with it. The board still printed, so it looked
+    // healthy, but `STATS` and `pull_drives.py` got no reply at all. Measured
+    // 2026-09-03 against a stashed baseline. With NimBLE already holding the
+    // PHY, WiFi's teardown leaves the clock alone and the console survives.
+    //
+    // BEFORE the blit band and the display, because bringing the station up
+    // takes the internal heap from 130,831 bytes free / 63,488 largest down to
+    // 35,511 / 23,552. Started during display bring-up -- on the reasoning
+    // that the five seconds the panel takes are dead time -- the display could
+    // not get its 14,912-byte secondary buffer and asserted, and the gauge
+    // boot-looped. Display bring-up is not idle time; it is when the display
+    // *allocates*.
+    //
+    // So there is exactly one window WiFi fits in, and this is it. It gives
+    // every byte back afterwards -- wifi_time logs the largest free block on
+    // the way in and out, so a regression here is visible rather than
+    // mysterious.
+    //
+    // The cost is honest: the screen stays dark for the length of the sync, on
+    // top of the seconds the panel already takes. Measured on the hotspot:
+    // 3.6 s. That is why the budget is tight and why a network that does not
+    // answer is abandoned rather than waited on.
+    static gauge_platform::wifi_time::Config wcfg;
+    wcfg.on_time = wifi_got_time;
+    wcfg.log = wifi_logged;
+    gauge_platform::wifi_time::start(kWifiNets, kWifiCount, wcfg);
+    // Its own task, not app_main's 8 KB frame, but app_main waits for it: the
+    // radio must be down before the display asks for memory. The cap is the
+    // plan's own budget plus a second of slack, so a wedged driver delays the
+    // gauge rather than hanging it.
+    gauge_platform::wifi_time::wait(wcfg.plan.boot_budget_ms + 1000);
 
     // Second, and for the same reason: the carousel's blit buffer is another
     // 29,824 bytes that must be DMA-capable internal RAM. Asked for on the
@@ -414,19 +492,12 @@ extern "C" void app_main(void) {
     printf("imu: %s (addr 0x%02x, whoami 0x%02x)\n",
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
     flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
-    // The board has no timezone until it is given one, so strftime() renders
-    // every drive in UTC -- the 2026-08-29 drive listed as 03:24 for a drive
-    // that started at 11:24. The clock the Mac lends over TIME is epoch
-    // seconds and is unaffected; this is only how it is shown. POSIX gets the
-    // sign backwards on purpose: -8 means eight hours EAST of UTC.
-    setenv("TZ", "MYT-8", 1);
-    tzset();
-
     drive_log_init();
     // After the recorder: the Drives view reads what it wrote, and its scan
     // task asks drive_log_buf() for the mounted ring.
     drives_list_init();
     serial_cmd_init();
+    serial_cmd_enable();
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE
     // controller up costs a burst of DMA-capable internal RAM, and the gauge's
@@ -518,7 +589,14 @@ extern "C" void app_main(void) {
                    replay.drive_name(0).c_str(), replay.duration_s(), kSpeed);
         }
 
-        if (!live_started && esp_timer_get_time() - t0 > kLiveStartUs) {
+        // ... and not while WiFi still has the radio. One 2.4 GHz front end
+        // is shared between them, and the internal RAM behind it is the pool
+        // that broke the BLE link on 2026-08-28 when it ran short. WiFi's own
+        // budget is 8 s against this 5 s trigger, so the car can wait a few
+        // seconds longer on a boot where the clock is being set; it is not
+        // going anywhere, and the replay covers the gap.
+        if (!live_started && esp_timer_get_time() - t0 > kLiveStartUs &&
+            !gauge_platform::wifi_time::busy()) {
             live_started = true;
             live::start("vlinker");
         }

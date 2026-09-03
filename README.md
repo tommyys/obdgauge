@@ -57,6 +57,56 @@ timestamp, rather than guessing one.
 **The USB console is shared with `idf.py monitor`** — close any open monitor
 window first, or the puller reports the port busy rather than hanging.
 
+## The clock, over WiFi
+
+The board has no clock chip. `0x51` is named in its I2C table but the part is
+not fitted, so every power-on starts not knowing the time — and a drive
+recorded without one is stamped `drive-unknown-<id>` for ever. Until now the
+only cures were the Mac (`pull_drives.py` lends it its clock) or the Clock
+view's five wheels, by hand, in the car.
+
+The gauge can now fetch the time itself. Give it your networks once:
+
+```bash
+cp firmware/main/wifi_creds.h.example firmware/main/wifi_creds.h
+$EDITOR firmware/main/wifi_creds.h      # your SSIDs and passwords, in try order
+```
+
+`wifi_creds.h` is gitignored and must stay that way. Rebuild and flash, and
+from then on every boot does this:
+
+1. Joins the first network it can reach — the phone hotspot first, home WiFi
+   second. Five seconds a network, eleven seconds for the lot.
+2. Asks for the time and refuses any answer outside 2026–2036, rather than
+   stamping a drive with rubbish.
+3. Shuts WiFi down and hands the memory back, before the display starts.
+
+Measured on the board: **3.6 seconds** when the hotspot answers, **7.7 seconds**
+when it is absent and home WiFi answers second. The screen is dark for that
+time, on top of the seconds the panel already takes.
+
+**iOS switches the hotspot off by itself** when nothing has connected to it for
+a while — that is the phone, not the gauge. Seen twice while testing this. If
+a drive comes back undated, that is the first thing to check.
+
+Nothing is required of you in the car. If no network is reachable the gauge
+behaves exactly as it did before, and says so in the flight log.
+
+**Without `wifi_creds.h` the firmware still builds and boots.** It just has no
+networks, and logs `wifi: no networks compiled in`.
+
+**WiFi cannot stay on.** It holds 30,252 bytes of the board's scarce internal
+memory while it is up, and the display cannot start without that memory. So the
+radio comes up early, gets the time, and is gone before the screen exists. The
+OBD scan also waits for it, so the two radios never transmit at once.
+
+**Serial commands** (over the USB console):
+
+| Command | What it does |
+|---|---|
+| `WIFI` | What the sync did this boot, the clock it found, whether it is still busy |
+| `WIFI KEEP on` | Explains why WiFi cannot stay up on this board, and changes nothing |
+
 ## Quick start (Terminal)
 
 Replay one of your existing captures — no car, no hardware:

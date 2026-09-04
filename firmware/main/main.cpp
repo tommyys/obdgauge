@@ -481,13 +481,25 @@ extern "C" void app_main(void) {
     const bool band_ok = gauge_ui::reserve_slide_band(W);
     flight_log("slide band %s", band_ok ? "reserved" : "FAILED");
 
-    // Third internal claim, and it belongs here for the same reason as the
-    // other two: the live task's 6 KB stack must be taken while the heap is
-    // whole. Created at its old point -- five seconds into the app loop, after
-    // the display and the views have had theirs -- there were 3,523 bytes free
-    // against the 6,144 it needs, so xTaskCreate failed, nobody checked, and
-    // the gauge spent a day at 66 fps never once looking for the car. The task
-    // is parked here and does not touch the radio until live::start() below.
+    // Every remaining long-lived internal claim, here, while the heap is whole.
+    // This is the same rule the BT controller and the blit band above already
+    // follow, and the two task stacks below were simply left out of it.
+    //
+    // Biggest first, because what runs out on this board is not free bytes but
+    // contiguous ones. The console's 12 KB went in after the display and got
+    // away with it only until the live task's 6 KB landed in the middle of the
+    // hole it had been using: 15,027 bytes free, largest block 7,680, and the
+    // console never started -- which reads exactly like a wedged board.
+    //
+    // serial_cmd.h has said "call EARLY, before the display" since 2026-09-03.
+    // It was called after it anyway. This is that instruction, followed.
+    serial_cmd_init();
+    // And the live task's 6 KB. Created at its old point -- five seconds into
+    // the app loop, after the display and every view had theirs -- there were
+    // 3,523 bytes free against the 6,144 it needs, so xTaskCreate failed,
+    // nobody checked, and the gauge spent a day at 66 fps never once looking
+    // for the car. Parked here; it does not touch the radio until
+    // live::start() wakes it in the loop below.
     live::reserve();
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
@@ -545,7 +557,10 @@ extern "C" void app_main(void) {
     // After the recorder: the Drives view reads what it wrote, and its scan
     // task asks drive_log_buf() for the mounted ring.
     drives_list_init();
-    serial_cmd_init();
+    // The task itself was created before the display (see above); this is only
+    // the gate that lets it start reading. Commands must not run until the
+    // views, the recorder and the drives list are all up, or a GET could be
+    // answered out of a half-built library.
     serial_cmd_enable();
 
     // Looking for the car is deliberately NOT started here. Bringing the BLE

@@ -24,17 +24,41 @@ WifiPlan::Config quick() {
 }  // namespace
 
 int main() {
-    // --- the list is tried in order, then given up on ----------------------
+    // --- the list is tried in order, and then AGAIN --------------------------
     // Hotspot first, home second: the order in the list is the order on the
     // air, because the hotspot is the one present wherever the car is.
+    //
+    // Reaching the end of the list is not the end of the boot. Measured at
+    // home on 2026-09-04 at -82 dBm, the home network failed its WPA
+    // handshake 3.5 s into a 14 s budget and the gauge gave up with 8 s
+    // unused -- the same network having joined cleanly at -66 dBm minutes
+    // before. At a marginal signal one failure says almost nothing about the
+    // next attempt, so the budget goes on trying again.
     {
         WifiPlan p(2, quick());
         check("first ask offers network 0", p.next(0), 0);
         p.failed(100);
         check("after a failure it offers network 1", p.next(100), 1);
         p.failed(200);
-        check("with the list exhausted it is done", p.next(200), (int)WifiPlan::kDone);
-        check("and the radio is no longer wanted", p.radio_wanted(200), false);
+        check("with the list exhausted it starts over", p.next(200), 0);
+        check("and the radio is still wanted", p.radio_wanted(200), true);
+        p.failed(300);
+        check("second lap offers network 1 again", p.next(300), 1);
+    }
+
+    // --- but only while an attempt could still finish -----------------------
+    // The floor is what stops the radio being held for a try that cannot get
+    // anywhere: below min_attempt_ms a network cannot associate, let alone
+    // lease an address.
+    {
+        WifiPlan p(2, quick());          // 8 s budget, 2.5 s floor
+        p.next(0);
+        p.failed(3000);
+        check("network 1 at 3 s", p.next(3000), 1);
+        p.failed(6000);
+        check("2 s left is not enough for another lap",
+              p.next(6000), (int)WifiPlan::kDone);
+        check("so the radio goes back", p.radio_wanted(6000), false);
     }
 
     // --- a success stops everything ----------------------------------------

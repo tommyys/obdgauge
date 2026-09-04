@@ -31,7 +31,15 @@ int64_t WifiPlan::remaining_ms(int64_t now_ms) const {
 }
 
 bool WifiPlan::pass_over(int64_t now_ms) const {
-    return idx_ >= static_cast<int>(n_) || remaining_ms(now_ms) <= 0;
+    if (remaining_ms(now_ms) <= 0) return true;
+    if (idx_ < static_cast<int>(n_)) return false;
+    // The list is exhausted but the clock is not set. On the boot pass that is
+    // not the end: go round again if there is room for an attempt that could
+    // actually finish. With keep_up the pass really is over -- the plan then
+    // waits out retry_period_ms instead, which is a different behaviour and
+    // stays as it was.
+    if (cfg_.keep_up) return true;
+    return remaining_ms(now_ms) < cfg_.min_attempt_ms;
 }
 
 int WifiPlan::next(int64_t now_ms) {
@@ -41,7 +49,11 @@ int WifiPlan::next(int64_t now_ms) {
     // gap to the boot budget would spend it on nothing.
     if (pass_start_ms_ < 0) pass_start_ms_ = now_ms;
 
-    if (!pass_over(now_ms)) return idx_;
+    if (!pass_over(now_ms)) {
+        // Another lap of the same list, inside the same budget.
+        if (idx_ >= static_cast<int>(n_)) idx_ = 0;
+        return idx_;
+    }
 
     // Every network was tried, or the budget ran out.
     if (!cfg_.keep_up) return kDone;

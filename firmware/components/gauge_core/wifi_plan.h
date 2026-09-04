@@ -69,6 +69,11 @@ class WifiPlan {
         bool keep_up = false;
         // How long to wait between passes when keep_up is set.
         int retry_period_ms = 60000;
+        // The smallest attempt worth starting. Below this there is not enough
+        // of the boot budget left for a network to associate, let alone lease
+        // an address, so the radio goes back rather than being held for a try
+        // that cannot finish.
+        int min_attempt_ms = 2500;
     };
 
     // Returned by next() in place of an index.
@@ -80,6 +85,16 @@ class WifiPlan {
     WifiPlan(std::size_t network_count, const Config& cfg);
 
     // The network to try now, or kWait / kDone.
+    //
+    // Within the boot budget the list is tried REPEATEDLY, not once. Measured
+    // at home on 2026-09-04, at -82 dBm: the hotspot was absent and the home
+    // network failed its WPA handshake ("wrong password", reason 202, which is
+    // what a 4-way handshake that does not complete looks like) 3.5 s into a
+    // 14 s budget -- and the gauge then gave up and sat there with 8 s unused.
+    // The same network had joined cleanly minutes earlier at -66 dBm. At a
+    // marginal signal the first attempt failing says almost nothing about the
+    // second, so the budget is now spent on trying again rather than on
+    // waiting to be allowed to stop.
     int next(int64_t now_ms);
 
     // How long the attempt just handed out is allowed to take. Never longer

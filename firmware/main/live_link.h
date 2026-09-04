@@ -18,8 +18,31 @@ struct Sample {
     double t_s;     // seconds since boot, the timeline trip/score are fed
 };
 
-// Starts the connect-and-poll task. Returns immediately; the task retries with
-// backoff forever, so a gauge powered up before the adapter wakes still lands.
+// Creates the task and its queue, and leaves the task parked.
+//
+// Called during boot's early window, and this is load-bearing. The task's stack
+// is 6 KB of INTERNAL RAM, and by the time the views are up there is not that
+// much left: linking WiFi and lwip costs about 28 KB permanently, which took
+// the free internal heap at the old creation point from 30,331 bytes down to
+// 3,523. xTaskCreate then failed, its result was not checked, and the gauge ran
+// perfectly at 66 fps while never once looking for the car -- no OBD link at
+// all, and not one line in the log to say so (2026-09-04).
+//
+// So the stack is claimed where the BT controller and the blit band claim
+// theirs: after WiFi has handed the radio back and before the display starts
+// allocating, when the internal heap is still whole (137 KB free). The task
+// then sleeps until start() wakes it, because WHEN scanning begins is a
+// separate question with its own answer -- see start().
+void reserve();
+
+// Wakes the parked task and lets it start scanning. Returns immediately; it
+// retries with backoff forever, so a gauge powered up before the adapter wakes
+// still lands.
+//
+// Deliberately later than reserve(): bringing the radio up while LVGL is
+// drawing whole screens made the panel fail draws for the first 13 seconds,
+// which is a visibly torn gauge. Claiming memory early and scanning late is not
+// a contradiction -- they are two different costs at two different moments.
 void start(const char* name_hint);
 
 // True once the car has answered its supported-PID sweep -- i.e. there is a

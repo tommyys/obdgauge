@@ -13,12 +13,14 @@
 #include "ble_transport.h"
 #include "elm327.h"
 #include "poll.h"
+#include "esp_heap_caps.h"
 #include "flight_log.h"
 
 namespace live {
 namespace {
 
 QueueHandle_t      g_q = nullptr;
+TaskHandle_t       g_task = nullptr;   // parked by reserve(), woken by start()
 std::atomic<bool>  g_ready{false};
 std::set<std::string> g_keys;
 std::string        g_vin;
@@ -48,6 +50,10 @@ void push(const std::string& key, double value) {
 }
 
 void task(void*) {
+    // Parked until start() says go. The stack is already claimed -- that is the
+    // whole point of being created this early -- but nothing touches the radio
+    // until the views have settled. See reserve() in live_link.h.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     double backoff = 1.0;
     for (;;) {
         gauge_platform::BleTransport bt;
@@ -130,17 +136,58 @@ void task(void*) {
     }
 }
 
-}  // namespace
 
-void start(const char* name_hint) {
-    if (g_q) return;
-    strncpy(g_hint, name_hint && *name_hint ? name_hint : "vlinker",
-            sizeof g_hint - 1);
-    g_q = xQueueCreate(64, sizeof(Sample));
+// Both halves of getting the task running, so the failure path is in one place.
+bool spawn() {
+    if (!g_q) g_q = xQueueCreate(64, sizeof(Sample));
+    if (!g_q) {
+        printf("live: QUEUE FAILED -- no OBD link this run\n");
+        flight_log("live: queue FAILED -- no OBD link this run");
+        return false;
+    }
+    if (g_task) return true;
     // Off the UI core: the poll loop is mostly blocked on the car, but the
     // NimBLE host it wakes should not be competing with LVGL's render.
-    xTaskCreatePinnedToCore(task, "live", 6144, nullptr, 4, nullptr, 0);
+    //
+    // The result is CHECKED. It was not, and on this board an unchecked
+    // xTaskCreate is how a feature disappears in silence -- it hid the loss of
+    // the whole OBD link for a day, and the same thing had already starved
+    // serial_cmd's stack when WiFi was linked in.
+    const BaseType_t ok =
+        xTaskCreatePinnedToCore(task, "live", 6144, nullptr, 4, &g_task, 0);
+    if (ok != pdPASS || !g_task) {
+        g_task = nullptr;
+        printf("live: TASK CREATE FAILED (%d) -- the car will never be found\n",
+               (int)ok);
+        flight_log("live: task create FAILED -- no OBD link this run");
+        return false;
+    }
+    return true;
 }
+
+}  // namespace
+
+void reserve() {
+    // Both heap figures, because they disagree in the way that matters here:
+    // the task stack comes from internal RAM, the panel's SPI buffers from the
+    // DMA-capable subset of it, and a total that looks sufficient says nothing
+    // until the largest block is next to it.
+    printf("live: reserving the task -- internal free %u largest %u\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    if (spawn()) flight_log("live: task reserved");
+}
+
+void start(const char* name_hint) {
+    strncpy(g_hint, name_hint && *name_hint ? name_hint : "vlinker",
+            sizeof g_hint - 1);
+    // Late creation is the fallback, not the path: if reserve() was never
+    // called or could not get the memory, this is the old behaviour, and it
+    // now says so when it fails instead of going quiet.
+    if (!g_task && !spawn()) return;
+    xTaskNotifyGive(g_task);
+}
+
 
 bool ready() { return g_ready.load(); }
 

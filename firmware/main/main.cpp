@@ -481,6 +481,15 @@ extern "C" void app_main(void) {
     const bool band_ok = gauge_ui::reserve_slide_band(W);
     flight_log("slide band %s", band_ok ? "reserved" : "FAILED");
 
+    // Third internal claim, and it belongs here for the same reason as the
+    // other two: the live task's 6 KB stack must be taken while the heap is
+    // whole. Created at its old point -- five seconds into the app loop, after
+    // the display and the views have had theirs -- there were 3,523 bytes free
+    // against the 6,144 it needs, so xTaskCreate failed, nobody checked, and
+    // the gauge spent a day at 66 fps never once looking for the car. The task
+    // is parked here and does not touch the radio until live::start() below.
+    live::reserve();
+
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
     // Single-buffered, because that is all this panel offers: the adapter only
     // permits tear-avoid NONE or TE_SYNC on a SPI interface, so the double and

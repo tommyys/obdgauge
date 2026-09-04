@@ -193,6 +193,47 @@ bool join(const gauge::WifiNetwork& net, int timeout_ms) {
     return false;
 }
 
+// What the radio can actually see, printed once when nothing on the list was
+// found.
+//
+// "not on the air" is true but unhelpful, and on 2026-09-04 it sent us looking
+// for a firmware fault that was not there. This board's radio is 2.4 GHz ONLY,
+// and the Mac sitting next to it was on 5 GHz -- so "the network is right
+// there" and "the gauge can see it" are different claims, and only this one
+// settles which. It also answers the other question that came up: whether the
+// BT controller, which is already up and holding the shared 2.4 GHz front end
+// by the time this runs, is stopping the scan from seeing anything at all.
+//
+// Cheap and bounded: one passive sweep, at most eight results, and only on the
+// boot where the clock was not set anyway.
+void log_visible_networks() {
+    wifi_scan_config_t sc = {};
+    sc.show_hidden = false;
+    // Blocking, because there is nothing else to do with this boot's radio
+    // window once every network on the list has failed.
+    if (esp_wifi_scan_start(&sc, true) != ESP_OK) {
+        note("wifi: could not scan to see what IS on the air");
+        return;
+    }
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    if (n == 0) {
+        note("wifi: scan saw NO 2.4 GHz networks at all -- this radio is "
+             "2.4 GHz only, and the BT controller shares its front end");
+        return;
+    }
+    uint16_t want = n > 8 ? 8 : n;
+    wifi_ap_record_t recs[8] = {};
+    if (esp_wifi_scan_get_ap_records(&want, recs) != ESP_OK) return;
+    char line[240];
+    int at = std::snprintf(line, sizeof line, "wifi: %u on the air:", (unsigned)n);
+    for (uint16_t i = 0; i < want && at > 0 && at < (int)sizeof line; ++i)
+        at += std::snprintf(line + at, sizeof line - at, " %s(%d,ch%u)",
+                            reinterpret_cast<const char*>(recs[i].ssid),
+                            (int)recs[i].rssi, (unsigned)recs[i].primary);
+    note("%s", line);
+}
+
 // Ask, sanity-check, and report. Returns 0 when there is nothing to trust.
 uint32_t ask_time(int timeout_ms) {
     // Two servers rather than one, and a real allowance. Measured on the
@@ -257,6 +298,11 @@ void task(void*) {
         }
 
         if (up && !plan.radio_wanted(now_ms())) {
+            // Last chance to look around, while the radio is still ours and
+            // only when nothing on the list worked. This is inside the loop
+            // because the radio goes down HERE, not at the tail of the
+            // function -- put there, it never ran once.
+            if (!plan.synced()) log_visible_networks();
             radio_down();
             up = false;
             note_heap("radio released");

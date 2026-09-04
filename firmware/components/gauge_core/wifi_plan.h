@@ -39,12 +39,25 @@ class WifiPlan {
   public:
     struct Config {
         // What one network gets before it is written off.
-        int per_network_ms = 5000;
+        //
+        // 9000, not the 5000 it was. Measured at home on 2026-09-04, at -74
+        // dBm: the gauge ASSOCIATES with the router 1.7 s into the attempt and
+        // then needs several more seconds for DHCP to hand it an address. At
+        // 5 s it was cut off mid-lease about half the time -- "found but gave
+        // us no address in time" -- while 2.7 s of the boot budget below sat
+        // unused. Associating is quick and getting an address is not, and the
+        // old number only allowed for the quick half.
+        int per_network_ms = 9000;
         // What the whole boot attempt gets. It exists because this runs inside
         // the gauge's boot and the OBD link waits for it to finish (main.cpp),
         // so that the two radios never transmit at once. An unbounded search
         // would keep the car waiting.
-        int boot_budget_ms = 11000;
+        // 14000, not 11000. The whole sequence at a weak signal is
+        // associate + DHCP + two SNTP servers, and a successful boot measured
+        // 6.9 s of it with nothing to spare. The 3 s is only ever spent on a
+        // boot where no network answers at all, which is the boot that already
+        // has nothing to wait for.
+        int boot_budget_ms = 14000;
         // False: hand the radio back the moment the clock is set, or the boot
         // budget runs out. True: stay up and keep trying, which is what a
         // hotspot switched on after the engine started needs.

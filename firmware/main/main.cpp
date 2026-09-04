@@ -501,6 +501,12 @@ extern "C" void app_main(void) {
     // for the car. Parked here; it does not touch the radio until
     // live::start() wakes it in the loop below.
     live::reserve();
+    // And the drives scan task's 8 KB, for the same reason. At its old point,
+    // after gauge_ui::init(), the largest internal block left was 7,680 -- so
+    // it never started, and the Drives view showed nothing while eleven
+    // recorded drives sat on the flash. drives_list_init() below still does
+    // the wiring, once the recorder and the views exist.
+    drives_list_reserve();
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
     // Single-buffered, because that is all this panel offers: the adapter only
@@ -555,7 +561,9 @@ extern "C" void app_main(void) {
     flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
     drive_log_init();
     // After the recorder: the Drives view reads what it wrote, and its scan
-    // task asks drive_log_buf() for the mounted ring.
+    // task asks drive_log_buf() for the mounted ring. The task's stack was
+    // claimed before the display (see drives_list_reserve above); this opens
+    // the gate that lets it read.
     drives_list_init();
     // The task itself was created before the display (see above); this is only
     // the gate that lets it start reading. Commands must not run until the

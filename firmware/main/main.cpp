@@ -471,6 +471,11 @@ extern "C" void app_main(void) {
     // radio must be down before the display asks for memory. The cap is the
     // plan's own budget plus a second of slack, so a wedged driver delays the
     // gauge rather than hanging it.
+    //
+    // wait() waits for the RADIO, not just for the task to finish -- see its
+    // comment. Waiting on the task alone let this line return while the radio
+    // still held its memory, and bsp_display_start() below then asserted and
+    // rebooted the gauge, on any boot where WiFi failed slowly.
     gauge_platform::wifi_time::wait(wcfg.plan.boot_budget_ms + 1000);
 
     // Second, and for the same reason: the carousel's blit buffer is another

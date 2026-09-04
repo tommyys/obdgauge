@@ -36,6 +36,10 @@ struct {
 
     volatile bool started = false;
     volatile bool busy = false;
+    // Whether the radio -- and the contiguous internal RAM it holds -- is
+    // still ours. `busy` is not this: the task can be alive with the radio
+    // down, and the boot only cares about the memory. See wait().
+    volatile bool radio_is_up = false;
     uint32_t epoch = 0;
     char status[128] = "wifi: not started";
 
@@ -140,6 +144,7 @@ bool radio_up() {
     // about battery: it hands radio time back, which is the resource the OBD
     // link cares about if the keep-alive flag is ever left on.
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    g.radio_is_up = true;
     return true;
 }
 
@@ -159,6 +164,9 @@ void radio_down() {
         esp_netif_destroy_default_wifi(g.netif);
         g.netif = nullptr;
     }
+    // Last, and only here: the boot is watching this flag to know the memory
+    // is back before it starts the display.
+    g.radio_is_up = false;
 }
 
 bool join(const gauge::WifiNetwork& net, int timeout_ms) {
@@ -261,6 +269,12 @@ uint32_t ask_time(int timeout_ms) {
 
 int64_t now_ms() { return esp_timer_get_time() / 1000; }
 
+// How much longer than its own budget the boot will wait for the radio to
+// hand its memory back. Long enough for the tail of a timed-out attempt --
+// esp_wifi_stop() and deinit -- and short enough that a wedged driver delays
+// the gauge rather than hanging it.
+constexpr int kRadioReleaseGraceMs = 3000;
+
 void task(void*) {
     gauge::WifiPlan plan(g.n, g.cfg.plan);
     bool up = false;
@@ -302,7 +316,18 @@ void task(void*) {
             // only when nothing on the list worked. This is inside the loop
             // because the radio goes down HERE, not at the tail of the
             // function -- put there, it never ran once.
-            if (!plan.synced()) log_visible_networks();
+            //
+            // Skipped once the boot budget is spent, which is the only case
+            // where anything is waiting on this. app_main cannot start the
+            // display until the radio hands its memory back, and a blocking
+            // scan takes one to two seconds MORE on the boot that has already
+            // used its whole allowance. Before this, the boot walked out
+            // mid-scan and the panel's own allocation then failed -- an
+            // assert in bsp_display_lcd_init() and a reboot, on the boots
+            // where WiFi failed slowly. The retry pass minutes later gets a
+            // fresh budget and does log the scan; nothing is waiting then.
+            if (!plan.synced() && plan.attempt_timeout_ms(now_ms()) > 0)
+                log_visible_networks();
             radio_down();
             up = false;
             note_heap("radio released");
@@ -354,6 +379,23 @@ void wait(int max_ms) {
     const int64_t deadline = now_ms() + max_ms;
     while (g.busy && now_ms() < deadline) vTaskDelay(pdMS_TO_TICKS(20));
     if (g.busy) note("wifi: gave up waiting after %d ms", max_ms);
+    // And then for the radio itself. The caller's reason for waiting is not
+    // the clock, it is the memory: the display cannot be started while the
+    // radio holds its contiguous internal RAM (main.cpp says so where it
+    // calls this). Waiting on `busy` alone let the boot continue mid-attempt
+    // with the radio still up -- 72,395 bytes free, largest block 31,744,
+    // against 137,047 and 63,488 once released -- and the panel's allocation
+    // then failed hard: assert in bsp_display_lcd_init(), reboot, retry.
+    //
+    // A short grace on top, not another full budget: with the diagnostic
+    // scan skipped above, the release is the tail of an attempt that has
+    // already timed out, so this is milliseconds in practice.
+    if (g.cfg.plan.keep_up) return;
+    const int64_t radio_deadline = now_ms() + kRadioReleaseGraceMs;
+    while (g.radio_is_up && now_ms() < radio_deadline) vTaskDelay(pdMS_TO_TICKS(20));
+    if (g.radio_is_up)
+        note("wifi: radio STILL UP after %d ms of grace -- the display may "
+             "not find the memory it needs", kRadioReleaseGraceMs);
 }
 
 bool busy() { return g.busy; }

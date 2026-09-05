@@ -134,5 +134,35 @@ int main() {
     gauge::GForce unsolved;
     check("nothing to save before it solves", unsolved.export_axes().has_value(), false);
 
+    // --- the gravity average's speed --------------------------------------
+    // Demo mode is the gauge in somebody's hand, and a hand tilts. No
+    // accelerometer can tell a tilt from a shove, so the only cure is to find
+    // "down" again quickly. Tip a gauge on its side and hold it there: the
+    // dot must be back near the middle in a second or two, not a minute.
+    //
+    // Both are fed the identical samples. The only difference is the tau.
+    auto tilt_then_hold = [&](double tau) {
+        gauge::GForce g;
+        g.set_gravity_tau(tau);
+        // Ten seconds flat, so it knows which way down is.
+        for (int i = 0; i <= 200; ++i) g.update(i * 0.05, 0.0, 0.0, 1.0);
+        auto axes = g.export_axes();
+        (void)axes;
+        g.restore_axes({{1.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 1.0});
+        // Then tipped onto its side and held there for three seconds.
+        for (int i = 1; i <= 60; ++i) g.update(10.0 + i * 0.05, 1.0, 0.0, 0.0);
+        return g.total();
+    };
+    check("held at a tilt, the slow average is still calling it acceleration",
+          tilt_then_hold(gauge::kGravityTauS) > 0.5, true);
+    check("the demo average has forgiven the tilt within three seconds",
+          tilt_then_hold(gauge::kDemoGravityTauS) < 0.1, true);
+    gauge::GForce dflt;
+    dflt.set_gravity_tau(-1.0);
+    for (int i = 0; i <= 200; ++i) dflt.update(i * 0.05, 0.0, 0.0, 1.0);
+    dflt.restore_axes({{1.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 1.0});
+    for (int i = 1; i <= 60; ++i) dflt.update(10.0 + i * 0.05, 1.0, 0.0, 0.0);
+    check("a nonsense tau is ignored, not applied", dflt.total() > 0.5, true);
+
     return gauge_test::check_report();
 }

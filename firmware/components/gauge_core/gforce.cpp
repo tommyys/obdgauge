@@ -29,6 +29,10 @@ double GForce::confidence() const {
     return std::min(1.0, learn_w_ / kForwardConfidence);
 }
 
+void GForce::set_gravity_tau(double s) {
+    if (s > 0.0) grav_tau_ = s;
+}
+
 void GForce::reset_window(double speed_kph, double t) {
     spd_   = speed_kph;
     spd_t_ = t;
@@ -77,7 +81,7 @@ void GForce::update(double t, std::optional<double> ax, std::optional<double> ay
     last_t_   = t;
     if (dt <= 0 || dt > 5.0) return;
     // Exponential average towards the true vertical.
-    double k = 1.0 - std::exp(-dt / kGravityTauS);
+    double k = 1.0 - std::exp(-dt / grav_tau_);
     grav_.x += (a.x - grav_.x) * k;
     grav_.y += (a.y - grav_.y) * k;
     grav_.z += (a.z - grav_.z) * k;

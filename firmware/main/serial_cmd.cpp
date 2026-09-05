@@ -164,6 +164,35 @@ void cmd_i2c() {
     printf("OK %d devices\n", n);
 }
 
+// What the motion part last reported, straight off the snapshot the recorder
+// publishes. It does NOT touch the I2C bus -- the recorder task owns that, and
+// a second reader on it is the one thing drive_log.h forbids.
+//
+// Here because the G view cannot be checked any other way at a desk. It draws
+// no numbers, and until 2026-09-05 the part was not even read without a car on
+// the OBD port, so a frozen dot and a working one looked identical. Five
+// samples a second apart: if the numbers move when the gauge is moved, the
+// whole chain from the part to the view is alive.
+void cmd_imu() {
+    imu_sample_t im{};
+    double t = 0.0;
+    if (!drive_log_imu(&im, &t)) {
+        printf("ERR no sample yet -- the part is missing, or the recorder is "
+               "not running\n");
+        return;
+    }
+    for (int i = 0; i < 5; ++i) {
+        if (drive_log_imu(&im, &t)) {
+            printf("IMU t=%.2f ax=%+.3f ay=%+.3f az=%+.3f g  gz=%+.1f dps\n",
+                   t, im.ax, im.ay, im.az, im.gz);
+        } else {
+            printf("IMU (skipped -- caught mid-write)\n");
+        }
+        if (i < 4) vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    printf("OK\n");
+}
+
 void cmd_stats() {
     drive_log_stats_t s{};
     if (!drive_log_stats(&s)) { printf("ERR no recorder\n"); return; }
@@ -325,6 +354,8 @@ void task(void*) {
             printf("OK\n");
         } else if (!strcmp(line, "I2C")) {
             cmd_i2c();
+        } else if (!strcmp(line, "IMU")) {
+            cmd_imu();
         } else if (!strcmp(line, "STATS")) {
             cmd_stats();
         } else if (!strcmp(line, "LIST")) {

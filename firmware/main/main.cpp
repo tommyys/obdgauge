@@ -698,6 +698,12 @@ extern "C" void app_main(void) {
         if (replay_ok && !have_replay && !live_mode && demo_wanted()) {
             have_replay = true;
             supported = &channels;
+            // The g view is fed by the part in your hand in demo, and a hand
+            // tilts. Let it find "down" again in a second instead of thirty,
+            // so the dot springs back to centre by itself instead of hanging
+            // at the rim. The car never gets this: the live handover below
+            // builds a fresh DrivingScore, which is back on kGravityTauS.
+            score.g.set_gravity_tau(gauge::kDemoGravityTauS);
             replay.select(replay.selected());
             t0 = esp_timer_get_time();
             printf("replay: playing '%s', %.0f s at %.0fx\n",
@@ -731,12 +737,16 @@ extern "C" void app_main(void) {
             trip = gauge::Trip{};
             // The mounting angle survives. It is a property of the bracket,
             // not of the drive, so switching from replay to the real car must
-            // not throw away what has been learned and blank the g view.
-            {
-                const auto axes = score.g.export_axes();
-                score = gauge::DrivingScore{};
-                if (axes) score.g.restore_axes(*axes);
-            }
+            // not throw away it and blank the g view.
+            //
+            // From NVS, though, and NOT from the solver being reset. This
+            // path is only ever reached out of demo mode, and in demo the
+            // solver has been fed the part in your hand against a recorded
+            // drive's road speed -- two things with no relation to each
+            // other. Whatever it "learned" from that pairing is worthless,
+            // and the saved answer from a real drive is not.
+            score = gauge::DrivingScore{};
+            mount_cache_load(score.g);
             // And the dials off any bench sweep. A demo left running for half
             // an hour would otherwise keep overriding the real engine.
             sweep_stop_all();
@@ -748,16 +758,21 @@ extern "C" void app_main(void) {
         // any OBD channel -- because the driving score measures jerk, and a
         // hard stop sampled twice is not a rate of anything.
         //
-        // Never while a replay is playing. A replay carries its own recorded
-        // accelerometer on its own timeline, and feeding the part's readings
-        // in as well would hand the solver two clocks and a stationary car.
-        if (!have_replay) {
-            imu_sample_t im{};
-            double imu_t = 0.0;
-            if (drive_log_imu(&im, &imu_t) && imu_t != last_imu_t) {
-                last_imu_t = imu_t;
-                score.imu(imu_t, im.ax, im.ay, im.az);
-            }
+        // Fed in demo mode too, and from the part rather than from the drive
+        // being replayed. Tommy's call, 2026-09-05: the other views sweep
+        // their own bars in demo, so the g view should show the real thing in
+        // your hand -- pick the gauge up and the dot goes with it. Replaying
+        // g out of a recorded drive was the old answer, and it showed nothing
+        // at all, because the demo library was built before this gauge could
+        // record an accelerometer.
+        //
+        // The replay's own accelerometer is no longer read (see below), so
+        // there is only ever one clock feeding the solver.
+        imu_sample_t im{};
+        double imu_t = 0.0;
+        if (drive_log_imu(&im, &imu_t) && imu_t != last_imu_t) {
+            last_imu_t = imu_t;
+            score.imu(imu_t, im.ax, im.ay, im.az);
         }
 
         // Saved the moment the axes are first solved, and only then. NVS is
@@ -788,11 +803,11 @@ extern "C" void app_main(void) {
             while (replay.next(logical, &smp)) {
                 const std::string key = replay.channel_name(smp.chan);
                 st.set(key, smp.value);
-                // A recorded drive brings its own accelerometer. Mirrors
-                // state.IMU_KEYS in the simulator.
-                if (key == "imu_ax" || key == "imu_ay" || key == "imu_az")
-                    score.imu(smp.t_ms / 1000.0, st.get("imu_ax"),
-                              st.get("imu_ay"), st.get("imu_az"));
+                // A recorded drive's own accelerometer is deliberately NOT
+                // fed to the solver: in demo the g view runs off the part in
+                // your hand instead (see above). The channels are still set
+                // on the state, so anything that merely displays them is
+                // unaffected.
                 trip.update(smp.t_ms / 1000.0, st.get("speed"), st.get("fuel_rate"));
                 score.update(smp.t_ms / 1000.0, st.get("speed"), st.get("rpm"),
                              st.get("throttle"), st.get("fuel_rate"),

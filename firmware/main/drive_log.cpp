@@ -215,7 +215,16 @@ void task(void*) {
         // allowed to touch LogBuf, it is already holding the lock in the same
         // breath, and the round trip through the queue was what fed the
         // liveness timer and stopped drives from ever ending.
-        if (last_sample && g_have_imu) {
+        //
+        // Read whenever the part is there, NOT only while a drive is open.
+        // The two were one test until 2026-09-05, which quietly made the G
+        // view a car-only feature: on a bench, with nothing on the OBD port,
+        // the part was never read, so the dot sat frozen wherever it was and
+        // demo mode had no g at all. This block's own comment below already
+        // said the publish must not be coupled to a drive being open. Now it
+        // is not. Only the flash write is, which is the part that needs a
+        // drive to write into.
+        if (g_have_imu) {
             imu_sample_t im{};
             if (imu_read(&im)) {
                 // Publish first, whatever happens to the flash write below.
@@ -235,7 +244,7 @@ void task(void*) {
                 // keeps the average exact whichever side of the boundary a
                 // pass lands on. The resync below stops it trying to catch up
                 // after a long stall, which would burst writes into the ring.
-                if (now - last_imu >= kImuLogPeriodUs) {
+                if (last_sample && now - last_imu >= kImuLogPeriodUs) {
                     last_imu += kImuLogPeriodUs;
                     if (now - last_imu > kImuLogPeriodUs) last_imu = now;
                     // Ids are looked up once: log_chan_id walks a string table.

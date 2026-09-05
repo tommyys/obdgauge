@@ -34,6 +34,11 @@ import math
 # motorway curve cannot lean the vertical over, short enough that the gauge
 # being knocked into a new angle is forgiven within a minute.
 GRAVITY_TAU_S = 30.0
+# Demo mode's replacement for it -- see the C++ twin's kDemoGravityTauS for
+# why a gauge in the hand needs a fast one. The simulator never runs demo
+# mode, so nothing here selects it; it exists so the two ports stay readable
+# as the same file.
+DEMO_GRAVITY_TAU_S = 1.0
 
 # How much evidence forward needs before it is believed, as the summed square
 # of the observed longitudinal acceleration in g. Braking is what pays this
@@ -112,6 +117,7 @@ class GForce(object):
         self.peak_lon_brake = 0.0
         self.peak_lon_accel = 0.0
         self._grav = None         # the running average, un-normalised
+        self._grav_tau = GRAVITY_TAU_S
         self._last_t = None
         self._spd = None
         self._spd_t = None
@@ -124,6 +130,11 @@ class GForce(object):
         # not against whichever single sample happened to land last.
         self._win = (0.0, 0.0, 0.0)
         self._win_s = 0.0
+
+    def set_gravity_tau(self, seconds):
+        """Seconds in the gravity average. Ignored if not positive."""
+        if seconds > 0:
+            self._grav_tau = seconds
 
     @property
     def ready(self):
@@ -186,7 +197,7 @@ class GForce(object):
         if dt <= 0 or dt > 5.0:
             return
         # Exponential average towards the true vertical.
-        k = 1.0 - math.exp(-dt / GRAVITY_TAU_S)
+        k = 1.0 - math.exp(-dt / self._grav_tau)
         self._grav = (self._grav[0] + (a[0] - self._grav[0]) * k,
                       self._grav[1] + (a[1] - self._grav[1]) * k,
                       self._grav[2] + (a[2] - self._grav[2]) * k)

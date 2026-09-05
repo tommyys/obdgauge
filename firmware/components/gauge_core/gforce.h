@@ -31,6 +31,17 @@ namespace gauge {
 // being knocked into a new angle is forgiven within a minute.
 inline constexpr double kGravityTauS = 30.0;
 
+// What demo mode uses instead. Held in the hand rather than bolted to a car,
+// the 30 s figure above is wrong in the one way that matters: no chip can tell
+// a tilt from a shove -- both press on it identically -- so tipping the gauge
+// six degrees reads as 0.1 g and hangs the dot out there for the best part of
+// a minute while the slow average catches up. On a dashboard that is right,
+// because a car body does not tilt. In a hand it makes the meter look wild.
+// At 1 s the dot springs out when the gauge is moved and settles back by
+// itself, which is what somebody holding it expects to see. Demo only; the
+// car is never given this. (Tommy, 2026-09-05: "the gauge on my hand".)
+inline constexpr double kDemoGravityTauS = 1.0;
+
 // How much evidence forward needs before it is believed, as the summed square
 // of the observed longitudinal acceleration in g. Tuned on the 2026-08-29
 // mounted drive by locking at a range of values and measuring how far the axis
@@ -81,6 +92,10 @@ class GForce {
     // which a speed-derived score never could.
     void speed(double t, std::optional<double> speed_kph);
 
+    // Seconds in the gravity average. kGravityTauS unless told otherwise, and
+    // only demo mode tells it otherwise. Ignored if not positive.
+    void   set_gravity_tau(double s);
+
     bool   ready() const { return have_fwd_; }
     double total() const;                 // combined horizontal g
 
@@ -107,6 +122,7 @@ class GForce {
     void solve();
     void reset_window(double speed_kph, double t);
 
+    double grav_tau_ = kGravityTauS;
     bool   have_grav_ = false, have_fwd_ = false;
     Vec3   grav_{};                     // the running average, un-normalised
     Vec3   res_{};                      // last horizontal residual

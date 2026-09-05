@@ -453,6 +453,13 @@ ViewObjs build_view(const ViewSpec& spec) {
     if (spec.title) {
         v.title = mk_label(c, &lv_font_montserrat_20, 0x707070, LV_ALIGN_CENTER, 0, kTitleY);
         lv_label_set_text(v.title, spec.title);
+        if (spec.layout == Layout::Drives) {
+            lv_obj_update_layout(v.title);
+            lv_area_t a;
+            lv_obj_get_coords(v.title, &a);
+            printf("drives: the '%s' title sits y %d..%d\n", spec.title,
+                   (int)a.y1, (int)a.y2);
+        }
     }
 
     // Thermals has no hero -- the view IS the comparison between its three
@@ -807,6 +814,7 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     g_objs.clear();
     g_objs.reserve(static_cast<size_t>(g_count));
     for (int i = 0; i < g_count; ++i) g_objs.push_back(build_view(g_specs[i]));
+    drives_report_geometry();
     for (int i = 0; i < g_count; ++i) {
         place(i, 0);
         // Presses must NOT land on a view root. switch_to() hides the current

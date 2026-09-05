@@ -108,6 +108,17 @@ constexpr const char* kDateNs = "drivedate";
 // list within a week.
 constexpr const char* kHideNs = "drivehide";
 
+// Drives shorter than this are not offered. Tommy's rule, and the list is
+// what it is for: the gauge finding the adapter on the driveway, a move
+// between two parking bays, an engine started to be listened to -- none of
+// those are journeys, and with only three rows on the glass a single one of
+// them pushes a real drive off the list.
+//
+// They are hidden, not erased. Nothing can erase one drive out of the middle
+// of a ring without taking its neighbours, so every one of these is still on
+// the flash and still comes off it with tools/pull_drives.py.
+constexpr uint32_t kMinDriveMs = 5 * 60 * 1000;
+
 void date_key(char* out, size_t n, uint32_t id) { snprintf(out, n, "%u", (unsigned)id); }
 
 uint32_t lent_date(uint32_t id) {
@@ -179,8 +190,10 @@ void relist(gauge::LogBuf* log) {
     for (Entry& e : next) e = Entry{};
     int count = 0;
     int hidden = 0;
+    int brief = 0;
     for (size_t i = 0; i < n && count < kMaxCached; ++i) {
         if (is_hidden(found[i].id)) { ++hidden; continue; }
+        if (found[i].duration_ms < kMinDriveMs) { ++brief; continue; }
         next[count].info = found[i];
         // A drive that recorded with no clock can be given one afterwards.
         // Only ever fills a gap: a date the drive recorded for itself is the
@@ -213,7 +226,8 @@ void relist(gauge::LogBuf* log) {
     static bool said_once = false;
     if (changed || !said_once) {
         said_once = true;
-        flight_log("drives: list has %d of %u held, %d hidden", count, (unsigned)n, hidden);
+        flight_log("drives: list has %d of %u held, %d hidden, %d under 5 min",
+                   count, (unsigned)n, hidden, brief);
     }
 }
 

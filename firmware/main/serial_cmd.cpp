@@ -369,26 +369,6 @@ void task(void*) {
             gauge_ui::chrome_show((m & 1) != 0, (m & 2) != 0);
             bsp_display_unlock();
             printf("OK chrome scrims=%d bezel=%d\n", (m & 1) != 0, (m & 2) != 0);
-        } else if (!strncmp(line, "SCROLL", 6)) {
-            // Drags the Drives list up and down for a few seconds, so the
-            // frame rate during a scroll can be read off the ui log without a
-            // thumb on the glass. "SCROLL" for 8 s, "SCROLL 20" for twenty.
-            const double secs = (line[6] == ' ') ? strtod(line + 7, nullptr) : 8.0;
-            const int64_t until = esp_timer_get_time() + (int64_t)(secs * 1e6);
-            int dy = -8, moved = 0, steps = 0;
-            bool ok = true;
-            while (ok && esp_timer_get_time() < until) {
-                bsp_display_lock(-1);
-                ok = gauge_ui::drives_scroll_by(dy);
-                bsp_display_unlock();
-                moved += dy;
-                ++steps;
-                // Turn round before the list runs out of travel, so this keeps
-                // dirtying the screen rather than pushing against the end.
-                if (moved < -320 || moved > 0) { dy = -dy; }
-                vTaskDelay(pdMS_TO_TICKS(16));
-            }
-            printf(ok ? "OK scroll %d steps\n" : "ERR not on the drives view\n", steps);
         } else if (!strncmp(line, "SWEEP", 5)) {
             // "SWEEP" for a minute, "SWEEP 20" for twenty seconds.
             const double secs = (line[5] == ' ') ? strtod(line + 6, nullptr) : 60.0;

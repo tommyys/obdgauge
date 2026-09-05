@@ -39,15 +39,13 @@ struct DrivesSource {
 
 void drives_set_source(const DrivesSource* src);
 
+// Prints where the rows landed. Once, at boot.
+void drives_report_geometry();
+
 // Build the view's objects under `parent`, and refresh them. Both are called
 // with the display lock held, from ui.cpp.
 void drives_build(lv_obj_t* parent);
 void drives_update();
 
-// Scrolls the list by `dy` pixels, as a thumb would. A bench hook, for the
-// same reason SWIPE is one: a scroll is where this view's cost shows up, and
-// measuring it should not need a person in front of the glass. False when
-// there is no list to scroll. Call with the display lock held.
-bool drives_scroll_by(int dy);
 
 }  // namespace gauge_ui

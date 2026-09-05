@@ -25,10 +25,15 @@ namespace {
 // drives are folded off the flash at boot to feed these rows.
 constexpr int kMaxRows = 3;
 constexpr int kRowH    = 88;
-// Centres the three rows in the 466 px window, clear of the view title above
-// them. (76 was the old value: the top of the widest chord, chosen when there
-// were twelve rows and the list scrolled.)
-constexpr int kListPadY = 101;
+// Where the FIRST ROW'S TEXT sits, measured down the glass. The rows are
+// placed from this rather than the other way round: a row's box is mostly
+// padding -- its two lines are centred in 88 px -- so positioning the box puts
+// the visible gap somewhere nobody chose.
+//
+// Measured on the board rather than reasoned about, because reasoning about it
+// got the wrong answer twice: the view's own DRIVES title lands at y 80..101,
+// and this puts the first line of the first drive 16 px under it.
+constexpr int kFirstTextY = 117;
 // Between the drive's name line and its numbers line, inside one row.
 constexpr int kLineGap = 7;
 // The hairline under each row is part of the row's own 88 px, so the text has
@@ -128,12 +133,25 @@ void card_clicked(lv_event_t*) { g_open = -1; }
 
 void drives_set_source(const DrivesSource* src) { g_src = src; }
 
-
-bool drives_scroll_by(int dy) {
-    if (!g_list) return false;
-    lv_obj_scroll_by(g_list, 0, dy, LV_ANIM_OFF);
-    return true;
+// Where the rows actually ended up on the glass, after LVGL has laid out.
+// Printed once at boot: the spacing above the first row is a thing Tommy
+// looks at, and arguing about it from font metrics has not worked.
+void drives_report_geometry() {
+    if (!g_list) return;
+    lv_obj_update_layout(g_list);
+    lv_area_t a;
+    lv_obj_get_coords(g_list, &a);
+    printf("drives: list box y %d..%d\n", (int)a.y1, (int)a.y2);
+    for (int i = 0; i < kMaxRows; ++i) {
+        if (!g_rows[i].when) continue;
+        lv_area_t b, t;
+        lv_obj_get_coords(g_rows[i].box, &b);
+        lv_obj_get_coords(g_rows[i].when, &t);
+        printf("drives: row %d box y %d..%d, its title text y %d..%d\n",
+               i, (int)b.y1, (int)b.y2, (int)t.y1, (int)t.y2);
+    }
 }
+
 
 void drives_build(lv_obj_t* parent) {
     // The panel's width, not the parent's. drives_build runs while the
@@ -144,11 +162,15 @@ void drives_build(lv_obj_t* parent) {
     // everything by alignment rather than by measured size.
     const int w = (int)lv_display_get_horizontal_resolution(lv_display_get_default());
 
-    // The one place in this firmware that scrolls. ui.cpp takes
-    // LV_OBJ_FLAG_SCROLLABLE off everything on purpose: when LVGL decides a
-    // drag is a scroll it swallows the gesture, and the carousel's swipe IS
-    // that gesture. Restricted to the vertical axis, a drag up and down moves
-    // the list while a drag left and right is left alone to change view.
+    // Nothing in this firmware scrolls any more, this included.
+    //
+    // It used to, and scrolling was the whole problem: LVGL repaints the list
+    // for every pixel the finger moves, measured at 143 ms a repaint because
+    // the draw buffer is 16 rows tall and a full-height redraw goes out in
+    // some thirty separate bands. Three rows fit the glass, so there is
+    // nothing left to scroll to -- and with LV_OBJ_FLAG_SCROLLABLE off, LVGL
+    // also stops swallowing vertical drags, which it did on purpose to
+    // implement the scroll.
     g_list = lv_obj_create(parent);
     lv_obj_remove_style_all(g_list);
     // As wide as its rows and no wider. A scroll invalidates the whole of this
@@ -157,13 +179,18 @@ void drives_build(lv_obj_t* parent) {
     // anything in it to move. Nothing looks different; the frame is smaller.
     lv_obj_set_size(g_list, w - 120, w);
     lv_obj_center(g_list);
-    lv_obj_add_flag(g_list, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(g_list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(g_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(g_list, LV_OBJ_FLAG_SCROLLABLE);
     // Round panel: the rows would otherwise sit in the corners that the glass
     // does not have.
-    lv_obj_set_style_pad_top(g_list, kListPadY, 0);
-    lv_obj_set_style_pad_bottom(g_list, kListPadY, 0);
+    // The two lines of a row are centred inside its 88 px, so the box has to
+    // start this far above where its text is wanted. Measured from the fonts,
+    // like the row's own layout below.
+    const int h_top0 = (int)lv_font_get_line_height(&lv_font_montserrat_20);
+    const int h_bot0 = (int)lv_font_get_line_height(&lv_font_montserrat_14);
+    const int text_inset = (kRowH - kRowRule - h_top0 - kLineGap - h_bot0) / 2;
+    const int pad_top = kFirstTextY - text_inset;
+    lv_obj_set_style_pad_top(g_list, pad_top, 0);
+    lv_obj_set_style_pad_bottom(g_list, 0, 0);
     // NOT opaque, however tempting. This object is 466 px tall and centred,
     // so it covers the whole glass -- including the view's own "DRIVES" title
     // at ui.cpp's kTitleY, which is a sibling BEHIND it. Painting a background
@@ -174,7 +201,13 @@ void drives_build(lv_obj_t* parent) {
         r.box = lv_obj_create(g_list);
         lv_obj_remove_style_all(r.box);
         lv_obj_set_size(r.box, w - 120, kRowH);
-        lv_obj_align(r.box, LV_ALIGN_TOP_MID, 0, kListPadY + i * kRowH);
+        // i * kRowH, NOT pad_top + i * kRowH. LV_ALIGN_TOP_MID is measured
+        // from the parent's CONTENT box, which already begins below the
+        // padding -- so adding the padding again put the first row at y 190
+        // instead of 95 and left a 110 px hole under the title. It had been
+        // doing that since the view was written; twelve rows and a scroll hid
+        // it, three rows and no scroll do not.
+        lv_obj_align(r.box, LV_ALIGN_TOP_MID, 0, i * kRowH);
         lv_obj_remove_flag(r.box, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(r.box, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(r.box, row_clicked, LV_EVENT_CLICKED, (void*)(intptr_t)i);

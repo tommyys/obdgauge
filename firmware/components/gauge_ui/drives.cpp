@@ -29,9 +29,35 @@ struct Row {
     lv_obj_t* stats = nullptr;   // "12.4 km   3532 rpm   90 km/h"
 };
 
+// What a row's three strings were built from. Formatting them costs a
+// localtime_r, a strftime and three float conversions, and drives_update()
+// runs on EVERY frame -- measured at 2.33 ms of a 15 ms frame, for an answer
+// that changes when a drive is folded and at no other time. Compared first,
+// formatted only on a difference.
+struct RowKey {
+    uint32_t id = 0xFFFFFFFFu;
+    uint32_t epoch_s = 0;
+    uint32_t duration_ms = 0;
+    float    km = 0, rpm = 0, kph = 0;
+    bool     ready = false, table_ok = false, used = false;
+    bool same(const DriveRowInfo& d) const {
+        return used && id == d.id && epoch_s == d.epoch_s &&
+               duration_ms == d.stats.duration_ms && ready == d.ready &&
+               table_ok == d.table_ok && km == d.stats.distance_km &&
+               rpm == d.stats.peak_rpm && kph == d.stats.peak_kph;
+    }
+    void take(const DriveRowInfo& d) {
+        id = d.id; epoch_s = d.epoch_s; duration_ms = d.stats.duration_ms;
+        km = d.stats.distance_km; rpm = d.stats.peak_rpm; kph = d.stats.peak_kph;
+        ready = d.ready; table_ok = d.table_ok; used = true;
+    }
+};
+
 lv_obj_t* g_list = nullptr;
 lv_obj_t* g_note = nullptr;      // the empty/unavailable line
 Row       g_rows[kMaxRows];
+RowKey    g_keys[kMaxRows];
+RowKey    g_card_key;
 
 // The card: the same four numbers, big. -1 when the list is showing.
 int       g_open = -1;
@@ -87,6 +113,7 @@ void card_clicked(lv_event_t*) { g_open = -1; }
 
 void drives_set_source(const DrivesSource* src) { g_src = src; }
 
+
 bool drives_scroll_by(int dy) {
     if (!g_list) return false;
     lv_obj_scroll_by(g_list, 0, dy, LV_ANIM_OFF);
@@ -122,6 +149,12 @@ void drives_build(lv_obj_t* parent) {
     // that the glass does not have.
     lv_obj_set_style_pad_top(g_list, 76, 0);
     lv_obj_set_style_pad_bottom(g_list, 76, 0);
+    // Opaque, though the screen behind it is the same black. A transparent
+    // object has to be composed over whatever is under it, in every band of
+    // every frame of a scroll; an opaque one is drawn straight. Nothing looks
+    // different.
+    lv_obj_set_style_bg_color(g_list, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(g_list, LV_OPA_COVER, 0);
 
     for (int i = 0; i < kMaxRows; ++i) {
         Row& r = g_rows[i];
@@ -138,6 +171,9 @@ void drives_build(lv_obj_t* parent) {
         lv_obj_set_style_border_width(r.box, 1, 0);
         lv_obj_set_style_border_color(r.box, lv_color_hex(0x303030), 0);
         lv_obj_set_style_border_opa(r.box, LV_OPA_COVER, 0);
+        // Opaque for the same reason as the list itself.
+        lv_obj_set_style_bg_color(r.box, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(r.box, LV_OPA_COVER, 0);
 
         // Centred in the row, not hung from its top. The two lines were at 6
         // and 38 of an 88 px row, which left 6 px above the text and 32 below
@@ -202,6 +238,8 @@ void drives_update() {
         lv_obj_add_flag(g_list, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(g_note, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(g_card, LV_OBJ_FLAG_HIDDEN);
+        if (g_card_key.same(info)) return;    // nothing to re-format
+        g_card_key.take(info);
 
         char buf[48];
         fmt_when(buf, sizeof buf, info.epoch_s);
@@ -246,9 +284,12 @@ void drives_update() {
         DriveRowInfo d;
         if (i >= n || !g_src->row(i, &d)) {
             lv_obj_add_flag(r.box, LV_OBJ_FLAG_HIDDEN);
+            g_keys[i].used = false;
             continue;
         }
         lv_obj_clear_flag(r.box, LV_OBJ_FLAG_HIDDEN);
+        if (g_keys[i].same(d)) continue;      // nothing to re-format
+        g_keys[i].take(d);
 
         char buf[64];
         fmt_when(buf, sizeof buf, d.epoch_s);

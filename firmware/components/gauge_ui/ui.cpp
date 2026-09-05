@@ -277,7 +277,9 @@ struct ViewObjs {
 
 uint32_t g_ease_tau_ms = kEaseTauMs;
 // Set by the gesture callback, acted on by update(). See gesture_cb.
+// The second is the Drives list's own step, in whole rows.
 int g_pending_step = 0;
+int g_pending_drives_step = 0;
 
 const ViewSpec* g_specs = nullptr;
 int g_count = 0;
@@ -581,7 +583,15 @@ void gesture_cb(lv_event_t* e) {
     lv_indev_t* indev = lv_indev_active();
     if (!indev) return;
     lv_dir_t dir = lv_indev_get_gesture_dir(indev);
-    if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT) return;
+    const bool vertical = (dir == LV_DIR_TOP || dir == LV_DIR_BOTTOM);
+    const bool horizontal = (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT);
+    if (!vertical && !horizontal) return;
+    // A vertical flick belongs to the Drives list, and only when it is the
+    // view on screen. Everywhere else there is nothing to scroll, and the
+    // gesture is simply dropped.
+    const bool on_drives =
+        g_cur >= 0 && g_cur < g_count && g_specs[g_cur].layout == Layout::Drives;
+    if (vertical && !on_drives) return;
 
     // LVGL repeats LV_EVENT_GESTURE for as long as the gesture is active, once
     // per input read, so one swipe would otherwise advance many views.
@@ -606,6 +616,16 @@ void gesture_cb(lv_event_t* e) {
     // slide started from a task (measured on the board with the SWIPE console
     // command, both landing on the tacho). The app loop picks this up on its
     // next pass, a millisecond or two later, with LVGL idle.
+    if (vertical) {
+        // Flick up to move down the list. Queued for the same reason the view
+        // step is: this callback runs inside lv_timer_handler, and doing the
+        // work here costs several times what it costs from the app loop.
+        g_pending_drives_step =
+            (dir == LV_DIR_TOP) ? -drives_step_rows() : +drives_step_rows();
+        ++g_gestures;
+        return;
+    }
+
     g_pending_step = (dir == LV_DIR_LEFT) ? +1 : -1;
     ++g_gestures;
 }
@@ -786,6 +806,8 @@ void chrome_show(bool scrims, bool bezel) {
 
 void queue_view_step(int step) { g_pending_step = step; }
 
+void queue_drives_step(int rows) { g_pending_drives_step = rows; }
+
 void advance_view(int step) {
     switch_to(gauge::ring_index(g_cur, g_count, step), step);
 }
@@ -819,6 +841,13 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
         if (i != 0) lv_obj_add_flag(g_objs[static_cast<size_t>(i)].root, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_event_cb(parent, gesture_cb, LV_EVENT_GESTURE, nullptr);
+    // And on the Drives list itself. LVGL sends LV_EVENT_GESTURE to the object
+    // under the finger, and the rows of that list are clickable objects in
+    // front of `parent`. With LVGL's own scrolling switched off there is
+    // nothing else to catch a vertical flick, so the one handler is put where
+    // both can find it. The debounce inside makes a double delivery harmless.
+    if (lv_obj_t* dl = drives_list_obj())
+        lv_obj_add_event_cb(dl, gesture_cb, LV_EVENT_GESTURE, nullptr);
     // No LV_EVENT_PRESSED handler here on purpose: it never fired, and if it
     // ever started to it would take a second snapshot for the same touch. The
     // touch is watched at the input device instead -- see watch_for_touch().
@@ -1027,6 +1056,14 @@ void update(const Model& m) {
     ViewObjs& v = g_objs[static_cast<size_t>(g_cur)];
 
     if (s.layout == Layout::Drives) {
+        // A flick the gesture callback queued. One jump of whole rows, which
+        // is one repaint -- see drives_build for why this view does not
+        // scroll pixel by pixel.
+        if (g_pending_drives_step) {
+            const int rows = g_pending_drives_step;
+            g_pending_drives_step = 0;
+            drives_step(rows);
+        }
         // No hero, no dial, no rows, and no availability screen -- an empty
         // list is this view's own answer. Formatting it every frame is cheap:
         // drives_update() writes a label only when its text actually changed.

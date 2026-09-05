@@ -352,6 +352,18 @@ void task(void*) {
             if (line[4] == ' ')
                 gauge_ui::set_ease_tau_ms((uint32_t)strtoul(line + 5, nullptr, 10));
             printf("OK ease %ums\n", (unsigned)gauge_ui::ease_tau_ms());
+        } else if (!strncmp(line, "FLICK", 5)) {
+            // A vertical flick on the Drives list, with no finger on the
+            // glass -- the same queue a real gesture uses. "FLICK" moves down
+            // the list, "FLICK -" moves back up. Prints where the list ended
+            // up, so a step can be checked from a tool call.
+            const int dir = (line[5] == ' ' && line[6] == '-') ? +1 : -1;
+            const int before = gauge_ui::drives_scroll_y();
+            gauge_ui::queue_drives_step(dir * gauge_ui::drives_step_rows());
+            // The app loop acts on it; give it a few frames to land.
+            vTaskDelay(pdMS_TO_TICKS(300));
+            printf("OK flick %d, scroll y %d -> %d\n", dir, before,
+                   gauge_ui::drives_scroll_y());
         } else if (!strncmp(line, "SWIPE", 5)) {
             // A real view change, slide and all, with no finger on the glass.
             // The slide is where this firmware's timing and memory problems

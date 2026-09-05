@@ -50,4 +50,13 @@ void drives_update();
 // there is no list to scroll. Call with the display lock held.
 bool drives_scroll_by(int dy);
 
+// Steps the list by whole rows, in one repaint. Negative moves down the list.
+// This view does not scroll pixel by pixel: see drives_build for why.
+bool drives_step(int rows);
+int  drives_step_rows();
+// The scrolling object, for attaching a gesture handler to.
+lv_obj_t* drives_list_obj();
+// Where the list currently sits, in pixels. -1 before it is built.
+int drives_scroll_y();
+
 }  // namespace gauge_ui

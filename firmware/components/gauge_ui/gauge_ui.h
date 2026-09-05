@@ -79,6 +79,9 @@ void advance_view(int step);
 // different amounts of time and the difference had to be pinned on something.
 void queue_view_step(int step);
 
+// A vertical flick on the Drives list, without a finger. Whole rows.
+void queue_drives_step(int rows);
+
 // A full-screen message over everything, for the moments when the gauge is
 // about to leave the glass for a few seconds -- a button restart, so far. Both
 // calls need the display lock, like every other UI write. See note_show() in

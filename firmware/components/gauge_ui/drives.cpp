@@ -116,33 +116,9 @@ void drives_set_source(const DrivesSource* src) { g_src = src; }
 
 bool drives_scroll_by(int dy) {
     if (!g_list) return false;
-    // Bounded: with LVGL's own scrolling off, nothing else stops this walking
-    // the list off either end.
-    lv_obj_scroll_by_bounded(g_list, 0, dy, LV_ANIM_OFF);
+    lv_obj_scroll_by(g_list, 0, dy, LV_ANIM_OFF);
     return true;
 }
-
-// The scrolling object itself, so ui.cpp can put its gesture handler on it as
-// well as on the screen. A press that lands on a row sends the gesture to that
-// row, not to the screen, and with LVGL's own scrolling off there is nothing
-// else to catch a vertical flick -- an unreachable handler would leave this
-// list unscrollable by finger.
-lv_obj_t* drives_list_obj() { return g_list; }
-
-int drives_scroll_y() { return g_list ? (int)lv_obj_get_scroll_y(g_list) : -1; }
-
-// One flick, one jump, one repaint. `rows` is negative to move down the list
-// (a flick upwards) and positive to move back up it.
-bool drives_step(int rows) {
-    if (!g_list || rows == 0) return false;
-    lv_obj_scroll_by_bounded(g_list, 0, rows * kRowH, LV_ANIM_OFF);
-    return true;
-}
-
-// How many rows a single flick moves. The window is 466 px tall with 76 px of
-// padding at each end, so about four rows are on the glass at once; three
-// leaves one of them behind as the place you were.
-int drives_step_rows() { return 3; }
 
 void drives_build(lv_obj_t* parent) {
     // The panel's width, not the parent's. drives_build runs while the
@@ -153,21 +129,11 @@ void drives_build(lv_obj_t* parent) {
     // everything by alignment rather than by measured size.
     const int w = (int)lv_display_get_horizontal_resolution(lv_display_get_default());
 
-    // The one place in this firmware that scrolls -- and it does NOT scroll
-    // the way LVGL would.
-    //
-    // LVGL's own scrolling follows the finger pixel by pixel, and every one of
-    // those pixels is a full repaint of this object: measured on the board at
-    // 143 ms a frame, so about 7 fps, because the draw buffer is 16 rows tall
-    // and a full-height redraw is done in some thirty separate bands, each
-    // re-walking the object tree. Smooth scrolling on this panel is smooth in
-    // name only.
-    //
-    // So the list steps instead. A flick up or down moves it by whole rows in
-    // one jump -- ONE repaint per flick rather than thirty-odd -- which is
-    // Tommy's call and the right one: instant beats smooth-but-crawling.
-    // LV_OBJ_FLAG_SCROLLABLE therefore stays OFF, which also hands vertical
-    // gestures to ui.cpp's gesture_cb instead of letting LVGL swallow them.
+    // The one place in this firmware that scrolls. ui.cpp takes
+    // LV_OBJ_FLAG_SCROLLABLE off everything on purpose: when LVGL decides a
+    // drag is a scroll it swallows the gesture, and the carousel's swipe IS
+    // that gesture. Restricted to the vertical axis, a drag up and down moves
+    // the list while a drag left and right is left alone to change view.
     g_list = lv_obj_create(parent);
     lv_obj_remove_style_all(g_list);
     // As wide as its rows and no wider. A scroll invalidates the whole of this
@@ -176,7 +142,7 @@ void drives_build(lv_obj_t* parent) {
     // anything in it to move. Nothing looks different; the frame is smaller.
     lv_obj_set_size(g_list, w - 120, w);
     lv_obj_center(g_list);
-    lv_obj_remove_flag(g_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(g_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(g_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(g_list, LV_SCROLLBAR_MODE_OFF);
     // Round panel: the first and last rows would otherwise sit in the corners

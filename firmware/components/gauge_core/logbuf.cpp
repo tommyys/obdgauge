@@ -216,7 +216,17 @@ bool LogBuf::read_drive(uint32_t id, RecordSink sink, void* ctx,
     if (version_out) *version_out = start_h.table_version;
     else if (start_h.table_version != kChanTableVersion) return false;
 
-    Record buf[kRecordsPerSector];
+    // Static, not a 4,080-byte stack frame. EVERY caller holds the recorder's
+    // lock for the whole call -- drives_list's scan task and serial_cmd's GET
+    // both take drive_log_lock() around it -- so there is never a second
+    // reader in here, and this buffer does not need to exist once per calling
+    // task. It is the largest local on this board, and sizing two task stacks
+    // around it cost 8 KB of the byte-addressable internal RAM that LVGL, the
+    // panel's DMA and every other stack come out of -- the pool that measured
+    // 4,608 bytes in its largest free block once the views were up. If a third
+    // caller is ever added, it takes the same lock or this goes back on the
+    // stack.
+    static Record buf[kRecordsPerSector];
     for (size_t k = 0; k < count; ++k) {
         const size_t i = (start + k) % count;
         if (!sector_of(i, id, nullptr)) break;   // walked off the end of the drive

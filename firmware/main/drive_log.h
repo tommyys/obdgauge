@@ -41,8 +41,14 @@ typedef struct {
     uint16_t table_version;
 } drive_log_stats_t;
 
-// Mounts the ring and starts the writer task. Safe to call with no partition:
-// it says so and records nothing.
+// Claims the writer task's stack and its queue. Call EARLY, before the
+// display -- what this board runs out of is contiguous internal RAM, and by
+// the time the views have theirs even this task's 3 KB may not fit. The task
+// parks until drive_log_init() has mounted the ring.
+void drive_log_reserve(void);
+
+// Mounts the ring and releases the writer task. Safe to call with no
+// partition: it says so and records nothing.
 void drive_log_init(void);
 
 // Hands one live reading to the writer. Called from the UI loop -- never

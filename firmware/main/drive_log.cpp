@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstring>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_timer.h"
@@ -143,6 +144,9 @@ void save_clock() {
 volatile uint32_t g_stack_low = 0xFFFFFFFFu;
 
 void task(void*) {
+    // Created before the display so its stack exists at all (see
+    // drive_log_reserve); the ring it writes to is mounted later.
+    while (!g_log) vTaskDelay(pdMS_TO_TICKS(50));
     // Refreshed ONLY by a reading that came from the car. The IMU must never
     // touch this: it used to be fed back through the same queue, which meant
     // the recorder refreshed its own liveness timer 20 times a second and the
@@ -299,9 +303,6 @@ void drive_log_init(void) {
         flight_log("logs partition will not mount, NOT recording");
         return;
     }
-    g_log = &log;
-    g_lock = xSemaphoreCreateMutex();
-    g_q = xQueueCreate(128, sizeof(QSample));
     g_have_imu = imu_address() != 0;
 
     // The floor for a boot with no Mac: the drive happened after this.
@@ -318,6 +319,15 @@ void drive_log_init(void) {
              (unsigned)floor_s);
     flight_log("drive log up: %u drive starts", (unsigned)log.drive_starts());
 
+    // Last, and deliberately: the writer task is already running and parked on
+    // this pointer. Everything it reaches for must be true before it wakes.
+    g_log = &log;
+}
+
+extern "C" void drive_log_reserve(void) {
+    g_lock = xSemaphoreCreateMutex();
+    g_q = xQueueCreate(128, sizeof(QSample));
+
     // Priority 3 -- below the UI and below live_link's 4. Core 0, beside the
     // radio, so LVGL's render on core 1 never waits behind a flash erase.
     //
@@ -328,7 +338,31 @@ void drive_log_init(void) {
     // batch_, not a stack frame. The 5 KB this returns is internal RAM, which
     // is the only memory the BT controller can use and the only memory the
     // panel's DMA can use. Watch that ui: figure if this task grows a local.
-    xTaskCreatePinnedToCore(task, "drivelog", 3072, nullptr, 3, nullptr, 0);
+    //
+    // Claimed HERE, before the display, with every other long-lived internal
+    // claim. Created at its old point inside drive_log_init() it fitted only
+    // as long as nothing else took that hole first -- and on 2026-09-05 the
+    // drives scan task's 8 KB did. The recorder then never started: the gauge
+    // drove with the car connected and feeding readings, the ui: line said
+    // "stack spare drivelog 4294967295" (the task had never run once), 400
+    // samples were dropped for a full queue nobody was draining, and not one
+    // record reached the flash. Nothing said so -- the fourth time this exact
+    // failure has cost a feature on this board, so the result is checked.
+    // INTERNAL|8BIT: the byte-addressable pool a task stack must come from.
+    const size_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const size_t big = heap_caps_get_largest_free_block(caps);
+    const size_t free_now = heap_caps_get_free_size(caps);
+    if (xTaskCreatePinnedToCore(task, "drivelog", 3072, nullptr, 3, nullptr, 0)
+            != pdPASS) {
+        printf("drives: FAILED to start the recorder task -- NOTHING WILL BE "
+               "RECORDED. Internal RAM: %u free, largest block %u, needed "
+               "3072\n", (unsigned)free_now, (unsigned)big);
+        flight_log("drive log: recorder task FAILED, internal free %u "
+                   "largest %u", (unsigned)free_now, (unsigned)big);
+    } else {
+        flight_log("drive log: recorder task reserved, dram free %u "
+                   "largest %u", (unsigned)free_now, (unsigned)big);
+    }
 }
 
 extern "C" uint32_t drive_log_stack_headroom(void) { return g_stack_low; }

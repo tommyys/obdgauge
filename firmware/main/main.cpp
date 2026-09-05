@@ -483,6 +483,13 @@ extern "C" void app_main(void) {
     // first swipe it was refused -- 32,831 bytes free, largest hole 23,552 --
     // and the swipe then slid nothing. Both big internal claims are made here,
     // while the heap is whole, and everything after fits around them.
+    // The pool every task stack and every DMA buffer comes out of, printed
+    // before the claims below and again once the views are up. Plain
+    // MALLOC_CAP_INTERNAL, which every earlier log here used, counts the
+    // 32-bit-only region too and reads far higher than what is spendable.
+    flight_log("before claims: dram free %u largest %u",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     const bool band_ok = gauge_ui::reserve_slide_band(W);
     flight_log("slide band %s", band_ok ? "reserved" : "FAILED");
 
@@ -506,12 +513,11 @@ extern "C" void app_main(void) {
     // for the car. Parked here; it does not touch the radio until
     // live::start() wakes it in the loop below.
     live::reserve();
-    // And the drives scan task's 8 KB, for the same reason. At its old point,
-    // after gauge_ui::init(), the largest internal block left was 7,680 -- so
-    // it never started, and the Drives view showed nothing while eleven
-    // recorded drives sat on the flash. drives_list_init() below still does
-    // the wiring, once the recorder and the views exist.
-    drives_list_reserve();
+    // And the recorder's 3 KB. Small, and claimed here anyway: on 2026-09-05
+    // it was the one left out, the drives scan task below took the hole it
+    // had been fitting in, and the gauge drove a whole drive with the car
+    // connected and recorded not one record of it.
+    drive_log_reserve();
 
     auto id = gauge::identify("JM0NDA1R0R2345678", "", "MX-5");
     // Single-buffered, because that is all this panel offers: the adapter only
@@ -563,12 +569,17 @@ extern "C" void app_main(void) {
     const bool have_imu = imu_init();
     printf("imu: %s (addr 0x%02x, whoami 0x%02x)\n",
            have_imu ? "ready" : "NOT FOUND", imu_address(), imu_whoami());
-    flight_log("display up, ui ready, imu %s", have_imu ? "ready" : "MISSING");
+    // What the views actually left behind. Every silent failure on this board
+    // -- four of them now -- has been a claim made after this point against a
+    // number nobody was printing. Logged so the next one is a measurement
+    // rather than a day of guessing.
+    flight_log("display up, ui ready, imu %s, dram free %u largest %u",
+               have_imu ? "ready" : "MISSING",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     drive_log_init();
     // After the recorder: the Drives view reads what it wrote, and its scan
     // task asks drive_log_buf() for the mounted ring. The task's stack was
-    // claimed before the display (see drives_list_reserve above); this opens
-    // the gate that lets it read.
     drives_list_init();
     // The task itself was created before the display (see above); this is only
     // the gate that lets it start reading. Commands must not run until the

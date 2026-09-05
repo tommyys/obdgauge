@@ -1,6 +1,5 @@
-// Wires the Drives view to the flash ring. Two calls, in two places: the
-// stack is claimed before the display, the reading starts after the recorder
-// and the views are up.
+// Wires the Drives view to the flash ring. Call once at boot, after
+// drive_log_init() and after the UI exists.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -9,10 +8,9 @@
 extern "C" {
 #endif
 
-// Claims the scan task's 8 KB of internal RAM. Call EARLY, before the display
+// Claims the scan task's 4 KB of internal RAM. Call EARLY, before the display
 // and before any view is built -- what this board runs out of is contiguous
-// internal RAM, and after the views have theirs the largest free block is
-// under 8 KB. The task parks until drives_list_init() opens the gate.
+// internal RAM, and after the views have theirs there is barely any of it. The task parks until drives_list_init() opens the gate.
 void drives_list_reserve(void);
 
 // Wires the view to the ring and lets the scan task read. Call after

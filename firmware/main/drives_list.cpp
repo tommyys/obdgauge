@@ -294,9 +294,14 @@ void scan_task(void*) {
                 // One line per drive folded. It is the only way to check the
                 // four numbers on the glass against the same drive pulled to
                 // CSV -- a panel cannot be read from a tool call.
-                flight_log("drives: drive %u folded, %.2f km, %.0f rpm, %.0f km/h, %u recs",
+                // The stack headroom rides along: 4 KB is not generous, and a
+                // fold is this task's deepest moment.
+                flight_log("drives: drive %u folded, %.2f km, %.0f rpm, %.0f km/h, "
+                           "%u recs, stack spare %u",
                            (unsigned)want_id, st.distance_km, st.peak_rpm, st.peak_kph,
-                           (unsigned)st.records);
+                           (unsigned)st.records,
+                           (unsigned)(uxTaskGetStackHighWaterMark(nullptr) *
+                                      sizeof(StackType_t)));
             } else {
                 flight_log("drives: drive %u could not be read", (unsigned)want_id);
             }
@@ -440,31 +445,38 @@ const gauge_ui::ClockSource kClockSource = {
     []() -> uint32_t { return drive_log_now(); },
 };
 
-void drives_list_reserve(void) {
+void drives_list_init(void) {
     g_mutex = xSemaphoreCreateMutex();
+    gauge_ui::drives_set_source(&kSource);
+    gauge_ui::clock_set_source(&kClockSource);
+    g_enabled = true;
     // Priority 1: below the recorder (3) and the console (2). Nothing waits on
     // it, and every millisecond it spends is a millisecond of flash reads.
     // Core 0, with the rest of the flash work -- the UI loop owns core 1.
-    // 8192, not 4096: read_drive() holds a whole 4,080-byte flash sector in this
-    // task's frame while it streams a drive, the same reason serial_cmd's task
-    // is 12 KB. At 4 KB this overflowed and rebooted the gauge on the first
-    // scan -- before any drive was ever listed.
+    // 4096, down from 8192. The 8 KB was for read_drive()'s 4,080-byte sector
+    // buffer living in this task's frame; that buffer is static inside
+    // read_drive() now (see logbuf.cpp -- every caller holds the recorder's
+    // lock). 4 KB is what fits: measured on the board, the largest free block
+    // once the views are up is 4,608 bytes.
     //
-    // Created HERE, before the display, for the reason serial_cmd and the live
-    // task are: what runs out on this board is contiguous internal RAM, and by
-    // the time the views have theirs there is not 8 KB of it left in one piece.
-    // Called at its old point -- after gauge_ui::init() -- this measured 9,371
-    // bytes free with a largest block of 7,680, so xTaskCreate failed, nothing
-    // checked, and the Drives view sat empty with eleven drives on the flash
-    // underneath it. The result is checked below, and loudly, because that is
-    // indistinguishable from "no drives were ever recorded".
-    const size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    const size_t free_now = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    if (xTaskCreatePinnedToCore(scan_task, "drivescan", 8192, nullptr, 1, nullptr, 0)
+    // Created HERE, after the display, and NOT with the early claims. Moving
+    // it early on 2026-09-04 did fix this view -- and took 8 KB of 8-bit
+    // internal RAM that LVGL's own 8 KB task needed, so the gauge panicked at
+    // esp_lv_adapter_start() and rebooted. The two cannot both have it. The
+    // result is checked below, and loudly, because a silent failure here reads
+    // exactly like "no drives were ever recorded".
+    // INTERNAL|8BIT, not INTERNAL. A task stack must be byte-addressable, and
+    // plain MALLOC_CAP_INTERNAL also counts the 32-bit-only region -- it read
+    // 84,431 free with a largest block of 34,816 on the boot where LVGL's own
+    // 8 KB task creation failed for want of memory. The wrong pool.
+    const size_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const size_t big = heap_caps_get_largest_free_block(caps);
+    const size_t free_now = heap_caps_get_free_size(caps);
+    if (xTaskCreatePinnedToCore(scan_task, "drivescan", 4096, nullptr, 1, nullptr, 0)
             != pdPASS) {
         printf("drives: FAILED to start the scan task -- the Drives view will "
                "stay empty. Internal RAM: %u free, largest block %u, "
-               "needed 8192\n",
+               "needed 4096\n",
                (unsigned)free_now, (unsigned)big);
         flight_log("drives: scan task FAILED, internal free %u largest %u",
                    (unsigned)free_now, (unsigned)big);
@@ -474,10 +486,4 @@ void drives_list_reserve(void) {
     }
 }
 
-void drives_list_init(void) {
-    gauge_ui::drives_set_source(&kSource);
-    gauge_ui::clock_set_source(&kClockSource);
-    // The task itself was created before the display (see drives_list_reserve);
-    // this is only the gate that lets it start reading flash.
-    g_enabled = true;
-}
+

@@ -463,23 +463,27 @@ extern "C" void serial_cmd_enable(void) { g_enabled = true; }
 
 extern "C" void serial_cmd_init(void) {
     // Priority 2: below the recorder, well below the UI. Nothing waits on it.
-    // 12288 bytes, not 8192: cmd_get's own frame holds read_drive's 4,080-byte
-    // sector buffer, and emit()'s sink calls printf, which is 1-1.5 KB of
-    // stack in ESP-IDF on its own. (The DriveInfo table that grew from 32 to
-    // 64 entries with the truncation fix is static, so it is not on this
-    // stack -- but 8 KB was thin before that and has never once run.)
+    // 8192, down from 12288: the 12 KB was sized for read_drive's 4,080-byte
+    // sector buffer sitting in cmd_get's frame, and that buffer is static
+    // inside read_drive() now (see logbuf.cpp -- every caller holds the
+    // recorder's lock). What is left is emit()'s printf, 1-1.5 KB of stack in
+    // ESP-IDF on its own. The 4 KB this returns is the byte-addressable
+    // internal RAM the whole board is short of. Watch "stack spare serialcmd"
+    // on the ui: line -- it has been reporting over 4,800 bytes spare.
     // The result is checked, and loudly. A silent failure here reads exactly
     // like a wedged board: the gauge runs, draws and logs perfectly, and
     // simply never answers a command again -- `STATS` and pull_drives.py hang
     // with no error anywhere. That is what linking the WiFi and lwip stacks
     // in did on 2026-09-03: their static footprint left less internal RAM
     // than this 12 KB stack needed, and nothing said so.
-    const size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    if (xTaskCreatePinnedToCore(task, "serialcmd", 12288, nullptr, 2, nullptr, 0)
+    const size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                                        MALLOC_CAP_8BIT);
+    if (xTaskCreatePinnedToCore(task, "serialcmd", 8192, nullptr, 2, nullptr, 0)
             != pdPASS) {
         printf("serial: FAILED to start the console task -- no commands will "
-               "work. Internal RAM: %u free, largest block %u, needed 12288\n",
-               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               "work. DRAM: %u free, largest block %u, needed 8192\n",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL |
+                                                 MALLOC_CAP_8BIT),
                (unsigned)big);
     }
 }

@@ -338,6 +338,10 @@ void task(void*) {
             if (!log) { printf("ERR no recorder\n"); }
             else if (!drive_log_lock(30000)) { printf("ERR busy\n"); }
             else { const bool ok = log->erase_all(); drive_log_unlock();
+                   // The Drives view builds its list once and then leaves the
+                   // flash alone, so an erase is invisible to it without this
+                   // -- it would go on offering drives that no longer exist.
+                   if (ok) drives_list_refresh();
                    printf(ok ? "OK erased\n" : "ERR erase failed\n"); }
         } else if (!strncmp(line, "EASE", 4)) {
             // The needles chase their readings rather than jumping to them.

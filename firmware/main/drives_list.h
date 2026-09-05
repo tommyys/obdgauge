@@ -17,6 +17,12 @@ void drives_list_reserve(void);
 // drive_log_init() and after the UI exists.
 void drives_list_init(void);
 
+// Says the built list is wrong and must be read again -- for a change the
+// ring's own counters cannot report. The list is otherwise built once at
+// startup and left alone, so that a drive being recorded costs the Drives
+// view no flash reads at all. Takes effect the next time the view is drawn.
+void drives_list_refresh(void);
+
 // Lends a date to a drive that recorded with no clock. Kept in NVS beside the
 // ring, because the epoch on flash cannot be rewritten in place. False if NVS
 // refused. An epoch of 0 clears it.

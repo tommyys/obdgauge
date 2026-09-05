@@ -31,47 +31,36 @@ namespace {
 // The newest drives, which is what a list is for. The ring can hold more; the
 // view shows the newest and the console still reaches every one of them.
 constexpr int kMaxCached = 12;
-// How often the list itself is refreshed WHILE THE DRIVES VIEW IS ON SCREEN.
-// Drives open and close on the scale of minutes, so re-listing faster than this
-// is flash traffic for nothing.
-constexpr int kRelistMs = 5000;
+// (There is no re-list cadence any more. The list is read at startup and then
+// only when g_force_relist says something changed that the ring cannot report.
+// See "why it is built once and then left alone" below.)
 // And how long after the view was last drawn the board still counts as being
 // watched. One frame is 16 ms; this is generous enough to survive a slow frame
 // and short enough that leaving the view stops the flash traffic at once.
 constexpr int kWatchGraceMs = 500;
-// A gap longer than this means the view was somewhere else and has just come
-// back, so the list is re-read immediately rather than up to kRelistMs later.
-constexpr int kWatchReturnMs = 1500;
 
-// ---- and why it also waits for the ring to move -------------------------
+// ---- and why it is built once and then left alone -----------------------
 // A re-list is not a cheap read. LogBuf::list() summarises every drive it
 // holds, and summarising means reading every record of it: measured on this
 // board at 1.44 to 1.64 SECONDS for six drives, of which the NVS lookups for
 // lent dates and hidden flags were 2 ms. There is no version of that which is
 // quick enough to do on a timer.
 //
-// But it is also not necessary on a timer. The ring only changes when
-// something is written to it, and LogBuf already counts that: record_count()
-// rises on every flush, drive_starts() on every drive opened, and
-// current_drive() names the one being written. If none of the three has moved
-// since the last re-list, the answer cannot have changed and the read is
-// skipped -- so browsing the list while parked costs nothing at all, and
-// arriving at the view is instant instead of a second and a half of stall.
+// It used to run every five seconds whenever the ring's counters moved, which
+// is exactly while a drive is recording -- and that is exactly when somebody
+// looks at this view, after a drive. Measured 2026-09-05 with the car
+// connected: the open drive re-folded every 5.1 s, its record count climbing
+// past 9,000, and the view sat at a median of 0 fps. Flash reads switch the
+// CPU cache off, and LVGL's code and buffers live behind that cache.
 //
-// While a drive IS recording the count keeps rising, so the re-list keeps
-// happening on its kRelistMs cadence. That is on purpose: the open drive's own
-// numbers grow, and they are the ones somebody watching the list wants right.
-struct RingGen {
-    size_t   records = 0;
-    size_t   starts  = 0;
-    uint32_t open    = 0;
-    bool operator!=(const RingGen& o) const {
-        return records != o.records || starts != o.starts || open != o.open;
-    }
-};
-RingGen ring_gen(gauge::LogBuf* log) {
-    return RingGen{log->record_count(), log->drive_starts(), log->current_drive()};
-}
+// So the list is built ONCE at startup and then left alone. Tommy's call, and
+// it is the right one: a drive's numbers are worth reading after the drive,
+// not during it. The drive being recorded now appears at the next power-up,
+// with its final numbers. Nothing else the gauge does is delayed by it.
+//
+// The only re-reads left are the ones the ring's counters could never see
+// anyway -- a lent date, a hidden flag, an erase -- and each of those sets
+// g_force_relist at the moment it happens.
 
 // ---- why the list waits to be looked at ---------------------------------
 // relist() reads the drive ring off flash, and on an ESP32 a flash read turns
@@ -139,17 +128,13 @@ bool is_hidden(uint32_t id) {
 }
 
 // Written by the LVGL task (src_watching) and read by scan_task. A plain tick
-// count either way: a torn read costs one late re-list, and both tasks would
-// have to be interleaved inside a 32-bit store for even that.
-volatile TickType_t g_watched_at   = 0;
-volatile bool       g_watch_return = false;
+// count: a torn read costs one late re-list, and both tasks would have to be
+// interleaved inside a 32-bit store for even that.
+volatile TickType_t g_watched_at = 0;
 
-// The ring as it stood when the cache was last built. Touched only by
-// scan_task, except for the force below.
-RingGen g_listed{};
-bool    g_listed_valid = false;
-// Set when something OTHER than a write makes the cache wrong: a lent date or
-// a hidden flag, neither of which the ring's own counters can see.
+// Set when something makes the built list wrong: a lent date, a hidden flag,
+// or an erase. Writes to the ring deliberately do NOT set it -- a drive being
+// recorded is not re-read until the next power-up.
 volatile bool g_force_relist = false;
 
 // Set by drives_list_init(). The task is created early to claim its 8 KB of
@@ -198,12 +183,13 @@ void relist(gauge::LogBuf* log) {
         if (!next[count].info.epoch_s) next[count].info.epoch_s = lent_date(found[i].id);
         for (int j = 0; j < g_count; ++j) {
             if (g_cache[j].info.id != found[i].id || !g_cache[j].ready) continue;
-            // A drive still being WRITTEN grows, so its numbers are re-folded
-            // rather than kept. `complete` is not that test: a drive cut short
-            // by a power cut is incomplete for ever, and re-folding it meant
-            // re-reading 688 KB of flash every five seconds, for ever, for an
-            // answer that could not change. Only the open drive is re-folded.
-            if (g_cache[j].info.id == log->current_drive()) break;
+            // Kept, never re-folded -- the open drive included. Re-folding the
+            // drive being written meant re-reading every record it had, every
+            // five seconds, for a row whose numbers nobody needs live: 9,494
+            // records and still growing on the run that measured it. Ids are
+            // stable, so a fold done once stays right for everything except a
+            // drive that is still growing, and that drive's final numbers are
+            // read at the next power-up.
             next[count].stats = g_cache[j].stats;
             next[count].ready = true;
             break;
@@ -228,7 +214,9 @@ void relist(gauge::LogBuf* log) {
 
 void scan_task(void*) {
     while (!g_enabled) vTaskDelay(pdMS_TO_TICKS(50));
-    TickType_t last_list = 0;
+    // A flag, not a tick comparison: the list is now built once, so "have I
+    // built it" must not be a value the tick counter can legitimately hold.
+    bool listed_once = false;
     for (;;) {
         gauge::LogBuf* log = drive_log_buf();
         if (!log) {
@@ -238,19 +226,14 @@ void scan_task(void*) {
         }
 
         const TickType_t now = xTaskGetTickCount();
-        // Once at startup, so the count and the folding pass have something to
-        // work from; then only while somebody is looking at the list.
+        // Once at startup -- and after that, only when something changes that
+        // the ring's own counters cannot report: a lent date, a hidden flag,
+        // an erase.
         const TickType_t seen = g_watched_at;
         const bool watched =
             seen != 0 && (now - seen) <= pdMS_TO_TICKS(kWatchGraceMs);
-        bool due = last_list == 0;
-        if (watched && g_watch_return) { due = true; g_watch_return = false; }
-        if (watched && (now - last_list) >= pdMS_TO_TICKS(kRelistMs)) due = true;
-        // The gate. Everything above only says when it would be ALLOWED to
-        // read; this says whether there is anything new to read. The forced
-        // flag wins, because a lent date is a change the ring cannot report.
-        if (due && g_listed_valid && !g_force_relist && !(ring_gen(log) != g_listed))
-            due = false;
+        bool due = !listed_once;
+        if (watched && g_force_relist) due = true;
 
         // One unfolded drive per pass, newest first, so the top of the list
         // fills in first -- that is the row being looked at.
@@ -272,10 +255,8 @@ void scan_task(void*) {
 
         if (due) {
             relist(log);
-            g_listed = ring_gen(log);
-            g_listed_valid = true;
             g_force_relist = false;
-            last_list = now;
+            listed_once = true;
         }
 
         if (want_id) {
@@ -342,16 +323,10 @@ bool src_row(int index, gauge_ui::DriveRowInfo* out) {
 
 const char* src_empty() { return g_empty; }
 
-// Called on every frame the Drives view is drawn, and never otherwise. Notes
-// the time, and notices a return from another view so the list is re-read on
-// arrival rather than up to kRelistMs afterwards.
-void src_watching() {
-    const TickType_t now = xTaskGetTickCount();
-    const TickType_t prev = g_watched_at;
-    if (prev == 0 || (now - prev) > pdMS_TO_TICKS(kWatchReturnMs))
-        g_watch_return = true;
-    g_watched_at = now;
-}
+// Called on every frame the Drives view is drawn, and never otherwise. The
+// only thing this still decides is whether a forced re-read may run now: a
+// lent date or an erase must not read flash while some other view is drawing.
+void src_watching() { g_watched_at = xTaskGetTickCount(); }
 
 const gauge_ui::DrivesSource kSource = { src_count, src_row, src_empty,
                                          src_watching };
@@ -378,6 +353,8 @@ bool drives_list_set_date(uint32_t id, uint32_t epoch_s) {
     }
     return ok;
 }
+
+void drives_list_refresh(void) { g_force_relist = true; }
 
 bool drives_list_hide(uint32_t id, bool hidden) {
     nvs_handle_t h;

@@ -871,7 +871,9 @@ void init(lv_obj_t* parent, const gauge::Identity& id) {
     // The make/model banner persists across views (SPEC.md section 10), so it
     // lives on the parent rather than inside any one view.
     g_banner = lv_label_create(parent);
-    lv_obj_set_style_text_font(g_banner, &lv_font_montserrat_20, 0);
+    // 14, not the 20 it was: the name is a caption under the dial, not a
+    // heading, and at 20 it competed with the reading above it.
+    lv_obj_set_style_text_font(g_banner, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(g_banner, lv_color_hex(0x585858), 0);
     snprintf(g_banner_base, sizeof g_banner_base, "%s", id.label.c_str());
     // Empty at boot. The car's name is a claim about what the gauge is plugged
@@ -1176,12 +1178,17 @@ void set_dial_enabled(bool on) {
 
 void set_scanning(bool scanning) {
     if (!g_banner || !g_scan) return;
-    if (scanning == g_scanning) return;       // a flag write is a repaint
-    g_scanning = scanning;
     // The car's name appears only once there is a car. The frame rate used to
     // live on that line too; it is in the serial log now, where whoever is
     // measuring can read it.
+    //
+    // Ahead of the change guard below, and deliberately: demo mode comes up
+    // already not-scanning, so the first call it makes is false-to-false. The
+    // guard would swallow it and the banner would stay empty for the whole
+    // demo. This write costs nothing when the text already matches.
     set_text_if_changed(g_banner, scanning ? "" : g_banner_base);
+    if (scanning == g_scanning) return;       // a flag write is a repaint
+    g_scanning = scanning;
     show_obj(g_scan, scanning);
     if (scanning) { lv_anim_start(&g_scan_spin); lv_anim_start(&g_scan_hue); }
     else            lv_anim_delete(g_scan, nullptr);

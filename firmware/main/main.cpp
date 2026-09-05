@@ -667,6 +667,11 @@ extern "C" void app_main(void) {
     // sweeping. The button's own hold does not come through here -- it needs no
     // restart, so it starts the sweeps where it stands.
     if (boot_req == BOOT_DEMO) start_demo_sweeps();
+    // Demo mode never looks for a car, so it must never show the search. The
+    // sweeps ARE the demo; leaving the scanning ring turning under them says
+    // the gauge is still trying to reach an adapter that nobody plugged in.
+    // The car's name goes up straight away instead.
+    const bool demo_mode = (boot_req == BOOT_DEMO);
 
     int64_t t0 = esp_timer_get_time();
     int64_t last_frame_us = t0;
@@ -988,7 +993,7 @@ extern "C" void app_main(void) {
                 // A sliding bar while the gauge is still looking for the car,
                 // the car's name once it has found it. The frame rate stays in
                 // this log line and is no longer written on the glass.
-                gauge_ui::set_scanning(!live_mode);
+                gauge_ui::set_scanning(!live_mode && !demo_mode);
                 bsp_display_unlock();
             }
         }

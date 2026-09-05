@@ -30,7 +30,12 @@ namespace {
 
 // The newest drives, which is what a list is for. The ring can hold more; the
 // view shows the newest and the console still reaches every one of them.
-constexpr int kMaxCached = 12;
+//
+// Three, matching kMaxRows in gauge_ui/drives.cpp -- the view shows three and
+// there is no scrolling to reach a fourth, so folding a fourth would be flash
+// read for a row nobody can see. It also shortens the boot: each drive folded
+// is its whole record set read back, and twelve of them took four seconds.
+constexpr int kMaxCached = 3;
 // (There is no re-list cadence any more. The list is read at startup and then
 // only when g_force_relist says something changed that the ring cannot report.
 // See "why it is built once and then left alone" below.)

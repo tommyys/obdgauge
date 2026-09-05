@@ -7,13 +7,28 @@
 namespace gauge_ui {
 namespace {
 
-// Rows built up front and reused. The ring can hold more drives than this,
-// but a list is read, not paged through for ever -- and every row is LVGL
-// objects held for the life of the run, which is memory the panel wants more
-// (SPEC.md section 3: nothing in the draw path may allocate, so rows are not
-// created and destroyed as the list changes).
-constexpr int kMaxRows = 12;
+// The newest three drives, and no more.
+//
+// It was twelve, which needed scrolling, and scrolling this panel is the whole
+// problem: LVGL repaints the list for every pixel the finger moves, measured
+// at 143 ms a repaint because the draw buffer is 16 rows tall and a
+// full-height redraw goes out in some thirty separate bands. Three rows fit
+// the glass exactly, so there is nothing to scroll and nothing to repaint --
+// Tommy's call, and it removes the cost rather than reducing it. Older drives
+// are still on the flash and still come off it with tools/pull_drives.py.
+//
+// Three, not four: the panel is round. Rows are 346 px wide, and the chord of
+// a 466 px circle is only that wide between y=76 and y=390 -- 314 px, which is
+// three 88 px rows with 50 to spare and not four.
+//
+// Keep in step with kMaxCached in main/drives_list.cpp, which decides how many
+// drives are folded off the flash at boot to feed these rows.
+constexpr int kMaxRows = 3;
 constexpr int kRowH    = 88;
+// Centres the three rows in the 466 px window, clear of the view title above
+// them. (76 was the old value: the top of the widest chord, chosen when there
+// were twelve rows and the list scrolled.)
+constexpr int kListPadY = 101;
 // Between the drive's name line and its numbers line, inside one row.
 constexpr int kLineGap = 7;
 // The hairline under each row is part of the row's own 88 px, so the text has
@@ -145,23 +160,21 @@ void drives_build(lv_obj_t* parent) {
     lv_obj_add_flag(g_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(g_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(g_list, LV_SCROLLBAR_MODE_OFF);
-    // Round panel: the first and last rows would otherwise sit in the corners
-    // that the glass does not have.
-    lv_obj_set_style_pad_top(g_list, 76, 0);
-    lv_obj_set_style_pad_bottom(g_list, 76, 0);
-    // Opaque, though the screen behind it is the same black. A transparent
-    // object has to be composed over whatever is under it, in every band of
-    // every frame of a scroll; an opaque one is drawn straight. Nothing looks
-    // different.
-    lv_obj_set_style_bg_color(g_list, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(g_list, LV_OPA_COVER, 0);
+    // Round panel: the rows would otherwise sit in the corners that the glass
+    // does not have.
+    lv_obj_set_style_pad_top(g_list, kListPadY, 0);
+    lv_obj_set_style_pad_bottom(g_list, kListPadY, 0);
+    // NOT opaque, however tempting. This object is 466 px tall and centred,
+    // so it covers the whole glass -- including the view's own "DRIVES" title
+    // at ui.cpp's kTitleY, which is a sibling BEHIND it. Painting a background
+    // here saved nothing measurable and hid the title.
 
     for (int i = 0; i < kMaxRows; ++i) {
         Row& r = g_rows[i];
         r.box = lv_obj_create(g_list);
         lv_obj_remove_style_all(r.box);
         lv_obj_set_size(r.box, w - 120, kRowH);
-        lv_obj_align(r.box, LV_ALIGN_TOP_MID, 0, 76 + i * kRowH);
+        lv_obj_align(r.box, LV_ALIGN_TOP_MID, 0, kListPadY + i * kRowH);
         lv_obj_remove_flag(r.box, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(r.box, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(r.box, row_clicked, LV_EVENT_CLICKED, (void*)(intptr_t)i);
@@ -171,9 +184,6 @@ void drives_build(lv_obj_t* parent) {
         lv_obj_set_style_border_width(r.box, 1, 0);
         lv_obj_set_style_border_color(r.box, lv_color_hex(0x303030), 0);
         lv_obj_set_style_border_opa(r.box, LV_OPA_COVER, 0);
-        // Opaque for the same reason as the list itself.
-        lv_obj_set_style_bg_color(r.box, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(r.box, LV_OPA_COVER, 0);
 
         // Centred in the row, not hung from its top. The two lines were at 6
         // and 38 of an 88 px row, which left 6 px above the text and 32 below

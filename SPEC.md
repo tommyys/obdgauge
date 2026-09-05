@@ -156,16 +156,13 @@ Recording the reasoning so it isn't relitigated:
 - **Replay uses the file's own timeline.** Using wall-clock made a 10× replay
   report phantom harsh-braking (84 false events). Metrics must see real-world
   seconds.
-- **The rpm backdrop puts red at the rim, not the centre** (`glow=rim`).
-  Compared all three side by side on the real gauge at 2500 / 4500 / 6800 rpm
-  (`web/compare.html`). `centre` was the most aggressive but washed out the
-  *small* labels under the big number — `RPM`, and the `KM/H · THR · PEAK` row —
-  as it approached the redline; the big number itself survived, the supporting
-  text didn't. `band` (red ring, dark core) was the punchiest while staying
-  legible, but busier. **Chosen: `rim`** — the centre stays pure black, so every
-  readout holds full contrast on a gauge you glance at for a fraction of a
-  second. The other two modes remain in the code only so the comparison page
-  keeps working for future visual decisions. See §11.
+- **The heat lives on the rim, not on a backdrop** (2026-09-05). The
+  simulator warmed the whole display as the engine picked up, and the board
+  cannot: a backdrop covers the panel, so every change to it repaints the
+  panel, measured at 5-20 fps however it was drawn. The rim carries it
+  instead — on the tacho as a colour ramp built into the segment scale, and on
+  the Driving view as the g-ball's own ring. The full-screen gradient and the
+  page that compared three shapes of it are both gone. See §11.
 
 ---
 
@@ -193,7 +190,7 @@ between the two; only the bytes on the wire differ.
 | `mx5gauge/vehicle.py` | VIN decode, per-car dial profiles | `gauge_core/vehicle.cpp` |
 | `mx5gauge/ignition.py` | engine stop/start from the sample stream | `gauge_core/ignition.cpp` |
 | `mx5gauge/library.py` | the replayable-drive library | `gauge_core/replay.cpp` + `main/drive_source.c` (mmap'd `drives` partition) |
-| `mx5gauge/web/index.html` | the eight views | `gauge_ui/ui.cpp`, `slide.cpp` |
+| `mx5gauge/web/index.html` | the six views | `gauge_ui/ui.cpp`, `slide.cpp` |
 | `mx5gauge/recorder.py` | CSV logging + JSON summary | **not ported** — on-board drive logging is still phase 3 |
 
 **The transport seam.** `gauge_core/transport.h` is the whole of it: `write`,
@@ -231,24 +228,26 @@ real life has no console attached.
 | # | View | Fed by |
 |---|---|---|
 | 1 | Tacho | rpm, speed, throttle |
-| 2 | Engine (home) | coolant + COLD/WARMING/READY, battery, intake |
-| 3 | Fuel economy | fuel rate ÷ speed, trip totals, RM cost |
-| 4 | Driving | the g-ball: real lateral/longitudinal g, the tidiness score, the pole |
-| 5 | Trip | distance, time, avg speed, fuel, cost |
-| 6 | Power | actual torque % × reference torque × rpm |
-| 7 | Thermals | coolant, intake, catalyst |
-| 8 | Electrical | control-module voltage / ATRV, charge status |
-| 9 | Drives | the replayable-drive library (§12), and one drive's summary + timeline (§13) |
+| 2 | Engine (home) | coolant + COLD/WARMING/READY, intake, catalyst, battery |
+| 3 | Driving | the g-ball: real lateral/longitudinal g, the tidiness score, the pole |
+| 4 | Trip | distance, time, economy + its verdict ring, fuel, cost |
+| 5 | Power | actual torque % × reference torque × rpm, with volts |
+| 6 | Drives | the replayable-drive library (§12), and one drive's summary + timeline (§13) |
 
-**The board's carousel is not the same list, and `gauge_ui::view_count()` is
-the only authority on it.** It runs **seven** views: Tacho, Engine, Driving,
-Trip, Power, Drives, Clock. Three differences, each with a reason:
+**Six views, and the same six on both screens.** `gauge_ui::view_count()` is
+the authority on the board; the simulator's `names` array in
+`mx5gauge/web/index.html` is held to match it, view for view and label for
+label. The list above got there by three merges, each with a reason:
 
 - **Fuel economy was absorbed into Trip** (2026-08-29). The two were the same
   view with different heroes — both built from `gauge::Trip`, both showing fuel
-  used and cost.
-- **Thermals and Electrical folded into Engine and Trip.** Their readings are
-  on the board, on the views they belong to, rather than as two more swipes.
+  used and cost. Economy is Trip's second cell, coloured by the same verdict
+  the rim ring shows. The live km/L reading is what the merge drops: live
+  coaching belongs on the driving score.
+- **Thermals and Electrical folded into Engine and Power** (2026-08-29). Their
+  readings are on the views they belong to — catalyst as Engine's third row,
+  volts as Power's, coloured instead of carrying a word — rather than being
+  two more swipes.
 - **The Clock view is gone, removed 2026-09-03.** It was a board-only ninth
   view: five scrolling wheels, date over time, set by thumb in the car,
   because this board has no real-time clock (0x51 is named in the I2C table but
@@ -268,15 +267,41 @@ Trip, Power, Drives, Clock. Three differences, each with a reason:
   lie when the gauge has no time.
 
 The not-available screens apply to every board view whose channels the car does
-not supply (`gauge::view_available`, host-tested). Two views are exempt on
-purpose: Drives, because an empty list is its own real answer, and Clock,
-because the clock has nothing to do with what the car reports.
+not supply (`gauge::view_available`, host-tested). One view is exempt on
+purpose: Drives, because an empty list is its own real answer.
 
-Fuel rail temperature was dropped from Thermals: across every capture it
+Fuel rail temperature was dropped when Thermals still existed: across every
+capture it
 returned **2 distinct values in 375 samples** (72/73 °C), so it is a canned
 number rather than a sensor — and there is no standard mode-01 PID for rail
 *temperature* anyway (only pressures), so it could never have worked live.
 Catalyst, by contrast, is real: 1765 samples, 971 distinct values, 503–688 °C.
+
+### One face, on both screens (2026-09-05)
+
+The two are the same gauge on different glass, so the simulator was brought to
+the board's face rather than the other way round:
+
+- **Segment scales, not bars or needles.** The tacho, the engine view and the
+  power dial each wear 40 lit boxes around the rim, 6.75 degrees apart with a
+  1.4 degree gap. The count of lit boxes IS the reading, so both red needles,
+  both hubs, the graded fill arcs, the engine's four zone arcs and its white
+  sliding mark are all gone. Forty lit blocks say "most of the way up" faster
+  than the end of a smooth bar does, and a segment is lit or it is not, so
+  most readings change nothing at all.
+- **Layout in the board's own numbers.** Every position and text size in
+  `web/index.html` is `gauge_ui/ui.cpp`'s pixel offset from the centre of the
+  466 px panel, divided by 4.66 into `cqw`. The screen is square, so one cqw
+  is one percent of the panel either way. A row that moves on the board moves
+  here by changing the same number, and the two cannot drift apart by someone
+  eyeballing a gap.
+- **The clock takes the top, the car's name the foot.** The name was a heading
+  over the dial; it is a caption under it now, at +178, with its note on the
+  same line. The clock sits at -202 and says `--:--` when the time is unknown.
+- **The page indicator is on the bezel.** A short scale of segments across 45
+  degrees at the bottom of the rim, one per view, teal through green to lime,
+  with the one you are on lit. The row of dots below the screen is gone: on a
+  round panel, nine dots at arm's length is something you count.
 
 The carousel wraps infinitely: each view is placed at its shortest signed
 distance from the current one, so the last-to-first step is one slide rather
@@ -289,12 +314,12 @@ than a rewind of the whole strip.
 **Done**
 - Reverse-engineered the Car Scanner `.brc` format (`mx5gauge/brc.py`)
 - Established what the car does and doesn't expose (section 2)
-- Mac simulator: live BLE + replay, eight views, full logging, session replay
+- Mac simulator: live BLE + replay, six views, full logging, session replay
 - **Board bought and brought up** — the AMOLED-1.75C, not the board this spec
   originally picked (section 3)
 - **`gauge_core` ported to C++** and host-tested, cross-validated against the
   Python core by `tools/verify_port.sh`
-- **All eight views on the board**, plus the not-available screens
+- **All six views on the board**, plus the not-available screens
 - **Boot splash on the panel** (§14)
 - **Phase 0 complete — the board talks to the car.** Proven 2026-08-27 with the
   engine running: scan → connect → ELM327 handshake → 50 supported PIDs →
@@ -522,44 +547,34 @@ browser. `run.py` alone does the same from a terminal.
 
 ---
 
-## 11. The rpm-reactive backdrop
+## 11. Where the heat goes
 
-The display warms up as the engine does: near-black at idle, a dim ember
-through the mid-range, an intense red approaching the redline.
+The engine's effort is visible on both screens, and on neither is it a
+backdrop.
 
-Two decisions worth keeping:
+**It was one, in the simulator, and the board killed it.** A coloured layer
+covers the panel, so every change to it repaints the panel — benched at 5-20
+fps on this board whichever way it was drawn: a radial gradient, a flat
+colour, a precomputed alpha mask, and compositing the frame by hand (65 ms a
+frame, worse still). rpm changes constantly, so that cost is paid on every
+frame of every drive.
 
-- **Red at the rim, black in the middle** — chosen over a centre bloom and a
-  mid-band ring after comparing all three on the real gauge (§4). Every view
-  puts its main readout dead centre, so tinting there costs legibility. The
-  backdrop is a vignette: transparent to ~24% radius, then ramping to
-  near-opaque red at the edge. Verified readable at redline — `6800` stays
-  crisp on a full-red screen.
+**So the rim carries it.** Three places, all of them small objects:
 
-  `web/compare.html` renders all three shapes at three rev levels as live
-  gauges, using the preview switches `?glow=<mode>`, `?rpm=<n>` (pin the revs,
-  since a desk capture rarely passes 2000) and `?bare=1` (hide the browser
-  chrome). Reach for it the next time a visual choice needs settling.
-- **Keyed to the car's own redline, not a fixed 8000.** `f` is derived from
-  `rpm / rpm_red` (from the §10 profile), so the colour means the same thing in
-  any car. Tint starts at 22% of redline — town driving shows barely anything,
-  which is the point — and `f` is raised to the power 1.35 so the mid-range
-  stays restrained and the last part of the tacho bites.
+- **The tacho** — the colour ramp is built INTO the segment scale (§6): blue
+  at rest, amber halfway to the limiter, red at it. A segment's colour is
+  fixed by its position, so revving recolours nothing; it only lights more
+  boxes.
+- **The engine view** — the same scale across 40-120 °C, cold blue through
+  green at 85 to red.
+- **The Driving view** — the g-ball's own ring, deep green through ember to
+  red with the score's intensity, quantised to fortieths so it repaints only
+  when the step changes. The dot is what you just did; the ring is how you
+  have been driving, and they move at different speeds on purpose.
 
-Measured ramp on an MX-5 profile (redline 7000): 800 rpm → nothing ·
-2000 → 0.03 ember · 4000 → 0.31 · 6000 → 0.70 · 7000 → 0.92 full red.
-
-It lives on `.screen`, outside the sliding `.track`, so the colour **persists
-across all views** rather than restarting per view. Note the z-index: `0` and
-first in the DOM, *not* a negative z-index — `.screen` isn't a stacking
-context, so a negative child would escape it and hide behind the bezel.
-
-Cost control: opacity is rewritten every frame (cheap), but the gradient string
-only when the colour moves a visible step. It reuses the tacho's existing eased
-rpm, so there's no extra timer and the colour can't strobe on a jittery reading.
-
-On the board this becomes a background gradient redrawn on the same rpm easing —
-no per-frame allocation needed.
+The simulator was brought to the same shape on 2026-09-05, along with the rest
+of the board's face — see §6. `web/compare.html`, which rendered three
+backdrop shapes side by side, went with the thing it compared.
 
 ---
 

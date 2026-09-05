@@ -47,14 +47,7 @@
     user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;
     -webkit-tap-highlight-color:transparent;}
   .screen:active{cursor:grabbing;}
-  /* rpm-reactive backdrop. Sits on the screen itself rather than inside a
-     view, so the colour persists while the carousel slides. z-index 0 + first
-     in the DOM puts it under the views (which are positioned) but over the
-     screen's own gradient — a negative z-index would escape .screen, which is
-     not a stacking context, and vanish behind the bezel. */
-  .glow{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;
-    border-radius:50%;}
-  /* Boot splash. Above the views and the glow, clipped to the round screen,
+  /* Boot splash. Above the views, clipped to the round screen,
      and never interactive — it is a curtain, not a control. */
   .bootfx{position:absolute;inset:0;width:100%;height:100%;z-index:4;
     pointer-events:none;border-radius:50%;}
@@ -91,44 +84,69 @@
   /* used while a view is repositioned off-screen, so it teleports silently
      instead of flying across the display */
   .view.noanim{transition:none;}
-  /* sits inside the gauge ring so it never collides with the arc */
-  .vtitle{position:absolute;top:18cqw;left:0;right:0;text-align:center;
-    font-size:3.5cqw;letter-spacing:0.26em;color:var(--muted);z-index:2;}
-  .big{font-size:22cqw;font-weight:700;line-height:0.9;color:var(--phos);
-    font-variant-numeric:tabular-nums;letter-spacing:-0.02em;text-shadow:0 0 8px rgba(150,190,255,0.3);}
-  .big.sm{font-size:16cqw;}
-  .unit{font-size:3.8cqw;letter-spacing:0.2em;color:var(--muted);margin-top:0.6cqw;text-align:center;}
-  .sub{position:absolute;bottom:12cqw;left:0;right:0;text-align:center;font-size:3.6cqw;color:var(--muted);}
-  .sub b{color:var(--phos);font-weight:600;}
-  .row2{display:flex;gap:5cqw;margin-top:2.4cqw;font-size:3.9cqw;color:var(--phos);}
-  .row2 .k{color:var(--faint);font-size:3cqw;}
-  .center-abs{position:absolute;inset:0;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;pointer-events:none;}
+  /* ---- the panel's layout, in the board's own numbers -----------------
+     Every offset and size below is gauge_ui/ui.cpp's, divided by 4.66. The
+     board lays its labels out in pixels from the centre of a 466 px panel;
+     this screen is square, so one cqw is one percent of the panel either way,
+     and montserrat_48 is 48/466 of it.
+
+     Stated in the same units on purpose. A row that moves on the board moves
+     here by changing the same number, and the two cannot drift apart by
+     someone eyeballing a gap.
+
+        clock  -202   title -142   hero -60   unit -18   word +22
+        rows    +66, 24 apart      banner +178
+     Positions are CENTRES, as LVGL's align is, hence the translateY(-50%). */
+  .lay{position:absolute;left:0;right:0;text-align:center;
+    transform:translateY(-50%);pointer-events:none;}
+  .vtitle{top:19.53cqw;font-size:4.29cqw;letter-spacing:0.26em;color:#707070;z-index:2;}
+  .hero{top:37.12cqw;font-size:10.30cqw;font-weight:700;line-height:1;color:#fff;
+    font-variant-numeric:tabular-nums;letter-spacing:-0.02em;
+    text-shadow:0 0 8px rgba(150,190,255,0.3);}
+  .unit{top:46.14cqw;font-size:4.29cqw;letter-spacing:0.2em;color:#9a9a9a;}
+  /* The state word sits where a unit is not. Score and Power have no static
+     unit because their word IS the unit line -- the coach verdict, the peak --
+     so it moves up into that slot rather than leaving a gap above it. */
+  .word{top:54.72cqw;font-size:6.01cqw;color:#808080;}
+  .word.nounit{top:46.14cqw;font-size:4.29cqw;}
+
+  /* Stacked label/value pairs below the hero, left and right of centre. Close
+     enough to read as one phrase: on the board they were 140 px apart at one
+     point and looked like two unrelated columns. */
+  .rows{position:absolute;inset:0;pointer-events:none;font-size:3.00cqw;}
+  .rows .r{position:absolute;left:0;right:0;top:var(--y);height:0;}
+  .rows .rl{position:absolute;left:41.42%;transform:translate(-50%,-50%);
+    color:#606060;letter-spacing:0.08em;}
+  .rows .rv{position:absolute;left:54.29%;transform:translate(-50%,-50%);
+    color:#d0d0d0;font-weight:600;font-variant-numeric:tabular-nums;}
   svg{display:block;}
-  .status{margin-top:2.4cqw;font-size:3.5cqw;letter-spacing:0.13em;padding:0.9cqw 3.6cqw;
-    border-radius:3cqw;display:inline-flex;align-items:center;gap:1.6cqw;
-    border:1px solid var(--faint);color:var(--muted);}
-  .status.ok{border-color:var(--green);color:var(--green);background:rgba(53,224,107,0.12);}
-  .status.warn{border-color:var(--amber);color:var(--amber);background:rgba(255,197,61,0.12);}
-  .status.cold{border-color:var(--blue);color:var(--blue);background:rgba(77,150,255,0.12);}
-  .status.err{border-color:var(--red);color:var(--red);background:rgba(255,59,48,0.12);}
-  .dotled{width:3.2cqw;height:3.2cqw;border-radius:50%;background:currentColor;}
-  /* car banner — lives on the display itself, as it will on the real device.
-     It sits over whatever the view draws (tacho digits, gauge arcs), so it
-     carries its own gradient scrim: strongest behind the text, fading out
-     before the view titles at 18cqw. z-index clears the "n/a" overlay so the
-     car is always named, even on a view this car can't feed. */
-  .carbar{position:absolute;top:0;left:0;right:0;padding:5.4cqw 0 4.5cqw;
+  /* The car's name is a CAPTION under the dial, not a heading over it -- the
+     board puts it at +178, small and dim, and the clock takes the top of the
+     panel instead. It persists across views, so it lives on the screen rather
+     than inside any one of them, and z-index clears the "n/a" overlay so the
+     car is always named even on a view this car cannot feed. */
+  .carbar{position:absolute;left:0;right:0;top:88.20cqw;transform:translateY(-50%);
     text-align:center;z-index:6;pointer-events:none;
-    font-family:var(--mono);line-height:1.15;
-    /* an ellipse, not a full-width band: it darkens directly behind the text
-       but fades horizontally too, so the gauge ring's shoulders either side
-       stay at full brightness */
-    background:radial-gradient(ellipse 48% 100% at 50% 0%,
-      rgba(8,9,12,0.96) 0%,rgba(8,9,12,0.90) 42%,
-      rgba(8,9,12,0.52) 72%,rgba(8,9,12,0) 100%);}
-  .carbar .cmake{font-size:3.6cqw;letter-spacing:0.2em;color:var(--phos);opacity:0.92;}
-  .carbar .cmeta{font-size:2.7cqw;letter-spacing:0.16em;color:var(--muted);margin-top:0.3cqw;}
+    font-family:var(--mono);line-height:1.25;}
+  .carbar .cmake{font-size:3.00cqw;letter-spacing:0.2em;color:#585858;}
+  /* The note rides on the same line, as the board's set_banner_note does.
+     A second line reached down into the bezel's page scale. */
+  .carbar .cmeta{font-size:3.00cqw;letter-spacing:0.16em;color:#4a4a4a;}
+  .carbar .cmeta:not(:empty)::before{content:" · ";}
+  /* The header clock. Dim, and at the very top where it is out of the way of
+     every view's own content rather than hovering over it. "--:--" when the
+     gauge does not know the time, never a plausible-looking one. */
+  .hclock{position:absolute;left:0;right:0;top:6.65cqw;transform:translateY(-50%);
+    text-align:center;z-index:6;pointer-events:none;font-family:var(--mono);
+    font-size:3.00cqw;letter-spacing:0.14em;color:#585858;}
+  /* The page indicator, on the bezel. A row of dots was the wrong shape for a
+     round screen: nine 6 px dots at arm's length is something you count, not
+     something you glance at, and the carousel wraps so "4 of 6" has no start
+     to measure from. What it has to say is only "there is more, and you moved
+     this way" -- and on a round panel the honest way to say that is on the
+     rim. 45 degrees centred on the bottom; 84 and 60 were both tried and read
+     as a wide smile across the panel rather than as a detail. */
+  .pagearc{position:absolute;inset:0;z-index:6;pointer-events:none;}
 
   /* a view whose channels this car doesn't provide: dimmed, with an honest
      label instead of a plausible-looking zero */
@@ -142,23 +160,18 @@
   .na .nat{font-size:5.2cqw;letter-spacing:0.18em;color:var(--muted);}
   .na .nas{font-size:3.1cqw;letter-spacing:0.06em;color:var(--faint);margin-top:1.8cqw;line-height:1.5;}
 
-  .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:3.6cqw 8cqw;margin-top:5cqw;}
-  .tcell{text-align:center;}
-  .tcell .tv{font-size:7.4cqw;font-weight:700;color:var(--phos);font-variant-numeric:tabular-nums;}
-  .tcell .tl{font-size:2.9cqw;letter-spacing:0.09em;color:var(--faint);}
-  /* Thermals carries only three values now, so they get room to breathe.
-     Scoped to its own grid so the Trip view's denser 2x2 keeps its sizing. */
-  /* Left on the view's own centring. Nudging the whole grid down to even out
-     the slack above and below it was measurably balanced but read as all
-     three numbers sitting too low, so the optical centre beats the arithmetic
-     one here. */
-  .tgrid-lg{gap:4.4cqw 7cqw;}
-  .tgrid-lg .tv{font-size:11cqw;}
-  .tgrid-lg .tl{font-size:3.7cqw;letter-spacing:0.13em;color:var(--muted);}
-  /* nudge the full-width row down a touch so it reads as its own line rather
-     than crowding the pair above. cqw not px, so it scales on the real 240px
-     panel — 1.4cqw is ~5px at the preview size. */
-  .tgrid-lg .wide{grid-column:1 / -1;margin-top:5cqw;}
+  /* Grid: a large value over its own small label, two to a line. A third of
+     three spans both columns -- an odd one out centred reads as a total
+     rather than as a lonely column. Cell rows are 52 apart on the board, the
+     label 24 under its value, the columns at +/-82. */
+  .tgrid{position:absolute;inset:0;pointer-events:none;}
+  /* A zero-sized anchor at the cell's centre, so the value and its label
+     each centre on it and neither wraps to fit a box that has no width. */
+  .tcell{position:absolute;left:calc(50% + var(--x));top:var(--y);width:0;height:0;}
+  .tcell .tv{position:absolute;left:0;transform:translate(-50%,-50%);white-space:nowrap;
+    font-size:6.01cqw;font-weight:700;color:#f0f0f0;font-variant-numeric:tabular-nums;}
+  .tcell .tl{position:absolute;left:0;top:5.15cqw;transform:translate(-50%,-50%);
+    white-space:nowrap;font-size:3.00cqw;letter-spacing:0.09em;color:#707070;}
   .stale{opacity:0.35;}
 
   /* --- the g-ball ------------------------------------------------------- */
@@ -167,18 +180,21 @@
      piece of industrial design this gauge gets for free. */
   .gwrap{position:absolute;inset:0;}
   .gwrap svg{width:100%;height:100%;display:block;}
-  /* The score sits low, out of the dot's way. The dot lives in the middle
+  /* The score sits low, out of the dot's way -- the dot lives in the middle
      third of the circle for all normal driving, so anything printed there
-     would be struck through every time the car stops. */
-  .gscore{position:absolute;left:0;right:0;bottom:7cqw;text-align:center;
-    font-family:var(--mono);line-height:1;pointer-events:none;}
-  .gscore span{font-size:13cqw;color:var(--phos);}
-  .gscore i{display:block;font-style:normal;font-size:2.9cqw;margin-top:1.4cqw;
-    letter-spacing:0.16em;color:var(--muted);}
+     would be struck through every time the car stops. gball.cpp's own
+     offsets: pole -150, tally -118, score +118, coach +158, over 4.66. */
+  .gscore{position:absolute;left:0;right:0;top:75.32cqw;transform:translateY(-50%);
+    text-align:center;font-family:var(--mono);line-height:1;pointer-events:none;
+    font-size:10.30cqw;color:#c8d4e4;}
+  .gcoach{position:absolute;left:0;right:0;top:83.91cqw;transform:translateY(-50%);
+    text-align:center;font-family:var(--mono);font-size:3.00cqw;
+    letter-spacing:0.16em;color:#808080;pointer-events:none;}
   /* The tally goes above the circle's centre, not below it. The score already
      owns the bottom, and stacking the two there put a line of small text
      straight through the middle of a 13cqw number. */
-  .gtop{position:absolute;left:0;right:0;top:22cqw;text-align:center;
+  .gtop{position:absolute;left:0;right:0;top:24.68cqw;transform:translateY(-50%);
+    text-align:center;
     font-size:2.8cqw;color:var(--muted);pointer-events:none;}
   .gtop b{color:var(--phos);font-weight:600;}
   /* Slow, because the pole itself is slow. A word that snaps between two
@@ -265,9 +281,6 @@
      views are instruments — a car's dashboard does not carry a scrub bar. */
 
   /* controls */
-  .dots{display:flex;gap:8px;justify-content:center;}
-  .dot{width:9px;height:9px;border-radius:50%;background:#2c2930;border:none;cursor:pointer;padding:0;}
-  .dot.on{background:var(--accent);}
   .navrow{display:flex;align-items:center;gap:14px;}
   .arrow{width:38px;height:38px;border-radius:50%;border:1px solid var(--line-2);
     background:var(--panel-2);color:var(--txt);font-size:1rem;cursor:pointer;}
@@ -289,11 +302,9 @@
 
 <div class="bezel">
   <div class="screen" id="screen">
-    <div class="glow" id="glow"></div>
-    <div class="carbar">
-      <div class="cmake" id="c_make">OBD-II</div>
-      <div class="cmeta" id="c_meta"></div>
-    </div>
+    <div class="hclock" id="hclock">--:--</div>
+    <div class="carbar"><span class="cmake" id="c_make">OBD-II</span><span class="cmeta" id="c_meta"></span></div>
+    <svg class="pagearc" id="pagearc" viewBox="0 0 260 260"></svg>
     <div class="track" id="track">
 
       <!-- 1 TACHO -->
@@ -302,39 +313,31 @@
         <!-- no title: the dial numbers would collide with it, and a tach
              labelled "TACHO" is redundant — the nav bar names the view -->
         <svg id="tachSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
-        <div class="center-abs">
-          <div class="big" style="font-size:21cqw" id="t_rpm">----</div>
-          <div class="unit">RPM</div>
+        <div class="lay hero" id="t_rpm">----</div>
+        <div class="lay unit">RPM</div>
+        <div class="rows">
+          <div class="r" style="--y:64.16cqw"><span class="rl">KM/H</span><span class="rv" id="t_spd">--</span></div>
+          <div class="r" style="--y:69.31cqw"><span class="rl">THR</span><span class="rv" id="t_thr">--</span></div>
+          <div class="r" style="--y:74.46cqw"><span class="rl">PEAK</span><span class="rv" id="t_peak">--</span></div>
         </div>
-        <div class="sub"><span style="color:var(--faint)">KM/H</span> <b id="t_spd">--</b>
-          · <span style="color:var(--faint)">THR</span> <b id="t_thr">--</b>
-          · <span style="color:var(--faint)">PEAK</span> <b id="t_peak">--</b></div>
       </div>
 
-      <!-- 2 ENGINE -->
-      <div class="view" data-needs="coolant,volts,ctrl_volt,intake">
-        <div class="na"><div class="nat">NO ENGINE DATA</div><div class="nas">this car reports neither coolant nor voltage</div></div>
-        <div class="vtitle">ENGINE</div>
+      <!-- 2 ENGINE. Absorbed THERMALS on 2026-08-29, the same merge the
+           firmware made: the two views overlapped on coolant and intake, and
+           one of the three temperatures was already the hero here. Catalyst
+           moved in as a third row rather than keeping a view for one number. -->
+      <div class="view" data-needs="coolant,volts,ctrl_volt,intake,cat_b1s1,catalyst">
+        <div class="na"><div class="nat">NO ENGINE DATA</div><div class="nas">this car reports no temperatures and no voltage</div></div>
+        <div class="lay vtitle">ENGINE</div>
         <svg id="engSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
-        <div class="center-abs">
-          <div class="big" style="font-size:20cqw" id="e_temp">--°</div>
-          <div class="unit">COOLANT · °C</div>
-          <div class="status" id="e_status"><span class="dotled"></span><span id="e_status_t">—</span></div>
+        <div class="lay hero" id="e_temp">--°</div>
+        <div class="lay unit">COOLANT · °C</div>
+        <div class="lay word" id="e_status">—</div>
+        <div class="rows">
+          <div class="r" style="--y:64.16cqw"><span class="rl">IAT</span><span class="rv" id="e_iat">--</span></div>
+          <div class="r" style="--y:69.31cqw"><span class="rl">CAT</span><span class="rv" id="e_cat">--</span></div>
+          <div class="r" style="--y:74.46cqw"><span class="rl">BATT</span><span class="rv" id="e_volt">--</span></div>
         </div>
-        <div class="sub"><span style="color:var(--faint)">BATT</span> <b id="e_volt">--</b>
-          · <span style="color:var(--faint)">IAT</span> <b id="e_iat">--</b></div>
-      </div>
-
-      <!-- 2 FUEL -->
-      <div class="view" data-needs="fuel_rate">
-        <div class="na"><div class="nat">NO FUEL RATE</div><div class="nas">this car does not report engine fuel rate over OBD</div></div>
-        <div class="vtitle">FUEL ECONOMY</div>
-        <div class="big" id="f_now">--</div>
-        <div class="unit">KM/L · NOW</div>
-        <div class="row2"><span><span class="k">avg</span> <span id="f_avg">--</span></span>
-          <span><span class="k">L/h</span> <span id="f_rate">--</span></span></div>
-        <div class="sub"><span style="color:var(--faint)">USED</span> <b id="f_used">--</b>
-          · <b id="f_cost">--</b></div>
       </div>
 
       <!-- 3 DRIVING — the g-ball.
@@ -347,72 +350,72 @@
       <div class="view" data-needs="rpm,speed,throttle">
         <div class="na"><div class="nat">NO DRIVE DATA</div><div class="nas">scoring needs rpm, speed or throttle</div></div>
         <div class="gwrap"><svg id="gSvg" viewBox="0 0 200 200"></svg></div>
-        <div class="vtitle" id="g_pole">DRIVING</div>
+        <div class="lay vtitle" id="g_pole" style="top:17.81cqw">DRIVING</div>
         <div class="gtop" id="g_foot">&nbsp;</div>
-        <div class="gscore"><span id="g_total">--</span><i id="g_coach">—</i></div>
+        <div class="gscore" id="g_total">--</div>
+        <div class="gcoach" id="g_coach">—</div>
       </div>
 
-      <!-- 4 TRIP -->
-      <div class="view" data-needs="speed">
-        <div class="na"><div class="nat">NO SPEED</div><div class="nas">this car does not report vehicle speed</div></div>
-        <div class="vtitle">TRIP</div>
-        <div class="big sm" id="t_dist">--<span style="font-size:5.5cqw"> km</span></div>
-        <div class="tgrid" style="margin-top:3.4cqw">
-          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_time">--</div><div class="tl">TIME</div></div>
-          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_avg">--</div><div class="tl">AVG KM/H</div></div>
-          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_fuel">--</div><div class="tl">FUEL</div></div>
-          <div class="tcell"><div class="tv" style="font-size:5.6cqw" id="t_cost">--</div><div class="tl">COST</div></div>
+      <!-- 4 TRIP. Absorbed FUEL ECONOMY on 2026-08-29, as the firmware did:
+           the two were the same view with different heroes, both built from
+           the trip totals, with fuel used and cost on both. Economy joins as
+           the second cell, and the live km/L reading is the one thing the
+           merge drops — live coaching belongs on the driving score.
+
+           The rim ring says the economy in colour alone. It does not sweep: a
+           part-filled ring invites you to read how full it is, and the length
+           of it would mean nothing here. The hero is distance. -->
+      <div class="view" data-needs="speed,fuel_rate">
+        <div class="na"><div class="nat">NO TRIP DATA</div><div class="nas">this car reports neither vehicle speed nor fuel rate</div></div>
+        <div class="lay vtitle">TRIP</div>
+        <svg viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%">
+          <circle id="t_ring" cx="130" cy="130" r="104" fill="none"
+                  stroke="#5A5F6A" stroke-width="13" opacity="0"></circle>
+        </svg>
+        <div class="lay hero" id="t_dist">--</div>
+        <div class="lay unit">KM</div>
+        <!-- Anchored 40 above the rows views' first line: two rows of cells
+             stand about 96 px tall against the 62 px of four text lines, so
+             the same top would finish this block 50 px lower down the panel
+             and crowd the car's name. -->
+        <div class="tgrid">
+          <div class="tcell" style="--x:-17.60cqw;--y:55.58cqw"><div class="tv" id="t_time">--</div><div class="tl">TIME</div></div>
+          <div class="tcell" style="--x:17.60cqw;--y:55.58cqw"><div class="tv" id="t_econ">--</div><div class="tl">KM/L</div></div>
+          <div class="tcell" style="--x:-17.60cqw;--y:66.74cqw"><div class="tv" id="t_fuel">--</div><div class="tl">FUEL</div></div>
+          <div class="tcell" style="--x:17.60cqw;--y:66.74cqw"><div class="tv" id="t_cost">--</div><div class="tl">COST</div></div>
         </div>
       </div>
 
-      <!-- 5 POWER -->
-      <div class="view" data-needs="act_torque,ref_torque">
+      <!-- 5 POWER. Absorbed ELECTRICAL on 2026-08-29, as the firmware did:
+           the voltage bar became a third row, and the colour of the number
+           says what the bar said in the space a row already had.
+
+           The channel list grew with it. A car that reports voltage but not
+           torque still has something to show here, and losing the volts line
+           to a missing torque PID would be the merge taking away a reading
+           that used to have a view of its own.
+
+           No title: the dial's own kW numbering runs where the banner would
+           sit, and a dial reading in kW does not need the word POWER over it.
+           Same call the tacho makes. -->
+      <div class="view" data-needs="act_torque,ref_torque,ctrl_volt,volts">
         <div class="na"><div class="nat">NO TORQUE DATA</div><div class="nas">power needs actual + reference torque, which this car does not report</div></div>
-        <div class="vtitle">POWER</div>
         <svg id="pwrSvg" viewBox="0 0 260 260" style="position:absolute;inset:0;width:100%;height:100%"></svg>
-        <div class="center-abs">
-          <div class="big" style="font-size:19cqw" id="p_kw">--</div>
-          <div class="unit"><span id="p_peak">kW</span></div>
+        <div class="lay hero" id="p_kw">--</div>
+        <!-- No static unit: the peak IS this dial's unit line, so it takes
+             that slot rather than leaving a gap above it. -->
+        <div class="lay word nounit" id="p_peak">kW · peak --</div>
+        <div class="rows">
+          <div class="r" style="--y:64.16cqw"><span class="rl">RPM</span><span class="rv" id="p_rpm">--</span></div>
+          <div class="r" style="--y:69.31cqw"><span class="rl">LOAD</span><span class="rv" id="p_load">--</span></div>
+          <div class="r" style="--y:74.46cqw"><span class="rl">VOLTS</span><span class="rv" id="p_volt">--</span></div>
         </div>
-        <div class="sub"><span style="color:var(--faint)">RPM</span> <b id="p_rpm">--</b>
-          · <span style="color:var(--faint)">LOAD</span> <b id="p_load">--</b></div>
       </div>
 
-      <!-- 6 THERMALS -->
-      <div class="view" data-needs="coolant,intake,cat_b1s1,catalyst">
-        <div class="na"><div class="nat">NO TEMP SENSORS</div><div class="nas">this car reports none of the temperature channels</div></div>
-        <div class="vtitle">THERMALS</div>
-        <!-- three real temperatures. Fuel rail was dropped: it never moved
-             (375 samples, 2 distinct values) and there is no standard OBD PID
-             for rail TEMPERATURE anyway, only rail pressures — so it could
-             never have worked live. Catalyst spans both columns. -->
-        <div class="tgrid tgrid-lg">
-          <div class="tcell"><div class="tv" id="th_cool">--</div><div class="tl">COOLANT</div></div>
-          <div class="tcell"><div class="tv" id="th_iat">--</div><div class="tl">INTAKE AIR</div></div>
-          <div class="tcell wide"><div class="tv" id="th_cat">--</div><div class="tl">CATALYST</div></div>
-        </div>
-        <!-- oil temp appears only on a car that actually reports PID 0x5C;
-             no dead "not available" line for the ones that don't -->
-        <div class="sub" id="th_oil" style="display:none"></div>
-      </div>
-
-      <!-- 7 ELECTRICAL -->
-      <div class="view" data-needs="ctrl_volt,volts">
-        <div class="na"><div class="nat">NO VOLTAGE</div><div class="nas">no control-module voltage from this car or adapter</div></div>
-        <div class="vtitle">ELECTRICAL</div>
-        <div class="big" id="el_v">--<span style="font-size:5.5cqw"> v</span></div>
-        <div style="width:62cqw;height:4.6cqw;border-radius:3cqw;margin-top:3cqw;position:relative;
-             background:linear-gradient(90deg,#ff3b30,#ffc53d 34%,#35e06b 52%,#35e06b 86%,#ffc53d)">
-          <div id="el_mk" style="position:absolute;top:-1.9cqw;left:0;width:1.5cqw;height:8.4cqw;
-               background:#fff;border-radius:1cqw;box-shadow:0 0 4px #000"></div>
-        </div>
-        <div class="status" id="el_status"><span class="dotled"></span><span id="el_status_t">—</span></div>
-      </div>
-
-      <!-- 8 DRIVES — browse past drives and load one. No data-needs: the
+      <!-- 6 DRIVES — browse past drives and load one. No data-needs: the
            library is about files on disk, not channels the car reports. -->
       <div class="view">
-        <div class="vtitle" id="dtitle">DRIVES</div>
+        <div class="lay vtitle" id="dtitle">DRIVES</div>
         <div class="drives" id="drives">
           <div class="dnote">reading the library…</div>
         </div>
@@ -452,8 +455,7 @@
   <div class="vname" id="vname">Engine</div>
   <button class="arrow" id="next" aria-label="Next view">›</button>
 </div>
-<div class="dots" id="dots"></div>
-<p class="hint">swipe · drag · ← → keys · tap a dot</p>
+<p class="hint">swipe · drag · ← → keys</p>
 <p class="raw" id="raw"></p>
 
 <script>
@@ -472,6 +474,145 @@ let LAST=null;
 /* ---- shared gauge geometry (declared before any gauge uses it) ---- */
 const CX=130,CY=130,R=104,START=135,SWEEP=270,TLO=40,THI=120;
 
+/* ---- the segment scale -------------------------------------------------
+   Neither the tacho, the engine view nor the power dial draws a bar or a
+   needle. Each wears a row of forty separate boxes around the rim, lit from
+   the cold end up to the reading — gauge_ui/face.cpp, transcribed.
+
+   It reads better: these are things you glance at, and forty lit blocks say
+   "most of the way up" faster than the end of a smooth bar does.
+
+   A segment's colour is a property of its POSITION on the dial, fixed when
+   the scale is built. A reading that climbs all drive never recolours
+   anything; it only lights more boxes. And because a box is lit or it is not,
+   most readings change nothing at all — the value has to cross a boundary
+   before a single pixel is different. That is the saving the board is after,
+   and keeping the same shape here is what makes the port a transcription.
+
+   40 segments, because 200 rpm a step is the resolution a rev counter is
+   actually read at, and 270/40 leaves 6.75 degrees each. The engine and power
+   dials take the same count rather than one of their own: the three rims are
+   the same ring, and scales whose segments did not line up would read as a
+   mistake on whichever you saw second. */
+const SEGS=40;
+/* The gap between one segment and the next. Without it forty segments read as
+   one continuous bar and the scale says nothing new. */
+const SEG_GAP=1.4;
+/* How far back an unlit segment is held. Its own colour, not grey, so the ramp
+   is readable across the whole dial before the engine has reached it — which
+   is why none of these dials needs a separate track ring under it.
+   Past the redline the unlit shade is stronger, so the limit is still marked
+   on a cold dial. That is what the tacho's separate redline arc was for. */
+const SEG_DIM=55/255, SEG_DIM_HOT=90/255;
+
+function segAngles(i){
+  const span=SWEEP/SEGS;
+  return [START+i*span+SEG_GAP/2, START+(i+1)*span-SEG_GAP/2];
+}
+/* One channel of a two-colour mix, and the mix itself. Shared by all three
+   ramps below, as face.cpp's mix() is. */
+function segMix(a,b,t){
+  t=Math.max(0,Math.min(1,t));
+  return '#'+[0,1,2].map(i=>Math.round(a[i]+(b[i]-a[i])*t)
+    .toString(16).padStart(2,'0')).join('');
+}
+/* Build a scale into `g`. `colourAt(f)` is asked for the colour of the segment
+   whose MIDDLE sits at fraction f — the middle is the only honest place to
+   sample a ramp when the segment is one flat colour — and `dimAt(f)` for how
+   far back it is held while unlit. Both are asked once, here, and never
+   again. */
+function buildScale(g,colourAt,dimAt){
+  const segs=[];
+  for(let i=0;i<SEGS;i++){
+    const [a0,a1]=segAngles(i), f=(i+0.5)/SEGS;
+    const seg=mk('path',{d:arc(CX,CY,R,a0,a1),fill:'none',
+      stroke:colourAt(f),'stroke-width':13});
+    seg._dim=dimAt(f); seg._lit=null;
+    seg.setAttribute('opacity',seg._dim);
+    g.appendChild(seg); segs.push(seg);
+  }
+  return segs;
+}
+/* Light a scale up to `v`. Opacity only — the colours never move. `minLit`
+   is what keeps a stone-cold engine showing one segment rather than an
+   apparently dead dial. */
+function setScale(segs,v,lo,hi,has,minLit){
+  let lit=0;
+  if(has&&hi>lo){
+    lit=Math.round((v-lo)/(hi-lo)*SEGS);
+    if(lit<(minLit||0)) lit=minLit||0;
+    if(lit>SEGS) lit=SEGS;
+    if(lit<0) lit=0;
+  }
+  for(let i=0;i<segs.length;i++){
+    const on=i<lit;
+    if(segs[i]._lit===on) continue;      // most samples stop here
+    segs[i]._lit=on;
+    segs[i].setAttribute('opacity',on?1:segs[i]._dim);
+  }
+}
+
+/* The rev scale's ramp. Blue at rest, amber halfway to the limiter, red at
+   it. Two straight mixes rather than one blue-to-red, because a single mix
+   between those two passes through purple and grey in the middle — the revs
+   you spend most of your driving at would be the muddiest part of the dial.
+   Above the redline every segment is the flat red, so the top of the dial
+   reads as a limit rather than as more colour.
+
+   The blue is deliberately deeper than the engine view's cold blue: the two
+   views are saying different things — "the engine is cold" against "you are
+   off the cam" — and a shade apart keeps them from reading as the same
+   statement. */
+const REV_COLD=[0x2f,0x6b,0xff], REV_MID=[0xff,0xc5,0x3d], REV_HOT=[0xff,0x3b,0x30];
+function revColour(rpm){
+  const red=RPM_RED>0?RPM_RED:RPM_MAX;
+  if(red<=0||rpm>=red) return '#ff3b30';
+  const f=Math.max(0,Math.min(1,rpm/red));
+  return f<0.5 ? segMix(REV_COLD,REV_MID,f*2) : segMix(REV_MID,REV_HOT,(f-0.5)*2);
+}
+/* The engine ramp: cold blue, through green where the engine is happy, to
+   red. It was four hard-edged zone arcs and the seams between them were the
+   loudest thing on the view — four colours meeting, rather than one
+   temperature changing. Green sits at 85 °C rather than the middle of the
+   40–120 dial, because 85 is the middle of this engine's normal running
+   band, so "in the green" still means what it meant when green was a zone. */
+const TEMP_COLD=[0x4d,0x96,0xff], TEMP_READY=[0x35,0xe0,0x6b], TEMP_HOT=[0xff,0x3b,0x30];
+const TEMP_READY_C=85;
+function tempColour(c){
+  const f=(c-TLO)/(THI-TLO), mid=(TEMP_READY_C-TLO)/(THI-TLO);
+  return f<=mid ? segMix(TEMP_COLD,TEMP_READY,mid>0?f/mid:0)
+                : segMix(TEMP_READY,TEMP_HOT,(f-mid)/(1-mid));
+}
+/* Power's ramp: dark gold barely working, up to a bright yellow held short of
+   white so the peak mark still reads against it. */
+const PWR_COLD=[0x6b,0x4e,0x00], PWR_MID=[0xff,0xc4,0x00], PWR_HOT=[0xff,0xe8,0x1f];
+function pwrColour(kw,kwMax){
+  const f=Math.max(0,Math.min(1,kwMax>0?kw/kwMax:0));
+  return f<0.5 ? segMix(PWR_COLD,PWR_MID,f*2) : segMix(PWR_MID,PWR_HOT,(f-0.5)*2);
+}
+
+/* ---- the economy verdict, as a colour --------------------------------
+   One function, used by TRIP's ring and by its KM/L number, so the two can
+   never disagree about how the drive is going. Thresholds and blend are
+   gauge_core/metrics.h and gauge_ui/views.cpp, kept in step by hand.
+
+   Quantised to a quarter of a km/L first: a trip average moves on every
+   speed sample, and an unquantised target moved the colour every frame. */
+const ECON_POOR=6.0, ECON_GOOD=11.0;
+function mixHex(a,b,f){
+  f=Math.max(0,Math.min(1,f));
+  return '#'+[0,1,2].map(i=>Math.round(a[i]+(b[i]-a[i])*f)
+    .toString(16).padStart(2,'0')).join('');
+}
+function econColour(e){
+  if(e==null) return '#5a5f6a';
+  const v=Math.round(e*4)/4, mid=(ECON_POOR+ECON_GOOD)/2;
+  if(v<=ECON_POOR) return '#ff3b30';
+  if(v>=ECON_GOOD) return '#35e06b';
+  return v<mid ? mixHex([255,59,48],[255,197,61],(v-ECON_POOR)/(mid-ECON_POOR))
+               : mixHex([255,197,61],[53,224,107],(v-mid)/(ECON_GOOD-mid));
+}
+
 /* ---- tacho ------------------------------------------------------------
    Scale comes from the car profile, not a constant: an MX-5's 8000/7000 dial
    would misread badly on a diesel. The static ring/ticks live in their own
@@ -481,12 +622,15 @@ const tachSvg=document.getElementById('tachSvg');
 function rang(v){return START+SWEEP*Math.max(0,Math.min(1,v/RPM_MAX));}
 const tachStatic=mk('g',{});tachSvg.appendChild(tachStatic);
 function clearNode(n){while(n.firstChild)n.removeChild(n.firstChild);}
+let TACH_SEGS=[];
 function buildTacho(){
   clearNode(tachStatic);
-  tachStatic.appendChild(mk('path',{d:arc(130,130,104,START,START+SWEEP),fill:'none',
-    stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
-  tachStatic.appendChild(mk('path',{d:arc(130,130,104,rang(RPM_RED),START+SWEEP),fill:'none',
-    stroke:'rgba(255,59,48,0.35)','stroke-width':13,'stroke-linecap':'round'}));
+  // The segments ARE the tacho's face. No track ring under them and no
+  // separate redline arc over them: the dim shade carries both.
+  TACH_SEGS=buildScale(tachStatic,
+    f=>revColour(f*RPM_MAX),
+    f=>{const red=RPM_RED>0?RPM_RED:RPM_MAX;
+        return (red>0&&f*RPM_MAX>=red)?SEG_DIM_HOT:SEG_DIM;});
   // a tick per 1000 rpm, placed by value so a 6500 redline still lands right
   for(let i=0;i*1000<=RPM_MAX;i++){
     const rpm=i*1000, a=rang(rpm), red=rpm>=RPM_RED;
@@ -500,30 +644,26 @@ function buildTacho(){
   }
 }
 buildTacho();
-const tachFill=mk('path',{fill:'none','stroke-width':13,'stroke-linecap':'round',stroke:'#cfe0ff'});
-tachSvg.appendChild(tachFill);
-const tachNeedle=mk('line',{x1:130,y1:130,x2:130,y2:130,stroke:'#e1000a',
-  'stroke-width':3.4,'stroke-linecap':'round'});
-tachSvg.appendChild(tachNeedle);
-tachSvg.appendChild(mk('circle',{cx:130,cy:130,r:7.5,fill:'#1a1c22',stroke:'#e1000a','stroke-width':2.5}));
 
-/* ---- engine temp ring ---- */
+/* ---- engine temp scale ----
+   The same segment scale the tacho wears, and for the same reasons. The white
+   mark that used to slide along a graded band went the way of the tacho's
+   needle: it said what the level already says, and it was the only object on
+   this view that moved. */
 const engSvg=document.getElementById('engSvg');
-function tang(t){return START+SWEEP*Math.max(0,Math.min(1,(t-TLO)/(THI-TLO)));}
-engSvg.appendChild(mk('path',{d:arc(CX,CY,R,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
-[[40,60,'rgba(77,150,255,0.5)'],[60,80,'rgba(255,197,61,0.4)'],[80,105,'rgba(53,224,107,0.55)'],[105,120,'rgba(255,59,48,0.5)']]
-  .forEach(([a,b,c])=>engSvg.appendChild(mk('path',{d:arc(CX,CY,R,tang(a),tang(b)),fill:'none',stroke:c,'stroke-width':13})));
-const engMark=mk('line',{stroke:'#fff','stroke-width':3,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
-engSvg.appendChild(engMark);
+const ENG_SEGS=buildScale(engSvg, f=>tempColour(TLO+f*(THI-TLO)), ()=>SEG_DIM);
 
 /* ---- power gauge ---- */
 const pwrSvg=document.getElementById('pwrSvg');
 let PMAX=140;
 function pang(v){return START+SWEEP*Math.max(0,Math.min(1,v/PMAX));}
 const pwrStatic=mk('g',{});pwrSvg.appendChild(pwrStatic);
+let PWR_SEGS=[];
 function buildPower(){
   clearNode(pwrStatic);
-  pwrStatic.appendChild(mk('path',{d:arc(CX,CY,R,START,START+SWEEP),fill:'none',stroke:'#23262e','stroke-width':13,'stroke-linecap':'round'}));
+  // No zone held back harder at the top: unlike a redline or a coolant gauge,
+  // the end of this scale is not a place you should not be.
+  PWR_SEGS=buildScale(pwrStatic, f=>pwrColour(f*PMAX,PMAX), ()=>SEG_DIM);
   // round the label step to a multiple of 20 kW so the numbers stay readable
   // whatever the car's ceiling is (140 -> 20s, 250 -> 40s)
   const step=Math.max(20,Math.ceil(PMAX/7/20)*20);
@@ -533,14 +673,11 @@ function buildPower(){
     tx.textContent=v;pwrStatic.appendChild(tx);}
 }
 buildPower();
-const pwrFill=mk('path',{fill:'none',stroke:'#cfe0ff','stroke-width':13,'stroke-linecap':'round'});
-pwrSvg.appendChild(pwrFill);
-const pwrPeak=mk('line',{stroke:'var(--amber)','stroke-width':2.5,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
+/* The high-water mark, and the only moving part left on any dial. White
+   rather than amber: the scale's own hot end is already yellow, and a mark
+   the same colour as the thing it sits on cannot be read. */
+const pwrPeak=mk('line',{stroke:'#ffffff','stroke-width':2.5,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
 pwrSvg.appendChild(pwrPeak);
-const pwrNeedle=mk('line',{stroke:'#e1000a','stroke-width':3.2,'stroke-linecap':'round',x1:CX,y1:CY,x2:CX,y2:CY});
-pwrSvg.appendChild(pwrNeedle);
-const pwrHub=mk('circle',{cx:CX,cy:CY,r:7,fill:'#1a1c22',stroke:'#e1000a','stroke-width':2.4});
-pwrSvg.appendChild(pwrHub);
 
 /* ---- the g-ball ----
    Two clocks on one screen. The dot is instant: where the car is being pushed
@@ -564,18 +701,29 @@ const GRINGS=[0.2,0.4,0.6];
    short enough that it is gone before the next one starts. */
 const GTRAIL=30;
 
-/* There is no background gradient of this view's own. The screen already has
-   one: the rpm backdrop from SPEC.md section 11, red at the rim and black in
-   the middle so the readout in the centre stays crisp. Drawing a second tinted
-   disc on top of it produced a flat orange floodlight with the score, the
-   coach word and the ring labels all washed out of it -- two backdrops
-   fighting, and the one underneath winning.
-   So this view borrows that backdrop instead, and feeds it intensity in place
-   of rpm (see drawGlow's `override`). Same ramp, same shape, same decision
-   already made and tested; the only change is what it is a picture of. That
-   matters, because intensity is not rpm -- it is the loudest of revs, g and
+/* The RIM carries the pole, not a backdrop. It used to be a full-screen
+   gradient fed the score's intensity in place of rpm, and the board must not
+   do that: a coloured backdrop covers the panel, so every change to it
+   repaints the whole panel -- measured at 5-20 fps, which is why the tacho's
+   heat went on the rim in the first place. A ring is a small object and
+   intensity moves slowly, so the same signal costs nothing.
+
+   Deep green through ember to red, with how hard you have been driving over
+   the last half-minute. It moves slowly on purpose: the dot is what you just
+   did, the rim is how you have been driving, and they are meant to move at
+   different speeds. Intensity is not rpm -- it is the loudest of revs, g and
    throttle, which is why a car held at 0.5 g through a corner reads as hot
    even off the throttle. */
+const GLOW_CALM=[0x18,0x84,0x4e];   // deep green: driving nicely
+const GLOW_EMBER=[0x68,0x1a,0x0c];  // low intensity, deep ember
+const GLOW_RED=[0xff,0x22,0x16];    // full intensity, hot red
+/* Quantised to fortieths, as the board is: it repaints only when the step
+   changes, and a ramp that moved on every sample would repaint every frame. */
+function rimColour(f){
+  const step=Math.round(Math.max(0,Math.min(1,f))*40)/40;
+  return step<0.5 ? segMix(GLOW_CALM,GLOW_EMBER,step/0.5)
+                  : segMix(GLOW_EMBER,GLOW_RED,(step-0.5)/0.5);
+}
 
 /* Rings and cross-hairs, drawn once. Labelled only on the g axis a driver
    actually judges by — a ring with a number on every one of them turns the
@@ -631,9 +779,6 @@ const gHist=[];   // {lat,lon}, newest last
 function drawG(S){
   const g=S.g||{};
   const inten=S.intensity==null?0:S.intensity;
-  /* Only while this view is the one being looked at. The other eight are
-     instruments and their backdrop must stay tied to the revs. */
-  GLOW_OVERRIDE = (idx===DRIVING_VIEW) ? inten : null;
 
   const pole=S.pole||'NICE';
   const poleEl=$('g_pole');
@@ -685,8 +830,12 @@ function drawG(S){
   gDot.setAttribute('cy',py(now).toFixed(1));
 
   const over=Math.hypot(now.lat,now.lon)>=G_FULL;
-  gRim.setAttribute('stroke',over?'var(--accent)':'rgba(255,255,255,0.10)');
-  gRim.setAttribute('stroke-width',over?3:1.4);
+  /* Two signals on one object: colour is the pole, thickness is whether the
+     car has just gone past full scale. Neither is lost -- a dot that vanishes
+     off the edge is the one moment you most want to see. */
+  gRim.setAttribute('stroke',rimColour(inten));
+  gRim.setAttribute('opacity',over?1:0.75);
+  gRim.setAttribute('stroke-width',over?2.8:1.4);
 
   if(g.peak_brake>0.05){
     gPeakBrake.setAttribute('visibility','visible');
@@ -710,12 +859,43 @@ function drawG(S){
 /* ---- carousel ---- */
 const track=document.getElementById('track'),screenEl=document.getElementById('screen');
 const N=track.children.length;let idx=0;
-const names=['Tacho','Engine','Fuel economy','Driving','Trip','Power','Thermals','Electrical','Drives'];
+const names=['Tacho','Engine','Driving','Trip','Power','Drives'];
 const DRIVES_VIEW=names.indexOf('Drives');
 const DRIVING_VIEW=names.indexOf('Driving');
-const dotsEl=document.getElementById('dots');
-for(let i=0;i<N;i++){const b=document.createElement('button');b.className='dot';b.dataset.i=i;
-  b.setAttribute('aria-label','View '+(i+1));dotsEl.appendChild(b);}
+/* ---- the page indicator, on the bezel --------------------------------
+   A short scale of segments along the bottom of the rim, one per view, with
+   the view you are on lit and the rest held back. It costs the inside of the
+   panel nothing, and it is the shape of the thing you are moving through.
+
+   45 degrees centred on the bottom of the panel. On the board that is a hard
+   constraint and not a taste: the carousel shifts the middle band of rows
+   every frame and paints everything outside them once, so a full ring would
+   run through the moving band and smear on every swipe.
+
+   The ramp stays inside ONE colour family -- teal, through the scanning
+   ring's green, to lime. On this gauge a colour is a claim: green means the
+   car is fine, red means it is not, amber is the accent. A bezel running
+   green to red would read as a severity scale, and the rightmost view would
+   look like a fault. Shades of one family carry the gradient without making a
+   claim about anything. */
+const PAGE_FROM=68, PAGE_TO=113;    // degrees, 0 = 3 o'clock, clockwise
+const PAGE_GAP=1.2;
+const PAGE_R=114;                   // just outside the dial rim, as on the board
+const PAGE_W=2.8, PAGE_W_ON=3.9;
+const PAGE_DIM=70/255;
+const PAGE_A=[0x2e,0xd9,0xc3], PAGE_B=[0x35,0xe0,0x6b], PAGE_C=[0xae,0xe0,0x34];
+function pageColour(f){
+  return f<0.5 ? segMix(PAGE_A,PAGE_B,f*2) : segMix(PAGE_B,PAGE_C,(f-0.5)*2);
+}
+const pageArc=document.getElementById('pagearc');
+const pageSegs=[];
+for(let i=0;i<N;i++){
+  const span=(PAGE_TO-PAGE_FROM)/N;
+  const a0=PAGE_FROM+i*span+PAGE_GAP/2, a1=PAGE_FROM+(i+1)*span-PAGE_GAP/2;
+  const seg=mk('path',{d:arc(CX,CY,PAGE_R,a0,a1),fill:'none','stroke-linecap':'round',
+    stroke:pageColour(N>1?i/(N-1):0),'stroke-width':PAGE_W,opacity:PAGE_DIM});
+  pageArc.appendChild(seg);pageSegs.push(seg);
+}
 /* Place every view relative to `idx`, wrapping the short way round.
    A view only animates if it is sliding between two on-screen-adjacent slots;
    anything crossing the seam is moved with transitions off, out of sight. */
@@ -736,18 +916,16 @@ function go(i, animate=true){
   });
   void track.offsetWidth;                     // commit the transforms
   kids.forEach(v=>v.classList.remove('noanim'));
-  [...dotsEl.children].forEach((d,k)=>d.classList.toggle('on',k===idx));
+  pageSegs.forEach((seg,k)=>{
+    seg.setAttribute('opacity',k===idx?1:PAGE_DIM);
+    seg.setAttribute('stroke-width',k===idx?PAGE_W_ON:PAGE_W);
+  });
   document.getElementById('vname').textContent=names[idx];
   // the library only changes when a drive is recorded, so it is read on
   // arrival at the view rather than polled with everything else
   if(idx===DRIVES_VIEW) loadDrives();}
 document.getElementById('next').onclick=()=>go(idx+1);
 document.getElementById('prev').onclick=()=>go(idx-1);
-// a dot can be several views away; sliding through the ones between looks
-// frantic, so a non-adjacent jump cuts straight there
-dotsEl.onclick=e=>{const b=e.target.closest('.dot');if(!b)return;
-  const t=+b.dataset.i, step=Math.abs(((t-idx+N)%N+N)%N);
-  go(t, step===1 || step===N-1);};
 addEventListener('keydown',e=>{if(e.key==='ArrowRight')go(idx+1);if(e.key==='ArrowLeft')go(idx-1);});
 let down=false,x0=0,moved=0;
 /* Capture is deferred until the pointer has actually travelled. Grabbing it on
@@ -767,7 +945,7 @@ const endDrag=()=>{if(!down)return;down=false;capturing=false;
   if(moved<-32)go(idx+1);else if(moved>32)go(idx-1);moved=0;};
 screenEl.addEventListener('pointerup',endDrag);screenEl.addEventListener('pointercancel',endDrag);
 /* ?view=3 opens straight onto one view. Only useful off the car -- for
-   screenshots and for judging a single design without eight swipes first. */
+   screenshots and for judging a single design without five swipes first. */
 go(parseInt(new URLSearchParams(location.search).get('view'), 10) || 0, false);
 
 /* ---- drive picker ------------------------------------------------------
@@ -1141,7 +1319,13 @@ function applyBoot(b){
 }
 
 /* ---- render from /data ---- */
-function setStatus(el,txt,cls){el.className='status '+(cls||'');$(el.id+'_t').textContent=txt;}
+/* The state word, in the colour that says it. A pill with a border was one
+   more shape on a face that is already a ring and a row of boxes; the board
+   draws the word alone and lets the colour do the work. */
+function setWord(el,txt,colour){
+  el.textContent=txt||'—';
+  el.style.color=colour||'#808080';
+}
 
 /* ---- universal: adapt to whatever car is plugged in --------------------
    Two things change per car: the dial scales (from its profile) and which
@@ -1224,63 +1408,57 @@ async function tick(){
 
   // 2 engine
   $('e_temp').textContent=L.coolant==null?'--°':fmt(L.coolant)+'°';
-  if(L.coolant!=null){const a=tang(L.coolant),o=polar(CX,CY,R+9,a),q=polar(CX,CY,R-9,a);
-    engMark.setAttribute('x1',o[0]);engMark.setAttribute('y1',o[1]);
-    engMark.setAttribute('x2',q[0]);engMark.setAttribute('y2',q[1]);}
-  const wc={COLD:'cold',WARMING:'warn',READY:'ok',HOT:'err',UNKNOWN:''}[D.warm]||'';
-  setStatus($('e_status'),D.warm,wc);
-  $('e_volt').textContent=L.volts==null?'--':fmt(L.volts,1)+'v';
+  // One segment stays lit on a stone-cold engine: an unlit dial reads as a
+  // dead one.
+  setScale(ENG_SEGS, L.coolant, TLO, THI, L.coolant!=null, 1);
+  // The board's own thresholds: below 60 cold, below 85 warming, then ready.
+  const wc={COLD:'#4fa3ff',WARMING:'#ffc24a',READY:'#5bd97a',HOT:'#ff3b30'}[D.warm];
+  setWord($('e_status'),D.warm,wc);
   $('e_iat').textContent=L.intake==null?'--':fmt(L.intake)+'°';
-
-  // 2 fuel
-  $('f_now').textContent=D.econ_now==null?'--':fmt(D.econ_now,1);
-  $('f_avg').textContent=D.econ_avg==null?'--':fmt(D.econ_avg,1);
-  $('f_rate').textContent=L.fuel_rate==null?'--':fmt(L.fuel_rate,1);
-  $('f_used').textContent=fmt(D.fuel_l,2)+' L';
-  $('f_cost').textContent='RM '+fmt(D.cost_rm,2);
+  // the server has already picked whichever catalyst PID this car answers on
+  $('e_cat').textContent=L.catalyst==null?'--':fmt(L.catalyst)+'°';
+  $('e_volt').textContent=L.volts==null?'--':fmt(L.volts,1)+'v';
 
   // 3 driving -- the g-ball
   drawG(S);
 
   // 4 trip
-  $('t_dist').innerHTML=fmt(D.dist_km,2)+'<span style="font-size:5.5cqw"> km</span>';
+  $('t_dist').textContent=fmt(D.dist_km,1);
   $('t_time').textContent=mmss(D.elapsed_s);
-  $('t_avg').textContent=fmt(D.avg_speed);
-  $('t_fuel').textContent=fmt(D.fuel_l,2)+'L';
+  // Average, not instant: this view is what the drive came to. The number
+  // takes the ring's colour, from the same function, so the two read as one.
+  const econ=D.econ_avg, ec=econColour(econ);
+  $('t_econ').textContent=econ==null?'--':fmt(econ,1);
+  $('t_econ').style.color=ec;
+  // Always full, and hidden outright until there is an economy figure at all:
+  // a green circle for a drive that has not started would be a claim.
+  $('t_ring').setAttribute('opacity',econ==null?0:1);
+  $('t_ring').setAttribute('stroke',ec);
+  $('t_fuel').textContent=fmt(D.fuel_l,2)+' L';
   $('t_cost').textContent='RM'+fmt(D.cost_rm,2);
 
   // 5 power — needs torque PIDs; degrade honestly when the car isn't sending them
   const kw=L.power_kw, hasPwr=(kw!=null);
-  $('p_kw').textContent=hasPwr?fmt(kw):'n/a';
-  $('p_kw').style.fontSize=hasPwr?'19cqw':'11cqw';
-  $('p_peak').textContent=hasPwr?('kW · peak '+fmt(D.peak_kw)):'no torque data';
-  const pa=pang(hasPwr?kw:0);
-  pwrFill.setAttribute('d',hasPwr?arc(CX,CY,R,START,Math.max(START+0.5,pa)):'');
-  const np=polar(CX,CY,R-16,pa);
-  pwrNeedle.setAttribute('opacity',hasPwr?1:0);
-  pwrHub.setAttribute('opacity',hasPwr?1:0);
-  pwrNeedle.setAttribute('x2',np[0]);pwrNeedle.setAttribute('y2',np[1]);
-  const ppa=pang(D.peak_kw||0),pp1=polar(CX,CY,R-6,ppa),pp2=polar(CX,CY,R-16,ppa);
+  // Dashes, like every other absent reading on every other view.
+  $('p_kw').textContent=hasPwr?fmt(kw):'--';
+  $('p_peak').textContent=hasPwr?('kW · peak '+fmt(D.peak_kw)):'kW · peak --';
+  setScale(PWR_SEGS, kw, 0, PMAX, hasPwr, 0);
+  // The mark sits ON the scale rather than under it: radii copied from the
+  // board's kPwrPeakOutR/InR, which are 98/104 and 88/104 of the rim.
+  const ppa=pang(D.peak_kw||0),pp1=polar(CX,CY,R*98/104,ppa),pp2=polar(CX,CY,R*88/104,ppa);
   pwrPeak.setAttribute('opacity',(hasPwr&&D.peak_kw>0)?1:0);
   pwrPeak.setAttribute('x1',pp1[0]);pwrPeak.setAttribute('y1',pp1[1]);
   pwrPeak.setAttribute('x2',pp2[0]);pwrPeak.setAttribute('y2',pp2[1]);
   $('p_rpm').textContent=L.rpm==null?'--':fmt(L.rpm);
   $('p_load').textContent=L.load==null?'--':fmt(L.load)+'%';
-
-  // 6 thermals
-  $('th_cool').textContent=L.coolant==null?'--':fmt(L.coolant)+'°';
-  $('th_iat').textContent=L.intake==null?'--':fmt(L.intake)+'°';
-  $('th_cat').textContent=L.catalyst==null?'--':fmt(L.catalyst)+'°';
-  $('th_oil').style.display=(L.oil==null)?'none':'';
-  if(L.oil!=null) $('th_oil').innerHTML=
-    '<span style="color:var(--faint)">OIL</span> <b>'+fmt(L.oil)+'°</b>';
-
-  // 7 electrical
-  $('el_v').innerHTML=(L.volts==null?'--':fmt(L.volts,1))+'<span style="font-size:5.5cqw"> v</span>';
-  const frac=Math.max(0,Math.min(1,((L.volts||11)-11)/(15.5-11)));
-  $('el_mk').style.left='calc(62cqw * '+frac.toFixed(3)+' - 0.75cqw)';
-  const cc={CHARGING:'ok','NOT CHARGING':'warn',LOW:'err',HIGH:'err',UNKNOWN:''}[D.charge]||'';
-  setStatus($('el_status'),D.charge,cc);
+  // No word for the charge state: the colour is the word. Green is charging,
+  // amber resting, red going flat -- the thresholds the ELECTRICAL bar used,
+  // in the space the number already occupies.
+  $('p_volt').textContent=L.volts==null?'--':fmt(L.volts,1)+'v';
+  $('p_volt').style.color=
+    L.volts==null ? 'var(--phos)' :
+    L.volts<12.2  ? '#ff6b4a' :
+    L.volts<13.0  ? '#ffc24a' : '#5bd97a';
 
   $('raw').textContent=`rpm ${fmt(L.rpm)} · spd ${fmt(L.speed)} · thr ${fmt(L.throttle)}% · `+
     `${S.pole} ${fmt(S.intensity*100)}% · moving ${mmss(D.moving_s)} · peak ${fmt(D.peak_rpm)} rpm`;
@@ -1294,101 +1472,7 @@ async function tick(){
 let tachTarget = null;      // latest rpm from the car (null = no data)
 let tachShown  = 0;         // what the needle is currently showing
 
-/* ---- rpm-reactive backdrop --------------------------------------------
-   The display warms up as the engine does: near-black at idle, a dim ember
-   through the mid-range, an intense red vignette approaching the redline.
-   Keyed to the car's OWN redline (from its profile), so it means the same
-   thing in any car rather than assuming an 8000 rpm dial.
-
-   Red goes at the RIM and black stays in the middle: the centre of every view
-   carries the big readout, and tinting behind it would cost legibility. */
-const GLOW_EMBER = [104, 26, 12];   // low intensity, deep ember
-const GLOW_RED   = [255, 34, 22];   // full intensity, hot red
-/* The cool end, used only when the Driving view drives this backdrop with
-   intensity instead of rpm. The rev ramp has no calm end because a tacho at
-   idle should show nothing; a pole indicator must show something, or a gentle
-   drive is indistinguishable from a gauge that has died. */
-const GLOW_CALM  = [24, 132, 78];   // deep green: driving nicely
-const GLOW_START = 0.22;            // fraction of redline before any tint
-/* Fraction of redline at which the glow is already fully hot. Tying full
-   intensity to the redline itself meant the top of the ramp was somewhere you
-   essentially never go on a road — 5000 rpm in an MX-5 read as a little over
-   half brightness, so the effect spent its life in the dull half. 0.72 of a
-   7000 redline is 5040 rpm: reachable in second on any decent road, and the
-   ramp below it still has the whole usable range to play with. Kept as a
-   fraction so a car with a different redline scales with it. */
-const GLOW_FULL  = 0.72;
-const glowEl = document.getElementById('glow');
-let glowPaintedAt = -1;             // last colour step actually written
-
-/* Three shapes for the same ramp. `rim` is the CHOSEN one (see SPEC §4);
-   the other two lost the side-by-side and are kept only so compare.html
-   still works if another visual decision comes up later.
-     rim    - CHOSEN. Red at the edge, black centre. Readout stays crisp.
-     centre - rejected: red blooms from the middle, so the small labels under
-              the big number dissolve into it near the redline.
-     band   - rejected: red ring with a dark core. Punchiest, but busier.
-   Switch with ?glow=<mode>, or setGlowMode('band') from the console. */
-let GLOW_MODE = 'rim';
-function glowMix(f){
-  return GLOW_EMBER.map((v,i)=>Math.round(v+(GLOW_RED[i]-v)*f)).join(',');
-}
-function glowGradient(c){
-  if (GLOW_MODE === 'centre'){
-    return 'radial-gradient(circle at 50% 46%,rgba('+c+',0.92) 0%,'
-      + 'rgba('+c+',0.62) 38%,rgba('+c+',0.20) 62%,rgba(0,0,0,0) 82%)';
-  }
-  if (GLOW_MODE === 'band'){
-    return 'radial-gradient(circle at 50% 46%,rgba(0,0,0,0) 20%,'
-      + 'rgba('+c+',0.32) 40%,rgba('+c+',0.94) 70%,rgba('+c+',0.58) 100%)';
-  }
-  return 'radial-gradient(circle at 50% 46%,rgba(0,0,0,0) 24%,'
-    + 'rgba('+c+',0.50) 72%,rgba('+c+',0.96) 100%)';
-}
-/* Set by the Driving view while it is on screen, to hand the backdrop a
-   0-1 intensity instead of a rev count. Null means the tacho owns it again. */
-let GLOW_OVERRIDE = null;
-function drawGlow(rpm, has){
-  let f = 0;
-  if (GLOW_OVERRIDE !== null){
-    f = Math.max(0, Math.min(1, GLOW_OVERRIDE));
-    // Green -> ember over the first half, ember -> red over the second, so
-    // the handover sits near the pole threshold rather than at either end.
-    const c = (f < 0.5)
-      ? GLOW_CALM.map((v,i)=>Math.round(v+(GLOW_EMBER[i]-v)*(f/0.5)))
-      : GLOW_EMBER.map((v,i)=>Math.round(v+(GLOW_RED[i]-v)*((f-0.5)/0.5)));
-    const key = -1 - Math.round(f*40);      // never collides with a rev step
-    if (key !== glowPaintedAt){
-      glowPaintedAt = key;
-      glowEl.style.background = glowGradient(c.join(','));
-    }
-    // A floor, so a calm drive still reads as green rather than as black.
-    // 0.20 was not enough: the rim shape puts its colour in the outer quarter
-    // of the disc, so a fifth of very little is nothing at all.
-    glowEl.style.opacity = (0.42 + f*0.52).toFixed(3);
-    return;
-  }
-  if (has && RPM_RED > 0){
-    f = (rpm/RPM_RED - GLOW_START) / (GLOW_FULL - GLOW_START);
-    f = Math.max(0, Math.min(1, f));
-    f = Math.pow(f, 1.35);          // hold back the mid-range, bite near the top
-  }
-  // opacity is cheap to change every frame; the gradient string is not, so it
-  // is only rewritten when the colour moves a visible step (1/40th)
-  const step = Math.round(f*40);
-  if (step !== glowPaintedAt){
-    glowPaintedAt = step;
-    glowEl.style.background = glowGradient(glowMix(step/40));
-  }
-  glowEl.style.opacity = (f*0.92).toFixed(3);
-}
-function setGlowMode(m){
-  GLOW_MODE = (m === 'centre' || m === 'band') ? m : 'rim';
-  glowPaintedAt = -1;               // force the gradient to be rewritten
-}
-
-/* Design-preview switches, used by compare.html and handy at the desk:
-     ?glow=centre  pick the glow shape
+/* Design-preview switches, handy at the desk:
      ?rpm=6800     pin rpm, since a desk capture rarely revs past 2000
      ?bare=1       hide the browser chrome, leaving just the round display
      ?view=3       open straight onto one view, counting from 0             */
@@ -1424,9 +1508,8 @@ function sweptRpm(){
   const p = (performance.now() % s.ms) / s.ms;
   return s.lo + (s.hi - s.lo) * (0.5 - 0.5*Math.cos(p * 2*Math.PI));
 }
-setGlowMode(QS.get('glow'));
 if (QS.get('bare') === '1'){
-  document.querySelectorAll('.top,.navrow,.dots,.hint,.raw')
+  document.querySelectorAll('.top,.navrow,.hint,.raw')
     .forEach(el => el.style.display = 'none');
   document.body.style.padding = '8px';
 }
@@ -1440,23 +1523,25 @@ function drawTacho(){
     if (Math.abs(tachTarget - tachShown) < 1) tachShown = tachTarget;
   }
   const v  = has ? tachShown : 0;
-  drawGlow(v, has);
-  const ra = rang(v);
-  const rn = polar(130,130,86,ra);
-  tachFill.setAttribute('d', has ? arc(130,130,104,START,Math.max(START+0.5,ra)) : '');
-  tachFill.setAttribute('stroke', (has && v>=RPM_RED) ? '#ff3b30' : '#cfe0ff');
-  tachNeedle.setAttribute('opacity', has ? 1 : 0.25);
-  tachNeedle.setAttribute('x2', rn[0]); tachNeedle.setAttribute('y2', rn[1]);
+  setScale(TACH_SEGS, v, 0, RPM_MAX, has, 0);
   const el = $('t_rpm');
-  if (el) {
-    const txt = has ? String(Math.round(v/10)*10) : '----';
-    el.textContent = txt;
-    // four digits at full size run into the dial numbering, so shrink them
-    el.style.fontSize = txt.length >= 4 ? '17cqw' : '21cqw';
-  }
+  if (el) el.textContent = has ? String(Math.round(v/10)*10) : '----';
   requestAnimationFrame(drawTacho);
 }
 requestAnimationFrame(drawTacho);
+
+/* The header clock. Repainted only when the minute changes -- on the board a
+   label write is a repaint, and this one sits on every view. The desk machine
+   always knows the time; the board says "--:--" until it has synced one. */
+let clockMin = -1;
+function drawClock(){
+  const d = new Date(), m = d.getHours()*60 + d.getMinutes();
+  if (m === clockMin) return;
+  clockMin = m;
+  $('hclock').textContent =
+    String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+drawClock(); setInterval(drawClock, 2000);
 
 /* Poll faster than the car answers, so the UI never adds latency of its own. */
 tick();setInterval(tick,100);

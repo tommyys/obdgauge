@@ -222,18 +222,24 @@ Swipe, drag, use ← →, or tap a dot.
 | # | View | Notes |
 |---|------|-------|
 | 1 | **Tacho** | RPM needle + 0–8k dial, redline zone, speed / throttle / peak hold |
-| 2 | **Engine** | Coolant hero + COLD/WARMING/READY ring, battery, intake air |
-| 3 | **Fuel economy** | Instant km/L, trip average, L/h, fuel used + RM cost |
-| 4 | **Driving score** | 0–100 from smoothness + economy + calm, with a coach word |
-| 5 | **Trip** | Distance, time, average speed, fuel, cost |
-| 6 | **Power** | Estimated crank kW with peak hold — needs torque PIDs |
-| 7 | **Thermals** | Coolant, intake air, catalyst, fuel rail |
-| 8 | **Electrical** | Voltage + charging status |
+| 2 | **Engine** | Coolant hero + COLD/WARMING/READY ring, intake air, catalyst, battery |
+| 3 | **Driving** | The g-ball: real lateral/longitudinal g, a tidiness score, a coach word |
+| 4 | **Trip** | Distance, time, km/L with its verdict ring, fuel, cost |
+| 5 | **Power** | Estimated crank kW with peak hold — needs torque PIDs — and volts |
+| 6 | **Drives** | The recorded-drive library, and one drive's summary + timeline |
+
+These are the same six views the gauge itself runs, in the same order, under
+the same names — and since 2026-09-05, with the same face: segment scales
+instead of bars and needles, no rpm backdrop, the clock at the top, the car's
+name as a caption at the foot, and the page indicator on the rim. Every
+position and text size is the board's own pixel offset divided by 4.66. The
+simulator is a preview of the board, so anything here the board does not do
+would stop it being one.
 
 Views degrade honestly: anything the car isn't reporting shows `--` or `n/a`
 rather than a plausible-looking zero. **Oil temperature is not available on the
 ND3** — confirmed against four captures including the Mazda extended-PID
-profile — so the thermals view says so explicitly.
+profile — so it is not on any view.
 
 ## Every drive is recorded — in full
 

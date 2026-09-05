@@ -32,8 +32,9 @@ constexpr int kRowH    = 88;
 //
 // Measured on the board rather than reasoned about, because reasoning about it
 // got the wrong answer twice: the view's own DRIVES title lands at y 80..101,
-// and this puts the first line of the first drive 16 px under it.
-constexpr int kFirstTextY = 117;
+// and this puts the first line of the first drive 24 px under it. It was 16;
+// Tommy wanted it a little looser.
+constexpr int kFirstTextY = 125;
 // Between the drive's name line and its numbers line, inside one row.
 constexpr int kLineGap = 7;
 // The hairline under each row is part of the row's own 88 px, so the text has

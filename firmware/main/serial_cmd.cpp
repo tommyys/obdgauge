@@ -478,10 +478,10 @@ extern "C" void serial_cmd_init(void) {
     // than this 12 KB stack needed, and nothing said so.
     const size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
                                                         MALLOC_CAP_8BIT);
-    if (xTaskCreatePinnedToCore(task, "serialcmd", 8192, nullptr, 2, nullptr, 0)
+    if (xTaskCreatePinnedToCore(task, "serialcmd", 6144, nullptr, 2, nullptr, 0)
             != pdPASS) {
         printf("serial: FAILED to start the console task -- no commands will "
-               "work. DRAM: %u free, largest block %u, needed 8192\n",
+               "work. DRAM: %u free, largest block %u, needed 6144\n",
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL |
                                                  MALLOC_CAP_8BIT),
                (unsigned)big);

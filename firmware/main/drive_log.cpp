@@ -331,9 +331,12 @@ extern "C" void drive_log_reserve(void) {
     // Priority 3 -- below the UI and below live_link's 4. Core 0, beside the
     // radio, so LVGL's render on core 1 never waits behind a flash erase.
     //
-    // 3072, down from 8192. Measured on the board 2026-08-28: this task's
-    // deepest ever use is 936 bytes (8192 with 7256 spare, reported as
-    // "stack spare drivelog" on the ui: line). It has no recursion and no
+    // 4096. It was 3072 on a 2026-08-28 measurement of 936 bytes deepest use;
+    // on 2026-09-05, with the car connected and drives opening and closing,
+    // the ui: line reported 636 bytes spare -- 2,436 used, not 936. The deep
+    // path is the flight_log/printf on a drive opening or closing, which that
+    // bench run never hit. A stack overflow here reboots the gauge in the car,
+    // so this buys 1,024 bytes of margin, paid for by the console below. It has no recursion and no
     // large locals -- the buffer it appends through is LogBuf's 384-byte
     // batch_, not a stack frame. The 5 KB this returns is internal RAM, which
     // is the only memory the BT controller can use and the only memory the
@@ -352,11 +355,11 @@ extern "C" void drive_log_reserve(void) {
     const size_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t big = heap_caps_get_largest_free_block(caps);
     const size_t free_now = heap_caps_get_free_size(caps);
-    if (xTaskCreatePinnedToCore(task, "drivelog", 3072, nullptr, 3, nullptr, 0)
+    if (xTaskCreatePinnedToCore(task, "drivelog", 4096, nullptr, 3, nullptr, 0)
             != pdPASS) {
         printf("drives: FAILED to start the recorder task -- NOTHING WILL BE "
                "RECORDED. Internal RAM: %u free, largest block %u, needed "
-               "3072\n", (unsigned)free_now, (unsigned)big);
+               "4096\n", (unsigned)free_now, (unsigned)big);
         flight_log("drive log: recorder task FAILED, internal free %u "
                    "largest %u", (unsigned)free_now, (unsigned)big);
     } else {

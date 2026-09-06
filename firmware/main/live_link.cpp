@@ -1,4 +1,5 @@
 #include "live_link.h"
+#include "serial_cmd.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -32,7 +33,10 @@ void set_status(const char* fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(g_status, sizeof g_status, fmt, ap);
     va_end(ap);
-    printf("live: %s\n", g_status);
+    // Held back while a GET dump streams -- see serial_cmd_console_busy().
+    // g_status still updates, so the LIVE view is unaffected; only the console
+    // copy is dropped, and a dropped line costs three records of a pull.
+    if (!serial_cmd_console_busy()) printf("live: %s\n", g_status);
     flight_log("%s", g_status);
 }
 

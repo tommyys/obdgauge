@@ -900,12 +900,17 @@ extern "C" void app_main(void) {
         // Reprinted for the first minute, because a console attached after the
         // boot print has missed it -- see flight_log_replay().
         static int replays = 0;
-        if (replays < 4 && esp_timer_get_time() - t0 > (replays + 1) * 15000000) {
+        if (!serial_cmd_console_busy() && replays < 4 &&
+            esp_timer_get_time() - t0 > (replays + 1) * 15000000) {
             ++replays;
             flight_log_replay();
         }
 
-        if (esp_timer_get_time() - last_fps_log > 2000000) {
+        // Not while a GET dump is streaming: this line would land inside a
+        // base64 body line and cost the pull three records.
+        // See serial_cmd_console_busy().
+        if (!serial_cmd_console_busy() &&
+            esp_timer_get_time() - last_fps_log > 2000000) {
             last_fps_log = esp_timer_get_time();
             uint32_t fps = 0;
             if (esp_lv_adapter_get_fps(disp, &fps) == ESP_OK) {

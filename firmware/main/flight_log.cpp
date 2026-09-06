@@ -1,4 +1,5 @@
 #include "flight_log.h"
+#include "serial_cmd.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -111,7 +112,9 @@ extern "C" void flight_log(const char* fmt, ...) {
     g_buf[g_len++] = '\n';
     g_buf[g_len] = 0;
 
-    printf("flight: %s\n", line);
+    // Not into a GET dump -- the entry is still recorded to NVS above, only
+    // the console copy is dropped. See serial_cmd_console_busy().
+    if (!serial_cmd_console_busy()) printf("flight: %s\n", line);
     if (!g_open) { if (g_lock) xSemaphoreGive(g_lock); return; }
     // Committed on every line. Flash wear is a non-issue at a few dozen lines
     // a session, and the alternative is losing exactly the event that

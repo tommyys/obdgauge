@@ -13,6 +13,7 @@
 #include "driver/usb_serial_jtag_vfs.h"
 
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include "bsp/esp-bsp.h"
@@ -79,7 +80,35 @@ constexpr size_t kRecordsPerLine = 3;
 
 const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-void b64_line(const uint8_t* in, size_t len) {
+// A dump body line goes STRAIGHT to the USB driver, not through printf.
+//
+// printf's console path drops characters on the floor without a word when the
+// host stalls: usbjtag_tx_char_via_driver (ESP-IDF
+// components/esp_driver_usb_serial_jtag/src/usb_serial_jtag_vfs.c) tries the
+// 256-byte ring buffer non-blocking, retries the character once with a 50 ms
+// timeout, and if that also fails simply returns -- the character is gone,
+// and the next ones are dropped fast until the buffer drains. Measured
+// 2026-09-06: a 145,899-record drive arrived 72 records short with not one
+// malformed line to show for it, and failed its crc32. Nothing about that
+// says "the console dropped bytes"; it reads like corrupt flash.
+//
+// usb_serial_jtag_write_bytes WAITS for room instead. It can still come up
+// short if the host has genuinely stopped reading, and then this returns
+// false and the dump ends in `ERR short read` -- a stated failure, not a
+// silent hole.
+bool write_all(const char* s, size_t len) {
+    size_t off = 0;
+    // 200 consecutive fruitless attempts at 50 ms is 10 s of a host that is
+    // not reading. Any progress resets the count.
+    for (int idle = 0; off < len && idle < 200; ++idle) {
+        const int n = usb_serial_jtag_write_bytes(s + off, len - off,
+                                                  pdMS_TO_TICKS(50));
+        if (n > 0) { off += (size_t)n; idle = 0; }
+    }
+    return off == len;
+}
+
+bool b64_line(const uint8_t* in, size_t len) {
     char out[80];
     size_t o = 0;
     for (size_t i = 0; i < len; i += 3) {
@@ -89,13 +118,14 @@ void b64_line(const uint8_t* in, size_t len) {
         out[o++] = kB64[(v >> 6) & 63];
         out[o++] = kB64[v & 63];
     }
-    out[o] = 0;
-    printf("%s\n", out);
+    out[o++] = '\n';
+    return write_all(out, o);
 }
 
 struct GetCtx {
     uint32_t crc;
     uint32_t sent;
+    bool lost;      // a body line the console could not take -- see write_all
 };
 
 bool emit(const gauge::Record* r, size_t n, void* ctx) {
@@ -111,9 +141,32 @@ bool emit(const gauge::Record* r, size_t n, void* ctx) {
         const size_t chunk = total - off < kRecordsPerLine * sizeof(gauge::Record)
                                  ? total - off
                                  : kRecordsPerLine * sizeof(gauge::Record);
-        b64_line(bytes + off, chunk);
+        if (!b64_line(bytes + off, chunk)) g->lost = true;
     }
     g->sent += n;
+    // Let the idle task run. This loop prints for as long as the drive is
+    // big -- 48,633 lines for a 68-minute drive -- and nothing in it ever
+    // blocks, so CPU 0's idle task never gets scheduled and the 10-second
+    // task watchdog panics and REBOOTS the board mid-dump:
+    //
+    //   E (47297) task_wdt: Task watchdog got triggered. ... - IDLE0 (CPU 0)
+    //   E (47297) task_wdt: Tasks currently running: CPU 0: serial_cmd
+    //
+    // Measured 2026-09-06. It looks like a truncated transfer, not a crash:
+    // the puller keeps reading and simply collects the boot log. This was
+    // survivable only by accident before -- the log lines other tasks printed
+    // into the dump made THIS task block on the console often enough to let
+    // idle in, so silencing them (serial_cmd_console_busy) turned a latent
+    // bug into a certain one, and the fix belongs here either way.
+    //
+    // One tick per 1,024 records is 1.4 s added to the largest drive that
+    // fits on this board, against a transfer that takes about a minute.
+    static uint32_t since_yield = 0;
+    since_yield += n;
+    if (since_yield >= 1024) {
+        since_yield = 0;
+        vTaskDelay(1);
+    }
     return true;
 }
 
@@ -234,6 +287,10 @@ void cmd_list(uint32_t before_id) {
     printf("OK %u drives truncated=%d\n", (unsigned)n, truncated ? 1 : 0);
 }
 
+// Read by the UI task once a second; written only here, either side of the
+// dump. A plain bool would be read once and cached across the whole dump.
+volatile bool g_console_busy = false;
+
 void cmd_get(uint32_t id) {
     gauge::LogBuf* log = drive_log_buf();
     if (!log) { printf("ERR no recorder\n"); return; }
@@ -262,12 +319,18 @@ void cmd_get(uint32_t id) {
                (unsigned)id, (unsigned)version, (unsigned)gauge::kChanTableVersion);
         return;
     }
+    // Nothing else may print until END. See serial_cmd_console_busy().
+    g_console_busy = true;
+    esp_log_level_set("*", ESP_LOG_NONE);
     printf("BEGIN %u %u\n", (unsigned)id, (unsigned)records);
-    GetCtx g{0, 0};
+    fflush(stdout);   // printf and write_all are two paths to one wire
+    GetCtx g{0, 0, false};
     const bool ok = log->read_drive(id, emit, &g);
     drive_log_unlock();
     printf("END crc32=%08x\n", (unsigned)g.crc);
-    printf(ok && g.sent == records ? "OK\n" : "ERR short read\n");
+    printf(ok && g.sent == records && !g.lost ? "OK\n" : "ERR short read\n");
+    esp_log_level_set("*", ESP_LOG_INFO);
+    g_console_busy = false;
 }
 
 // Smallest stack headroom seen, in bytes. Sampled after each command rather
@@ -473,6 +536,8 @@ void task(void*) {
 }  // namespace
 
 extern "C" uint32_t serial_cmd_stack_headroom(void) { return g_stack_low; }
+
+extern "C" bool serial_cmd_console_busy(void) { return g_console_busy; }
 
 extern "C" void serial_cmd_enable(void) { g_enabled = true; }
 

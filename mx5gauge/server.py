@@ -2,11 +2,12 @@
 drive library the on-screen picker browses."""
 import json
 import mimetypes
+import urllib.parse
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import library
+from . import debrief, library
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 
@@ -56,6 +57,29 @@ def make_handler(gauge, root=None, on_select=None, on_seek=None):
                     # is the whole point, so the picker shows but cannot load
                     'can_switch': bool(on_select) and gauge.source_kind != 'live',
                 })
+                return
+            if path == '/debrief':
+                # One drive read back afterwards (mx5gauge/debrief.py). Slow
+                # enough to be worth its own request -- it replays the whole
+                # file through the score -- so it is never part of /data.
+                want = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(self.path).query).get('file', [''])[0]
+                # resolve() matches by basename against the library, so a
+                # request can only ever name a drive the library already
+                # listed -- it cannot be talked into reading elsewhere.
+                entry = library.resolve(root, want) if root else None
+                if not entry:
+                    self._json(404, {'ok': False, 'error': 'no such drive'})
+                    return
+                try:
+                    out = debrief.replay(entry['path'])
+                except Exception as exc:      # a bad file must not kill the server
+                    self._json(500, {'ok': False, 'error': str(exc)})
+                    return
+                if out is None:
+                    self._json(422, {'ok': False, 'error': 'nothing in that drive'})
+                    return
+                self._json(200, out)
                 return
             if path == '/timeline':
                 # how the bar's sample axis maps onto the clock, so the card

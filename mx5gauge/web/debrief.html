@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Drive summary</title>
+<style>
+  :root {
+    --ink: #E8EDF4; --dim: #8C97A6; --faint: #5A6472;
+    --bg: #0B0E13; --card: #141922; --line: #232B37;
+    --green: #35E06B; --amber: #E07A0C; --red: #FF2216; --cool: #8FE3FF;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 22px; margin: 0 0 2px; letter-spacing: .01em; }
+  .sub { color: var(--dim); font-size: 14px; margin-bottom: 22px; }
+  a { color: var(--cool); text-decoration: none; }
+  select { background: var(--card); color: var(--ink); border: 1px solid var(--line);
+           border-radius: 8px; padding: 8px 10px; font-size: 14px; max-width: 100%; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 14px; padding: 18px 20px; margin: 14px 0; }
+  .card h2 { font-size: 12px; letter-spacing: .13em; text-transform: uppercase;
+             color: var(--faint); margin: 0 0 14px; font-weight: 600; }
+  .grid { display: grid; gap: 14px 22px;
+          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .stat .v { font-size: 25px; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .stat .k { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  .big { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .big .n { font-size: 60px; font-weight: 300; font-variant-numeric: tabular-nums; }
+  .big .of { color: var(--faint); font-size: 17px; }
+  .pole { font-size: 12px; letter-spacing: .13em; padding: 4px 10px;
+          border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  .bars { margin-top: 6px; }
+  .bar { display: grid; grid-template-columns: 96px 1fr 44px;
+         align-items: center; gap: 12px; margin: 9px 0; }
+  .bar .lbl { font-size: 13px; color: var(--dim); }
+  .bar .track { background: #1D242F; border-radius: 999px; height: 8px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 999px; }
+  .bar .num { text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rings { display: grid; gap: 8px; }
+  .ring { display: grid; grid-template-columns: 60px 1fr 64px; align-items: center; gap: 12px; }
+  .ring .track { background: #1D242F; border-radius: 999px; height: 8px; overflow: hidden; }
+  .ring .fill { height: 100%; border-radius: 999px; }
+  .ring .g { font-size: 13px; font-variant-numeric: tabular-nums; }
+  .ring .pct { text-align: right; font-size: 13px; color: var(--dim);
+               font-variant-numeric: tabular-nums; }
+  .lesson { border-top: 1px solid var(--line); padding: 15px 0; }
+  .lesson:first-of-type { border-top: 0; padding-top: 0; }
+  .lesson .n { color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .lesson .t { font-size: 17px; margin-bottom: 5px; }
+  .lesson .w { color: var(--dim); }
+  .lesson .e { margin-top: 7px; font-size: 13px; color: var(--cool);
+               background: #101822; border-left: 2px solid #2A3B4C;
+               padding: 7px 11px; border-radius: 0 7px 7px 0; }
+  .note { color: var(--faint); font-size: 13px; margin-top: 6px; }
+  .err { color: var(--red); }
+</style>
+<div class="wrap">
+  <h1>Drive summary</h1>
+  <div class="sub">Read afterwards, at a desk. <a href="/">Back to the gauge</a></div>
+  <select id="pick"><option>loading drives…</option></select>
+  <div id="out"></div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const num = (v, d = 0) => (v === null || v === undefined || isNaN(v)) ? '--' : v.toFixed(d);
+
+// Same ramp as the g view's rings: green at the middle, red at the edge.
+const RING_COLOUR = ['#18844E', '#9EA800', '#E07A0C', '#FF2216'];
+const subColour = (v) => v >= 90 ? 'var(--green)' : v >= 80 ? 'var(--amber)' : 'var(--red)';
+
+function bar(label, value) {
+  if (value === null || value === undefined) return '';
+  return `<div class="bar"><div class="lbl">${label}</div>
+    <div class="track"><div class="fill" style="width:${value}%;background:${subColour(value)}"></div></div>
+    <div class="num">${num(value)}</div></div>`;
+}
+
+function stat(v, k) { return `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`; }
+
+function render(d) {
+  const p = d.pace, g = d.grip, s = d.score, e = d.events;
+  $('#out').innerHTML = `
+    <div class="card">
+      <h2>How tidy</h2>
+      <div class="big">
+        <div class="n">${num(s.total)}</div><div class="of">out of 100</div>
+        <div class="pole">${s.spirited_min > s.nice_min ? 'MOSTLY SPIRITED' : 'MOSTLY NICE'}</div>
+      </div>
+      <div class="note">${num(s.spirited_min)} min driven hard, ${num(s.nice_min)} min cruising.
+        The mark is how tidily you did whatever you were doing — it is not a mark for going slowly.</div>
+      <div class="bars">
+        ${bar('throttle', s.throttle)}${bar('braking', s.braking)}
+        ${bar('cornering', s.cornering)}${bar('engine care', s.care)}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What to work on next time</h2>
+      ${d.lessons.map((l, i) => `<div class="lesson">
+        <div class="t"><span class="n">${i + 1}</span>${l.title}</div>
+        <div class="w">${l.why}</div>
+        <div class="e">${l.evidence}</div></div>`).join('')}
+    </div>
+
+    <div class="card">
+      <h2>Grip used</h2>
+      <div class="grid">
+        ${stat(num(g.peak_corner, 2) + ' g', 'hardest corner — ' + num(g.corner_pct_of_grip) + '% of the tyres')}
+        ${stat(num(g.peak_brake, 2) + ' g', 'hardest stop — ' + num(g.brake_pct_of_grip) + '% of the tyres')}
+        ${stat(num(g.peak_accel, 2) + ' g', 'hardest acceleration')}
+        ${stat(e.hard_corners, 'corners past 0.5 g')}
+        ${stat(e.hard_brakes, 'stops past 0.4 g')}
+        ${stat(num(g.mount_g, 3) + ' g', 'mount check (1.000 = solid)')}
+      </div>
+      <div class="note" style="margin-top:16px">How long the dot spent past each ring on the gauge.
+        1.00 g is the rim; the tyres let go somewhere around ${num(g.grip_limit, 2)} g.</div>
+      <div class="rings" style="margin-top:10px">
+        ${g.rings.map((r, i) => `<div class="ring">
+          <div class="g" style="color:${RING_COLOUR[i]}">${r.g.toFixed(1)} g</div>
+          <div class="track"><div class="fill" style="width:${Math.min(100, r.pct)}%;background:${RING_COLOUR[i]}"></div></div>
+          <div class="pct">${r.pct.toFixed(1)}%</div></div>`).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Pace</h2>
+      <div class="grid">
+        ${stat(num(d.duration_min) + ' min', 'driving time')}
+        ${stat(num(d.dist_km, 1) + ' km', 'distance')}
+        ${stat(num(p.top_kph) + ' km/h', 'top speed')}
+        ${stat(num(p.mean_moving_kph) + ' km/h', 'average while moving')}
+        ${stat(num(p.min_over_120, 1) + ' min', 'above 120 km/h')}
+        ${stat(num(p.rpm_max) + ' rpm', 'highest revs — red line ' + num(p.redline))}
+        ${stat(num(p.min_over_5000, 1) + ' min', 'above 5000 rpm')}
+        ${stat(num(e.reversals_per_min, 1) + '/min', 'throttle reversals')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Engine</h2>
+      <div class="grid">
+        ${stat(num(d.engine.coolant_max) + ' °C', 'hottest coolant')}
+        ${stat(num(d.engine.coolant_mean) + ' °C', 'average coolant')}
+      </div>
+    </div>`;
+}
+
+async function load(name) {
+  $('#out').innerHTML = '<div class="card">reading the drive…</div>';
+  const r = await fetch('/debrief?file=' + encodeURIComponent(name));
+  const d = await r.json();
+  if (!r.ok) { $('#out').innerHTML = `<div class="card err">${d.error || 'could not read it'}</div>`; return; }
+  render(d);
+}
+
+(async () => {
+  const r = await fetch('/sessions');
+  const j = await r.json();
+  // .brc captures carry no accelerometer, so there is no g and no score in
+  // them -- offering one here would open a page of em-dashes.
+  const drives = (j.entries || []).filter((e) => e.name.endsWith('.csv'));
+  if (!drives.length) { $('#pick').innerHTML = '<option>no recorded drives yet</option>'; return; }
+  $('#pick').innerHTML = drives.map((e) =>
+    `<option value="${e.name}">${e.when} — ${e.summary || e.name}</option>`).join('');
+  $('#pick').onchange = () => load($('#pick').value);
+  load(drives[0].name);
+})();
+</script>

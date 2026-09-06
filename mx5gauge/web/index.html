@@ -199,7 +199,16 @@
   .gtop b{color:var(--phos);font-weight:600;}
   /* Slow, because the pole itself is slow. A word that snaps between two
      colours reads as an alarm; this one is a mood. */
-  #g_pole{transition:color 800ms linear;top:15cqw;}
+  /* The four g readings. Absolutely placed on the axis each one measures, so
+     the number is always in the direction your body is being thrown -- which
+     is why they carry no BRAKE/ACCEL/LEFT/RIGHT caption: the position says
+     it, and a word read once is clutter every drive after. 6.2cqw is the
+     board's montserrat_28 on its 466 px panel -- 48 px was tried and was too
+     big for the middle of a 466 px screen. */
+  .gread{position:absolute;transform:translate(-50%,-50%);text-align:center;
+         pointer-events:none;line-height:1;font-size:6.2cqw;font-weight:500;
+         font-variant-numeric:tabular-nums;color:var(--green);
+         transition:color 800ms linear}
 
   /* drive picker. Inset well inside the circle: a rectangular list in a round
      screen loses its corners, so the scroll area sits within the inscribed
@@ -298,6 +307,9 @@
 <div class="top">
   <span class="pill"><span class="led" id="led"></span><span id="srcTxt">connecting…</span></span>
   <span id="supTxt"></span>
+  <!-- The gauge can only ever say what is happening now. The summary is the
+       other half: one drive read back afterwards, with the engine off. -->
+  <a class="pill" href="/debrief.html" style="text-decoration:none">drive summary →</a>
 </div>
 
 <div class="bezel">
@@ -350,10 +362,19 @@
       <div class="view" data-needs="rpm,speed,throttle">
         <div class="na"><div class="nat">NO DRIVE DATA</div><div class="nas">scoring needs rpm, speed or throttle</div></div>
         <div class="gwrap"><svg id="gSvg" viewBox="0 0 200 200"></svg></div>
-        <div class="lay vtitle" id="g_pole" style="top:17.81cqw">DRIVING</div>
-        <div class="gtop" id="g_foot">&nbsp;</div>
-        <div class="gscore" id="g_total">--</div>
-        <div class="gcoach" id="g_coach">—</div>
+        <!-- Four readings, each on the axis it measures, and NOTHING else.
+             The score number, the coach word, the tally and the pole word are
+             all gone (Tommy, 2026-09-06: "i can't read them mid drive") --
+             they are on the drive summary at /debrief.html now, read with the
+             engine off, which is where reading belongs.
+
+             The pole is the COLOUR of these four numbers: red spirited, green
+             leisurely. One signal, carried by text that is on the screen
+             anyway. Mirrors gball.cpp. -->
+        <div class="gread" id="g_brake" style="left:50%;top:22%">0.0</div>
+        <div class="gread" id="g_accel" style="left:50%;top:78%">0.0</div>
+        <div class="gread" id="g_left" style="left:18%;top:50%">0.0</div>
+        <div class="gread" id="g_right" style="left:82%;top:50%">0.0</div>
       </div>
 
       <!-- 4 TRIP. Absorbed FUEL ECONOMY on 2026-08-29, as the firmware did:
@@ -686,74 +707,107 @@ pwrSvg.appendChild(pwrPeak);
    together is the whole point — a red background with a calm dot is a fast
    road driven well, and that is a thing the old single score could not say. */
 const gSvg=document.getElementById('gSvg');
-/* Full radius is 0.8 g. The mounted 2026-08-29 drive sat 95% under 0.24 g and
-   peaked at 0.56 g braking, so 0.8 keeps ordinary driving visible in the
-   middle of the circle instead of pinned to a dot in the centre, and still
-   leaves headroom above anything that drive produced. */
-/* The circle is smaller than the screen on purpose. At full radius the dot
-   under a hard stop climbs to the very top of the panel, straight through the
-   pole word and the car banner, and a hard stop is the one moment you must be
-   able to read. 56 of the 100-unit viewBox keeps the dot inside the band
-   between the title above and the score below at any g the car can make. */
-const G_FULL=0.8, G_R=56;
-const GRINGS=[0.2,0.4,0.6];
-/* ~3 s of trail at the 10 Hz poll. Long enough to draw the shape of a corner,
-   short enough that it is gone before the next one starts. */
+/* Full radius is 1.0 g. It was 0.8, taken off the 2026-08-29 drive which
+   peaked at 0.56 g -- but the mountain drive of 2026-09-06 cornered at
+   0.77 g, so the dot sat just inside a rim it could never reach and the
+   over-scale signal never fired once in 68 minutes. 1.0 g is also the number
+   worth teaching: it is roughly where this car's road tyres let go. */
+/* The circle IS the rim every other view draws, at gauge_ui/face.h's shared
+   geometry -- 210 of the panel's 233, which is 90 of the 100-unit viewBox.
+   It was 56, barely half the glass, and Tommy could not read the view at a
+   glance because of it (2026-09-06). The score and coach lines that used to
+   sit below it are gone, so nothing is left for the dot to climb through. */
+const G_FULL=1.0, G_R=90;
+const GRINGS=[0.2,0.4,0.6,0.8];
+/* A polar web, all one dim grey: four rings, twelve spokes and a ring of
+   ticks inside the rim. Taken from the g-force gauge Tommy uses as his
+   reference (2026-09-06), and the reason the earlier green-to-red ring set
+   went: the web is background, and background does not carry a signal.
+   Mirrors kWebColour / kTicks / kSpokes in gauge_ui/gball.cpp. */
+const GWEB='#5A7FA8';       // blue-grey: rings and spokes
+const GTICK='#8FB4DC';      // a touch brighter, cooler
+const GTICKS=72, GSPOKES=12;
+/* The blue band, at the radius the reference gauge puts its glow: outside the
+   crowded middle, inside the numbers. ONE THIN RING on purpose -- it was a
+   soft four-ring halo first, and on the board that took the view from 56 fps
+   to a median of 7. The cost is blended area, not object count, and this is
+   about a ninth of it. gball.cpp has the measurement. */
+const GHALO='#2F86E0', GHALO_R=124/210;
+/* ~3 s of trail. This page polls at 10 Hz so 30 dots is 3 seconds outright;
+   the board runs its loop at 62 Hz and gets the same three seconds from 32
+   dots laid down one every 6 -- see kGBallTrail / kGBallTrailEveryN in
+   gball.h, and the frame-rate measurements next to them. Long enough to draw
+   the shape of a corner, short enough that it is gone before the next one
+   starts. */
 const GTRAIL=30;
 
-/* The RIM carries the pole, not a backdrop. It used to be a full-screen
-   gradient fed the score's intensity in place of rpm, and the board must not
-   do that: a coloured backdrop covers the panel, so every change to it
-   repaints the whole panel -- measured at 5-20 fps, which is why the tacho's
-   heat went on the rim in the first place. A ring is a small object and
-   intensity moves slowly, so the same signal costs nothing.
+/* NOTHING on this view is a coloured backdrop, and nothing may become one.
+   A backdrop covers the panel, so every change to it repaints the whole
+   panel -- measured at 5-20 fps on the board, which is why the tacho's heat
+   went on the rim in the first place. Rings and one dot are small objects.
 
-   Deep green through ember to red, with how hard you have been driving over
-   the last half-minute. It moves slowly on purpose: the dot is what you just
-   did, the rim is how you have been driving, and they are meant to move at
-   different speeds. Intensity is not rpm -- it is the loudest of revs, g and
-   throttle, which is why a car held at 0.5 g through a corner reads as hot
-   even off the throttle. */
-const GLOW_CALM=[0x18,0x84,0x4e];   // deep green: driving nicely
-const GLOW_EMBER=[0x68,0x1a,0x0c];  // low intensity, deep ember
-const GLOW_RED=[0xff,0x22,0x16];    // full intensity, hot red
-/* Quantised to fortieths, as the board is: it repaints only when the step
-   changes, and a ramp that moved on every sample would repaint every frame. */
-function rimColour(f){
-  const step=Math.round(Math.max(0,Math.min(1,f))*40)/40;
-  return step<0.5 ? segMix(GLOW_CALM,GLOW_EMBER,step/0.5)
-                  : segMix(GLOW_EMBER,GLOW_RED,(step-0.5)/0.5);
+   The half-minute intensity used to colour the rim green-to-red. It does not
+   any more: the rings ramp green-to-red by g, and two ramps in one colour
+   language, touching, is unreadable. Intensity is the one word on the view.
+*/
+/* Green while cruising, amber when leaning on it, red at the limit. Mirrors
+   dot_colour() in gauge_ui/gball.cpp. */
+const DOT_CALM=[0x35,0xe0,0x6b],DOT_WARM=[0xe8,0xa3,0x17],DOT_HOT=[0xff,0x22,0x16];
+function dotColour(f){
+  const x=Math.max(0,Math.min(1,f));
+  return x<0.5 ? segMix(DOT_CALM,DOT_WARM,x/0.5)
+               : segMix(DOT_WARM,DOT_HOT,(x-0.5)/0.5);
 }
 
 /* Rings and cross-hairs, drawn once. Labelled only on the g axis a driver
    actually judges by — a ring with a number on every one of them turns the
    middle of the screen into a table. */
+/* **Nothing circular is drawn through a number.** The four readings sit on
+   the four axes and every ring used to run straight under them (Tommy,
+   2026-09-06). There is no radius that dodges them -- the rings are fifths of
+   full scale, so wherever a number goes there is one within a few px of it.
+   So the scale is BROKEN where the labels are, the way a real instrument
+   breaks its scale for its numbering: four arcs per ring with a GAP_DEG gap
+   at each axis, and the two spokes lying along those axes stop short.
+   Mirrors kGapDeg / kSpokeStopPx in gauge_ui/gball.cpp. */
+const GAP_DEG=15, GSPOKE_STOP=104/210;
+/* One ring as four arcs. SVG arc flags: sweep 1, large-arc 0 -- every segment
+   here is 60 degrees, well under a half turn. */
+function ringPath(r){
+  let d='';
+  for(let q=0;q<4;q++){
+    const a0=(q*90+GAP_DEG)*Math.PI/180, a1=(q*90+90-GAP_DEG)*Math.PI/180;
+    d+=`M ${100+Math.cos(a0)*r} ${100+Math.sin(a0)*r} `
+      +`A ${r} ${r} 0 0 1 ${100+Math.cos(a1)*r} ${100+Math.sin(a1)*r} `;
+  }
+  return d;
+}
 for(const g of GRINGS)
-  gSvg.appendChild(mk('circle',{cx:100,cy:100,r:G_R*g/G_FULL,fill:'none',
-    stroke:'rgba(255,255,255,0.11)','stroke-width':0.7}));
-gSvg.appendChild(mk('line',{x1:100-G_R,y1:100,x2:100+G_R,y2:100,
-  stroke:'rgba(255,255,255,0.09)','stroke-width':0.7}));
-gSvg.appendChild(mk('line',{x1:100,y1:100-G_R,x2:100,y2:100+G_R,
-  stroke:'rgba(255,255,255,0.09)','stroke-width':0.7}));
-/* One number, on the ring a driver judges by. Labelling all three would turn
-   the middle of the screen into a table; labelling none leaves the rings as
-   decoration. 0.4 g is the one worth knowing: past it you are committed. */
-gSvg.appendChild(mk('text',{x:100+G_R*0.4/G_FULL+2.5,y:97,fill:'rgba(255,255,255,0.26)',
-  'font-size':4.5,'font-family':'ui-monospace,monospace'})).textContent='0.4g';
-/* The rim. Lights up when the car goes past the full-scale g rather than
-   letting the dot vanish off the edge — a dot you cannot see is the one
-   moment you most want to know about. */
-const gRim=mk('circle',{cx:100,cy:100,r:G_R,fill:'none',
-  stroke:'rgba(255,255,255,0.10)','stroke-width':1.4});
-gSvg.appendChild(gRim);
-
-/* Peak ghosts: the hardest stop and the hardest corner of the drive so far,
-   left where they happened. */
-const gPeakBrake=mk('circle',{cx:100,cy:100,r:2,fill:'none',
-  stroke:'rgba(255,255,255,0.28)','stroke-width':1,visibility:'hidden'});
-const gPeakCorner=mk('circle',{cx:100,cy:100,r:2,fill:'none',
-  stroke:'rgba(255,255,255,0.28)','stroke-width':1,visibility:'hidden'});
-gSvg.appendChild(gPeakBrake);gSvg.appendChild(gPeakCorner);
+  gSvg.appendChild(mk('path',{d:ringPath(G_R*g/G_FULL),fill:'none',
+    stroke:GWEB,opacity:0.22,'stroke-width':0.5}));
+/* Half as many lines as spokes: each is a diameter, so it draws a spoke and
+   the one opposite it in one stroke. The two along the axes stop short of the
+   numbers instead. */
+for(let i=0;i<GSPOKES/2;i++){
+  const axis=(i===0)||(i===GSPOKES/4);
+  const len=G_R*(axis?GSPOKE_STOP:1);
+  const a=Math.PI*i/(GSPOKES/2), dx=Math.cos(a)*len, dy=Math.sin(a)*len;
+  gSvg.appendChild(mk('line',{x1:100-dx,y1:100-dy,x2:100+dx,y2:100+dy,
+    stroke:GWEB,opacity:0.16,'stroke-width':0.4}));
+}
+/* The tick ring. No tick is ever read -- it is what makes a round screen look
+   like an instrument rather than a drawing of one. */
+for(let i=0;i<GTICKS;i++){
+  const a=2*Math.PI*i/GTICKS, ca=Math.cos(a), sa=Math.sin(a);
+  const r1=G_R-4.5, r0=r1-((i%6)?2.6:5.2);
+  gSvg.appendChild(mk('line',{x1:100+ca*r0,y1:100+sa*r0,x2:100+ca*r1,y2:100+sa*r1,
+    stroke:GTICK,opacity:0.36,'stroke-width':(i%6)?0.5:0.9}));
+}
+/* The blue band. There is no rim ring any more: it carried the limit in red,
+   and Tommy dropped it ("drop the red ring, i don't need that anymore") --
+   the dot already goes red at the limit, so the ring said it twice. */
+gSvg.appendChild(mk('path',{d:ringPath(G_R*GHALO_R),fill:'none',
+  stroke:GHALO,opacity:0.26,'stroke-width':2.2}));
 
 /* The trail, oldest first. Fixed-size and allocated once: the firmware has a
    hard no-allocation-on-the-draw-path rule (the panel DMA trap), and keeping
@@ -778,15 +832,11 @@ const gHist=[];   // {lat,lon}, newest last
 
 function drawG(S){
   const g=S.g||{};
-  const inten=S.intensity==null?0:S.intensity;
 
-  const pole=S.pole||'NICE';
-  const poleEl=$('g_pole');
-  poleEl.textContent=pole==='SPIRITED'?'SPIRITED':'NICE';
-  poleEl.style.color=pole==='SPIRITED'?'var(--accent)':'var(--green)';
-
-  $('g_total').textContent=S.total==null?'--':fmt(S.total);
-  $('g_coach').textContent=S.coach||'—';
+  /* Red spirited, green leisurely -- on the numbers themselves. */
+  const ink=(S.pole==='SPIRITED')?'var(--accent)':'var(--green)';
+  for(const id of ['g_brake','g_accel','g_left','g_right'])
+    $(id).style.color=ink;
 
   if(!g.ready){
     /* Honest about not knowing yet. The axes are learned from the car's own
@@ -794,15 +844,22 @@ function drawG(S){
        and after the first drive it is restored and never seen again. */
     gDot.setAttribute('visibility','hidden');
     for(const c of gDots)c.setAttribute('visibility','hidden');
-    gPeakBrake.setAttribute('visibility','hidden');
-    gPeakCorner.setAttribute('visibility','hidden');
     gLearn.setAttribute('visibility','visible');
     gLearn.textContent='LEARNING '+Math.round((g.confidence||0)*100)+'%';
     gHist.length=0;
-    $('g_foot').innerHTML='<span style="color:var(--faint)">finding which way the car points</span>';
     return;
   }
   gLearn.setAttribute('visibility','hidden');
+
+  /* Each number is the force in ITS OWN direction and zero when the car is
+     thrown the other way, so braking reads at the top and shows 0.0 at the
+     bottom -- how the reference gauge does it, and how your body reports it.
+     lon is positive under braking, lat positive in a right-hander. */
+  const val=(v)=>(v>0?v:0).toFixed(1);
+  $('g_brake').textContent=val(g.lon);
+  $('g_accel').textContent=val(-g.lon);
+  $('g_right').textContent=val(g.lat);
+  $('g_left').textContent=val(-g.lat);
 
   gHist.push({lat:g.lat||0,lon:g.lon||0});
   while(gHist.length>GTRAIL+1)gHist.shift();
@@ -829,31 +886,11 @@ function drawG(S){
   gDot.setAttribute('cx',px(now).toFixed(1));
   gDot.setAttribute('cy',py(now).toFixed(1));
 
-  const over=Math.hypot(now.lat,now.lon)>=G_FULL;
-  /* Two signals on one object: colour is the pole, thickness is whether the
-     car has just gone past full scale. Neither is lost -- a dot that vanishes
-     off the edge is the one moment you most want to see. */
-  gRim.setAttribute('stroke',rimColour(inten));
-  gRim.setAttribute('opacity',over?1:0.75);
-  gRim.setAttribute('stroke-width',over?2.8:1.4);
+  /* The dot carries the green-to-red, on the instant's g. It is the one
+     object the eye is already following and the only one whose colour can
+     mean "right now" -- which is why the rings around it stay still. */
+  gDot.setAttribute('fill',dotColour(Math.hypot(now.lat,now.lon)/G_FULL));
 
-  if(g.peak_brake>0.05){
-    gPeakBrake.setAttribute('visibility','visible');
-    gPeakBrake.setAttribute('cx',100);
-    gPeakBrake.setAttribute('cy',py({lon:g.peak_brake}).toFixed(1));
-  }
-  if(g.peak_lat>0.05){
-    gPeakCorner.setAttribute('visibility','visible');
-    gPeakCorner.setAttribute('cx',px({lat:g.peak_lat}).toFixed(1));
-    gPeakCorner.setAttribute('cy',100);
-  }
-
-  const mins=(s)=>s==null?'--':(s/60).toFixed(0)+'m';
-  $('g_foot').innerHTML=
-    '<span style="color:var(--faint)">nice</span> <b>'+mins(S.nice_s)+
-    '</b> · <span style="color:var(--faint)">spirited</span> <b>'+mins(S.spirited_s)+
-    '</b> · <span style="color:var(--faint)">peak</span> <b>'+
-    Math.max(g.peak_lat||0,g.peak_brake||0,g.peak_accel||0).toFixed(2)+'g</b>';
 }
 
 /* ---- carousel ---- */

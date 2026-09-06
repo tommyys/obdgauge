@@ -30,20 +30,51 @@
 
 namespace gauge_ui {
 
-// Full-scale g at the rim. The mounted 2026-08-29 drive sat 95% under 0.24 g
-// and peaked at 0.56 g braking, so 0.8 keeps ordinary driving visible in the
-// middle of the circle instead of pinned to a dot in the centre, and still
-// leaves headroom above anything that drive produced.
-inline constexpr double kGBallFullG = 0.8;
+// Full-scale g at the rim.
+//
+// 1.0, not the 0.8 it was. 0.8 came off the 2026-08-29 drive, which peaked at
+// 0.56 g -- but the mountain drive of 2026-09-06 cornered at 0.77 g, which
+// left the dot sitting just inside a rim it could never reach, and the
+// over-scale signal never fired once in 68 minutes. 1.0 g is also the number
+// worth teaching: it is roughly where this car's road tyres let go, so the
+// rim is the car's limit rather than an arbitrary mark, and each ring below
+// is a fifth of it.
+inline constexpr double kGBallFullG = 1.0;
 
-// Radius of the circle, in pixels on the 466 px panel. Smaller than the
-// screen on purpose: at full radius the dot under a hard stop climbs to the
-// very top of the panel, straight through the pole word, and a hard stop is
-// the one moment you must be able to read.
-inline constexpr int kGBallRadius = 130;
+// Radius of the dot's travel, in pixels on the 466 px panel: the centre line
+// of face.h's shared rim (kRimOuterR - kRimWidth / 2 = 210), so this circle
+// is THE SAME RING as the tacho's rev scale and the engine view's heat scale.
+// It was 130 -- barely half the glass -- and Tommy could not read the view at
+// a glance because of it (2026-09-06). Keep it equal to that expression: two
+// views whose rims differ by a few pixels read as a mistake on whichever you
+// see second.
+inline constexpr int kGBallRadius = 210;
 
-// About three seconds of trail at the panel's frame rate.
-inline constexpr int kGBallTrail = 24;
+// The trail: how many dots, and how often one is laid down.
+//
+// **The old comment here said "about three seconds" and it was wrong.** The
+// dots were pushed one per call to gball_update, which main.cpp runs every
+// 16 ms -- so 24 dots was 0.4 SECONDS, barely a smear behind the dot, and
+// Tommy asked for a longer one on the first drive he watched it (2026-09-06).
+//
+// Three seconds at 62 Hz would be 190 objects, which is out of the question:
+// every trail dot is an LVGL object, and the frame rate falls off almost
+// linearly with how many of them are on screen. Measured 2026-09-06 at the
+// desk, worst case with every dot stacked on one spot:
+//
+//   24 dots -> 49 fps     32 dots -> 48 fps     48 dots -> 33 fps
+//
+// So the trail is DECIMATED instead: one dot laid down every
+// kGBallTrailEveryN updates. **Duration is bought with the divider, not with
+// objects** -- 32 x 6 x 16 ms is the same 3.1 seconds that 48 x 4 gives, at
+// 48 fps instead of 33. Anything that wants a longer trail should raise the
+// divider first and the count only if the dots become too far apart (they are
+// 96 ms apart here).
+//
+// It is also cheaper per frame than what it replaced: nothing on the trail
+// moves on five frames in six.
+inline constexpr int kGBallTrail      = 32;
+inline constexpr int kGBallTrailEveryN = 6;
 
 void gball_build(lv_obj_t* parent);
 void gball_update(const Model& m);

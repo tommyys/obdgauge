@@ -107,6 +107,43 @@ class Gauge:
         # The board prints its own log lines; drain whatever is in flight.
         time.sleep(0.3)
         self.ser.reset_input_buffer()
+        self.wait_ready()
+
+    def wait_ready(self, budget=150):
+        """Block until the board answers a command, resending while it boots.
+
+        Opening this port resets the board (it is the S3's native USB serial,
+        which re-enumerates), so the first command always lands in the middle
+        of a boot and is simply not heard -- the drive log is not mounted until
+        ~15 s in, and the drives view then holds the recorder's lock while it
+        summarises every drive held, which on a full ring is another ~30 s.
+        A command sent before that is lost, and because the board keeps
+        printing its own log lines the read never times out: lines() collected
+        log lines forever and the pull hung with no output at all. So probe
+        until something answers, and say which it is if nothing does.
+        """
+        deadline = time.time() + budget
+        was = self.ser.timeout
+        self.ser.timeout = 1
+        try:
+            while time.time() < deadline:
+                self.ser.reset_input_buffer()
+                self.send('STATS')
+                probe = time.time() + 8
+                while time.time() < probe:
+                    raw = self.ser.readline()
+                    if not raw:
+                        continue
+                    line = raw.decode('utf-8', 'replace').strip()
+                    if is_terminator(line):
+                        return
+                    if 'task_wdt' in line or 'Guru Meditation' in line:
+                        sys.exit('the board is rebooting, not answering: %s\n'
+                                 '(it panics and reboots -- fix that before '
+                                 'pulling)' % line)
+        finally:
+            self.ser.timeout = was
+        sys.exit('the board never answered STATS in %d s' % budget)
 
     def send(self, cmd):
         self.ser.write((cmd + '\n').encode())

@@ -68,7 +68,33 @@ public:
     }
     size_t sector_count() const override { return part_ ? part_->size / gauge::kSectorSize : 0; }
     bool read(size_t off, void* dst, size_t len) override {
-        return part_ && esp_partition_read(part_, off, dst, len) == ESP_OK;
+        if (!part_) return false;
+        // Breathe, or the board reboots. A LIST summarises every drive held,
+        // and read_drive() walks all 2,544 sector headers once per drive to
+        // find where that drive starts -- 61,000 reads on a full ring. Each
+        // one disables the cache and blocks the OTHER core over IPC, so it is
+        // far more expensive than its 16 bytes suggest, and the whole pass
+        // takes tens of seconds in one unbroken run on the scan task.
+        //
+        // Nothing in that loop ever blocks, so CPU 0's idle task never runs
+        // and the 10 s task watchdog panics and REBOOTS the board:
+        //   task_wdt: ... IDLE0 (CPU 0) / CPU 0: drivescan / CPU 1: lvgl
+        // Once the ring filled (2,544 of 2,544 sectors, 24 drives, 860,478
+        // records) that pass crossed 10 s and the gauge boot-looped forever,
+        // about 30 s into every boot -- which also looks like a wifi problem,
+        // because wifi is the loudest thing in the log before it happens, and
+        // is not one. The same starvation is what let the display's SPI
+        // interrupt land inside a flash operation and panic there instead;
+        // that was the same bug wearing a different backtrace.
+        //
+        // One tick per 256 reads costs about 2.4 s across a whole LIST and is
+        // enough to feed idle. This is the same rule the console's dump
+        // learned in serial_cmd.cpp's emit(); it belongs at the flash seam so
+        // every long read path gets it, and it stays out of gauge_core, which
+        // has no scheduler.
+        static uint32_t since_yield = 0;
+        if (++since_yield >= 256) { since_yield = 0; vTaskDelay(1); }
+        return esp_partition_read(part_, off, dst, len) == ESP_OK;
     }
     bool write(size_t off, const void* src, size_t len) override {
         return part_ && esp_partition_write(part_, off, src, len) == ESP_OK;

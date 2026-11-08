@@ -108,6 +108,13 @@ def replay(path, profile=None):
     imu = dict.fromkeys(_IMU)
     speed, rpm, coolant = [], [], []
     lat_series, brake_series, totals = [], [], []
+    # The worst cold rev, by the same rule the care score uses: revs above
+    # CARE_COLD_RPM while the coolant is under CARE_COLD_C. Kept so the
+    # warm-up lesson can quote the moment itself; the care score rounds a
+    # short one to "100 / 100", which is no evidence at all.
+    cold = {'cold_rev_rpm': None, 'cold_rev_c': None, 'cold_rev_t': None,
+            'cold_rev_s': 0.0}
+    last_rpm_t = None
 
     for t, key, value in rows:
         if key in carried:
@@ -116,6 +123,14 @@ def replay(path, profile=None):
             speed.append((t, value))
         elif key == 'rpm':
             rpm.append((t, value))
+            c = carried['coolant']
+            if c is not None and c < _metrics.CARE_COLD_C and \
+                    value > _metrics.CARE_COLD_RPM:
+                if last_rpm_t is not None and 0 < t - last_rpm_t < 2.0:
+                    cold['cold_rev_s'] += t - last_rpm_t
+                if cold['cold_rev_rpm'] is None or value > cold['cold_rev_rpm']:
+                    cold.update(cold_rev_rpm=value, cold_rev_c=c, cold_rev_t=t)
+            last_rpm_t = t
         elif key == 'coolant':
             coolant.append(value)
         if key in imu:
@@ -189,6 +204,7 @@ def replay(path, profile=None):
         'engine': {
             'coolant_max': max(coolant) if coolant else None,
             'coolant_mean': (sum(coolant) / len(coolant)) if coolant else None,
+            **cold,
         },
     }
     out['lessons'] = lessons(out)
@@ -215,9 +231,11 @@ def lessons(d):
                    'stop the car at least as hard as they will turn it, so '
                    'the braking is where the easy time is.',
             'evidence': 'hardest stop %.2f g against %.2f g in the corners '
-                        '-- only %d stops past %.1f g in %.0f minutes'
+                        '-- %s past %.1f g in %.0f minutes'
                         % (g['peak_brake'], g['peak_corner'],
-                           e['hard_brakes'], HARD_BRAKE_G, d['duration_min']),
+                           ('only %d stops' % e['hard_brakes'])
+                           if e['hard_brakes'] else 'no stops',
+                           HARD_BRAKE_G, d['duration_min']),
         })
 
     if e['reversals_per_min'] > 4.0:
@@ -269,14 +287,23 @@ def lessons(d):
         })
 
     if s['care'] is not None and s['care'] < 100:
+        eng = d['engine']
+        if eng.get('cold_rev_rpm'):
+            evidence = ('%.0f rpm at %.0f C, %.0f s after start -- %.0f s '
+                        'above %.0f rpm before the coolant reached %.0f C'
+                        % (eng['cold_rev_rpm'], eng['cold_rev_c'],
+                           eng['cold_rev_t'], eng['cold_rev_s'],
+                           _metrics.CARE_COLD_RPM, _metrics.CARE_COLD_C))
+        else:
+            evidence = ('care %.1f / 100, coolant peaked %.0f C'
+                        % (s['care'], eng['coolant_max'] or 0))
         out.append({
             'gap': (100 - s['care']) * 3,
             'title': 'Let it warm up first',
             'why': 'Revving a cold engine is the one thing that is wrong no '
                    'matter how tidily it is done. Keep it under 3500 rpm until '
                    'the coolant is past 80 C.',
-            'evidence': 'care %.0f / 100, coolant peaked %.0f C'
-                        % (s['care'], d['engine']['coolant_max'] or 0),
+            'evidence': evidence,
         })
 
     out.sort(key=lambda x: -x['gap'])

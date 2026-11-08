@@ -78,6 +78,22 @@ check('a busy right foot is called out',
       titles(with_(events__reversals_per_min=9.0)), True)
 check('cold revs are called out',
       'Let it warm up first' in titles(with_(score__care=60)), True)
+# The warm-up lesson must quote the cold rev that fired it, not the care score
+# (99.9 prints as "100 / 100") and not the hottest the coolant ever got.
+cold = [x for x in debrief.lessons(with_(
+    score__care=99.9, engine={'coolant_max': 101, 'cold_rev_rpm': 4449,
+                              'cold_rev_c': 68, 'cold_rev_t': 51,
+                              'cold_rev_s': 21}))
+        if x['title'] == 'Let it warm up first']
+check('warm-up evidence quotes the cold rev',
+      cold and cold[0]['evidence'],
+      '4449 rpm at 68 C, 51 s after start -- 21 s above 3500 rpm '
+      'before the coolant reached 80 C')
+check('zero hard stops reads as "no stops"',
+      'no stops past' in [x for x in debrief.lessons(with_(
+          grip__peak_brake=0.2, grip__peak_corner=0.8, events__hard_brakes=0))
+          if x['title'].startswith('Brake harder')][0]['evidence'], True)
+
 check('lessons are capped at five',
       len(debrief.lessons(with_(
           grip__peak_brake=0.1, events__reversals_per_min=20,

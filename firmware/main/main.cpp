@@ -394,6 +394,77 @@ void start_demo_sweeps() {
     printf("demo: sweeping rpm, coolant, kW and economy for %.0f s\n", kDemoSecs);
 }
 
+// The boot found no clock. Hold here, on a screen that says so, until the
+// driver decides: a short press restarts and tries wifi again, a 3 s hold goes
+// on without a clock. Tommy asked for this on 2026-11-08 -- a gauge that came
+// up dateless without a word let a whole drive record as drive-unknown.
+//
+// The retry has to be a restart. WiFi cannot come up while the panel is on;
+// see the note above wifi_time::start() below. So this screen is drawn on a
+// display that is already up, and the only way back to wifi is through boot.
+//
+// The hold is the way out because the hotspot can be off in the car, and a
+// gauge that refused to show its dials until wifi answered would be dead for
+// that drive. The drive is still recorded, and can be given a date afterwards
+// exactly as an undated drive always could.
+//
+// Returns only on the hold. The press, and a RESTART typed on the console,
+// never return.
+void wait_for_wifi(lv_obj_t* scr) {
+    flight_log("no clock after wifi: waiting on the button");
+    printf("wifi: no clock -- press to retry, hold 3 s to go on without\n");
+
+    bsp_display_lock(-1);
+    lv_obj_t* title = lv_label_create(scr);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xE8E8E8), 0);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t* hint = lv_label_create(scr);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x9A9A9A), 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    bsp_display_unlock();
+
+    // Set only on a change: a label given the same text still repaints.
+    auto show = [&](const char* t, const char* h) {
+        bsp_display_lock(-1);
+        if (strcmp(lv_label_get_text(title), t)) {
+            lv_label_set_text(title, t);
+            lv_obj_align(title, LV_ALIGN_CENTER, 0, -30);
+        }
+        if (strcmp(lv_label_get_text(hint), h)) {
+            lv_label_set_text(hint, h);
+            lv_obj_align(hint, LV_ALIGN_CENTER, 0, 50);
+        }
+        bsp_display_unlock();
+    };
+
+    for (;;) {
+        const button_state_t btn = button_poll();
+        const int queued = button_take_queued_restart();
+        if (btn == BTN_ACT_RELOAD || queued) {
+            show(queued == 2 ? "LAUNCHING\nDEMO MODE" : "RETRYING\nWIFI", "");
+            flight_log("no clock: %s", queued == 2 ? "restart into demo" : "retrying wifi");
+            // Outside the lock: the frame above has to reach the panel first.
+            button_request_restart(queued == 2);
+        }
+        if (btn == BTN_ACT_DEMO) {
+            flight_log("no clock: going on without one");
+            printf("wifi: going on without a clock\n");
+            bsp_display_lock(-1);
+            lv_obj_delete(title);
+            lv_obj_delete(hint);
+            bsp_display_unlock();
+            return;
+        }
+        if (btn == BTN_HELD_LONG)       show("RELEASE\nTO DRIVE", "without wifi");
+        else if (btn == BTN_HELD_SHORT) show("RELEASE\nTO RETRY", "hold 3 s to drive without");
+        else                            show("CONNECT\nTO WIFI",
+                                             "press to retry\nhold 3 s to drive without");
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+}
+
 extern "C" void app_main(void) {
     printf("\n=== mx5-gauge %s: boot splash + home view ===\n", gauge::core_version());
     // First, so that a run which dies during display bring-up still says so,
@@ -534,6 +605,15 @@ extern "C" void app_main(void) {
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    // No clock: ask before going on. Not on a demo restart, which is for
+    // showing the gauge to somebody and has no use for the date, and not on a
+    // build with no networks compiled in, which could never pass this screen.
+    if (kWifiCount > 0 && boot_req != BOOT_DEMO &&
+            gauge_platform::wifi_time::epoch() == 0) {
+        bsp_display_unlock();
+        wait_for_wifi(scr);
+        bsp_display_lock(-1);
+    }
     // Skipped for a wifi retry only.
     //
     // A short press is someone standing over the gauge waiting to see whether

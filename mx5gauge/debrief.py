@@ -17,9 +17,12 @@ the number that fired it. A coaching line without its evidence is an opinion,
 and the driver cannot tell an opinion from a measurement once it is on a
 screen.
 """
+import math
 import os
+import time
 
 from . import gforce as _gforce
+from . import library as _library
 from . import metrics as _metrics
 from . import recorder as _recorder
 from . import vehicle as _vehicle
@@ -46,6 +49,31 @@ GRIP_G = 0.95
 HARD_CORNER_G = 0.5
 HARD_BRAKE_G = 0.4
 EVENT_GAP_S = 2.0
+
+# --- stretches -------------------------------------------------------------
+# A long drive is several drives: town, a highway, a mountain road, the
+# highway home. Averaged together, the highway's quiet minutes dilute the
+# mountain's numbers until neither means anything. So the drive is cut into
+# slices, each slice is named by what the car was doing, and runs of the same
+# kind are joined into stretches.
+SLICE_S = 120.0
+# Named in this order; the first that fits wins.
+TWISTY_LAT_G = 0.35     # 95th-percentile cornering g in the slice...
+TWISTY_MAX_KPH = 100.0  # ...on a road slower than a highway: fast highway
+                        # bends and slip roads reach 0.4 g too
+HIGHWAY_KPH = 95.0      # average while moving
+TOWN_KPH = 40.0
+# Moving for less than this share of the slice: parked, or a stop.
+STOPPED_FRAC = 0.25
+# A stretch shorter than this is folded into its neighbour. A two-minute
+# bend on the highway is not a mountain road.
+MIN_STRETCH_S = 240.0
+# Trail braking: still braking while already cornering, both at once.
+TRAIL_BRAKE_G = 0.2
+TRAIL_LAT_G = 0.3
+TRAIL_MIN_S = 0.5
+KIND_TITLE = {'twisty': 'Twisty road', 'highway': 'Highway',
+              'town': 'Town', 'road': 'Open road', 'stopped': 'Stopped'}
 
 
 def _pct(values, q):
@@ -95,6 +123,148 @@ def _distance_km(speed):
     return km
 
 
+def _slice_kind(speeds, lats):
+    moving = [v for v in speeds if v > 3]
+    if len(moving) < STOPPED_FRAC * len(speeds) or not moving:
+        return 'stopped'
+    mean = sum(moving) / len(moving)
+    lat95 = _pct(lats, 95) or 0.0
+    if lat95 >= TWISTY_LAT_G and mean < TWISTY_MAX_KPH:
+        return 'twisty'
+    if mean >= HIGHWAY_KPH:
+        return 'highway'
+    if mean < TOWN_KPH:
+        return 'town'
+    return 'road'
+
+
+def _join(kinds, slice_s=SLICE_S, min_s=MIN_STRETCH_S):
+    """[kind per slice] -> [[kind, first slice, last slice + 1]], with runs
+    shorter than min_s folded into the longer of their neighbours."""
+    runs = []
+    for i, k in enumerate(kinds):
+        if runs and runs[-1][0] == k:
+            runs[-1][2] = i + 1
+        else:
+            runs.append([k, i, i + 1])
+    while len(runs) > 1:
+        short = [i for i, r in enumerate(runs) if (r[2] - r[1]) * slice_s < min_s]
+        if not short:
+            break
+        # The shortest first, so one stray slice cannot split a long stretch.
+        i = min(short, key=lambda j: runs[j][2] - runs[j][1])
+        prev = runs[i - 1] if i > 0 else None
+        nxt = runs[i + 1] if i + 1 < len(runs) else None
+        into = prev if nxt is None or (prev is not None and
+                                       prev[2] - prev[1] >= nxt[2] - nxt[1]) else nxt
+        into[1], into[2] = min(into[1], runs[i][1]), max(into[2], runs[i][2])
+        del runs[i]
+        merged = []
+        for r in runs:
+            if merged and merged[-1][0] == r[0]:
+                merged[-1][2] = r[2]
+            else:
+                merged.append(r)
+        runs = merged
+    return runs
+
+
+def _trail_brakes(g_series):
+    """Times when braking and cornering overlapped long enough to count."""
+    out, start, last = [], None, None
+    for t, lat, lon in g_series:
+        if lon >= TRAIL_BRAKE_G and lat >= TRAIL_LAT_G:
+            if start is None:
+                start = t
+            last = t
+        elif start is not None:
+            if last - start >= TRAIL_MIN_S:
+                out.append(start)
+            start = None
+    if start is not None and last - start >= TRAIL_MIN_S:
+        out.append(start)
+    return out
+
+
+def stretches(duration_s, speed, g_series, reversal_times, start_epoch=None):
+    """Cut a drive into stretches and measure each one on its own.
+
+    speed: [(t, kph)]. g_series: [(t, |lateral g|, longitudinal g)], braking
+    positive. reversal_times: [t]. start_epoch names the clock times when the
+    file carries a date; without one the stretches are labelled by minute.
+    """
+    n = max(1, int(math.ceil(duration_s / SLICE_S)))
+    sp = [[] for _ in range(n)]
+    la = [[] for _ in range(n)]
+    for t, v in speed:
+        sp[min(n - 1, int(t // SLICE_S))].append(v)
+    for t, lat, _lon in g_series:
+        la[min(n - 1, int(t // SLICE_S))].append(lat)
+    runs = _join([_slice_kind(sp[i], la[i]) for i in range(n)])
+    trails = _trail_brakes(g_series)
+    out = []
+    for kind, a, b in runs:
+        t0, t1 = a * SLICE_S, min(b * SLICE_S, duration_s)
+        inside = lambda t: t0 <= t < t1
+        spd = [(t, v) for t, v in speed if inside(t)]
+        lat = [(t, l) for t, l, _ in g_series if inside(t)]
+        brk = [(t, lon) for t, _, lon in g_series if inside(t)]
+        tot = [math.hypot(l, lon) for t, l, lon in g_series if inside(t)]
+        moving = [v for _t, v in spd if v > 3]
+        mins = max((t1 - t0) / 60.0, 1e-9)
+        revs = sum(1 for t in reversal_times if inside(t))
+
+        def clock(t):
+            if start_epoch is None:
+                return '%d min' % round(t / 60.0)
+            return time.strftime('%H:%M', time.localtime(start_epoch + t))
+        out.append({
+            'kind': kind,
+            'title': KIND_TITLE[kind],
+            'from': clock(t0),
+            'to': clock(t1),
+            'minutes': mins,
+            'dist_km': _distance_km(spd),
+            'mean_moving_kph': (sum(moving) / len(moving)) if moving else None,
+            'top_kph': max((v for _t, v in spd), default=None),
+            'hard_corners': _count_events(lat, HARD_CORNER_G),
+            'hard_brakes': _count_events(brk, HARD_BRAKE_G),
+            'peak_corner': max((l for _t, l in lat), default=None),
+            'peak_brake': max((v for _t, v in brk), default=None),
+            'past_04_pct': (100.0 * sum(1 for x in tot if x >= 0.4) / len(tot))
+                           if tot else None,
+            'reversals': revs,
+            'reversals_per_min': revs / mins,
+            'trail_brakes': sum(1 for t in trails if inside(t)),
+        })
+    return out
+
+
+def twisty_total(parts):
+    """Every twisty stretch added together: the spirited driving on its own,
+    with the highway and town left out. None when there was none."""
+    tw = [p for p in parts if p['kind'] == 'twisty']
+    if not tw:
+        return None
+    mins = sum(p['minutes'] for p in tw)
+    revs = sum(p['reversals'] for p in tw)
+    return {
+        'stretches': len(tw),
+        'minutes': mins,
+        'dist_km': sum(p['dist_km'] for p in tw),
+        'hard_corners': sum(p['hard_corners'] for p in tw),
+        'hard_brakes': sum(p['hard_brakes'] for p in tw),
+        'peak_corner': max((p['peak_corner'] for p in tw
+                            if p['peak_corner'] is not None), default=None),
+        'peak_brake': max((p['peak_brake'] for p in tw
+                           if p['peak_brake'] is not None), default=None),
+        'past_04_pct': sum((p['past_04_pct'] or 0) * p['minutes'] for p in tw) / mins,
+        'reversals': revs,
+        'reversals_per_min': revs / mins,
+        'trail_brakes': sum(p['trail_brakes'] for p in tw),
+    }
+
+
 def replay(path, profile=None):
     """Replay one recorded drive and return everything worth reporting."""
     rows = _recorder.load_csv(path)
@@ -108,6 +278,7 @@ def replay(path, profile=None):
     imu = dict.fromkeys(_IMU)
     speed, rpm, coolant = [], [], []
     lat_series, brake_series, totals = [], [], []
+    g_series = []
     # The worst cold rev, by the same rule the care score uses: revs above
     # CARE_COLD_RPM while the coolant is under CARE_COLD_C. Kept so the
     # warm-up lesson can quote the moment itself; the care score rounds a
@@ -145,6 +316,7 @@ def replay(path, profile=None):
                     lat_series.append((t, abs(score.g.lat)))
                     brake_series.append((t, score.g.lon))
                     totals.append(score.g.total)
+                    g_series.append((t, abs(score.g.lat), score.g.lon))
             continue
         score.update(t, carried['speed'], carried['rpm'], carried['throttle'],
                      carried['fuel_rate'], carried['coolant'])
@@ -207,6 +379,10 @@ def replay(path, profile=None):
             **cold,
         },
     }
+    out['stretches'] = stretches(
+        duration_s, speed, g_series, [e[0] for e in reversals],
+        _library._time_from_name(path))
+    out['twisty'] = twisty_total(out['stretches'])
     out['lessons'] = lessons(out)
     return out
 

@@ -52,6 +52,16 @@
   .lesson .e { margin-top: 7px; font-size: 13px; color: var(--cool);
                background: #101822; border-left: 2px solid #2A3B4C;
                padding: 7px 11px; border-radius: 0 7px 7px 0; }
+  .tbl { overflow-x: auto; margin: 0 -4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px;
+          font-variant-numeric: tabular-nums; }
+  th { color: var(--faint); font-weight: 500; text-align: right; padding: 6px 6px;
+       border-bottom: 1px solid var(--line); vertical-align: bottom; line-height: 1.25; }
+  td { text-align: right; padding: 7px 6px; border-bottom: 1px solid var(--line);
+       white-space: nowrap; color: var(--dim); }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  tr.twisty td { color: var(--ink); background: #17202B; }
+  tr.twisty td:nth-child(2) { color: var(--green); }
   .note { color: var(--faint); font-size: 13px; margin-top: 6px; }
   .err { color: var(--red); }
 </style>
@@ -78,6 +88,47 @@ function bar(label, value) {
 
 function stat(v, k) { return `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`; }
 
+// The spirited driving on its own. A long drive mixes a mountain road with
+// the highway there and back; the whole-drive numbers below average them.
+function twistyCard(t) {
+  if (!t) return '';
+  return `<div class="card">
+    <h2>Twisty roads only</h2>
+    <div class="grid">
+      ${stat(num(t.minutes) + ' min', t.stretches + (t.stretches === 1 ? ' stretch' : ' stretches') + ', ' + num(t.dist_km, 1) + ' km')}
+      ${stat(t.hard_corners, 'corners past 0.5 g')}
+      ${stat(num(t.past_04_pct) + '%', 'of the time past 0.4 g')}
+      ${stat(num(t.peak_corner, 2) + ' g', 'hardest corner')}
+      ${stat(t.hard_brakes, 'stops past 0.4 g — hardest ' + num(t.peak_brake, 2) + ' g')}
+      ${stat(num(t.reversals_per_min, 1) + '/min', 'throttle reversals (' + t.reversals + ')')}
+      ${stat(t.trail_brakes, 'trail brakes — braking while cornering')}
+    </div>
+  </div>`;
+}
+
+function stretchCard(parts) {
+  if (!parts || !parts.length) return '';
+  const row = (p) => `<tr class="${p.kind}">
+    <td>${p.from}–${p.to}</td><td>${p.title}</td>
+    <td>${num(p.minutes)}</td><td>${num(p.dist_km, 1)}</td>
+    <td>${num(p.mean_moving_kph)}</td>
+    <td>${p.hard_corners}</td><td>${num(p.past_04_pct, 1)}%</td>
+    <td>${p.hard_brakes}</td><td>${num(p.peak_corner, 2)} / ${num(p.peak_brake, 2)}</td>
+    <td>${num(p.reversals_per_min, 1)}</td><td>${p.trail_brakes}</td></tr>`;
+  return `<div class="card">
+    <h2>Stretch by stretch</h2>
+    <div class="tbl"><table>
+      <tr><th>When</th><th>What</th><th>min</th><th>km</th><th>avg<br>km/h</th>
+        <th>corners</th><th>past<br>0.4 g</th><th>stops</th><th>peak g<br>corner / stop</th>
+        <th>reversals<br>/min</th><th>trail<br>brakes</th></tr>
+      ${parts.map(row).join('')}
+    </table></div>
+    <div class="note">Cut into 2-minute slices and named by the road: bends at under
+      100 km/h are a twisty road, an average over 95 km/h is highway. Corners are past 0.5 g,
+      stops past 0.4 g. A trail brake is braking past 0.2 g while cornering past 0.3 g.</div>
+  </div>`;
+}
+
 function render(d) {
   const p = d.pace, g = d.grip, s = d.score, e = d.events;
   $('#out').innerHTML = `
@@ -94,6 +145,10 @@ function render(d) {
         ${bar('cornering', s.cornering)}${bar('engine care', s.care)}
       </div>
     </div>
+
+    ${twistyCard(d.twisty)}
+
+    ${stretchCard(d.stretches)}
 
     <div class="card">
       <h2>What to work on next time</h2>

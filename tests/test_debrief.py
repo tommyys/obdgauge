@@ -38,6 +38,42 @@ check('two crossings outside the gap are two',
 check('distance from a steady 36 km/h for 100 s',
       round(debrief._distance_km([(t, 36.0) for t in range(101)]), 3), 1.0)
 
+# --- stretches --------------------------------------------------------------
+check('a slice with bends at road speed is twisty',
+      debrief._slice_kind([60] * 10, [0.1] * 4 + [0.5] * 6), 'twisty')
+check('the same bends at highway speed are highway',
+      debrief._slice_kind([120] * 10, [0.1] * 4 + [0.5] * 6), 'highway')
+check('slow and straight is town',
+      debrief._slice_kind([25] * 10, [0.1] * 10), 'town')
+check('mostly standing still is stopped',
+      debrief._slice_kind([0] * 9 + [20], [0.0] * 10), 'stopped')
+check('one stray slice does not split a stretch',
+      debrief._join(['highway'] * 5 + ['twisty'] + ['highway'] * 5),
+      [['highway', 0, 11]])
+check('a long enough run stands on its own',
+      debrief._join(['highway'] * 5 + ['twisty'] * 3 + ['highway'] * 5),
+      [['highway', 0, 5], ['twisty', 5, 8], ['highway', 8, 13]])
+check('trail braking needs both at once, for long enough',
+      debrief._trail_brakes([(0.0, 0.4, 0.3), (0.3, 0.4, 0.3), (0.6, 0.4, 0.3),
+                             (0.9, 0.0, 0.0), (5.0, 0.4, 0.3), (5.1, 0.0, 0.3)]),
+      [0.0])
+parts = debrief.stretches(
+    600.0,
+    [(t, 120.0) for t in range(0, 300)] + [(t, 60.0) for t in range(300, 600)],
+    [(float(t), 0.1, 0.0) for t in range(0, 300)]
+    + [(float(t), 0.5, 0.0) for t in range(300, 600)],
+    [310.0, 320.0, 10.0])
+check('a highway then a mountain road is two stretches',
+      [p['kind'] for p in parts], ['highway', 'twisty'])
+check('reversals land in the stretch they happened in',
+      [p['reversals'] for p in parts], [1, 2])
+check('without a date the stretches are labelled by minute',
+      (parts[1]['from'], parts[1]['to']), ('4 min', '10 min'))
+tw = debrief.twisty_total(parts)
+near('the twisty total leaves the highway out', tw['minutes'], 6.0, 0.01)
+check('no twisty road, no twisty total',
+      debrief.twisty_total([p for p in parts if p['kind'] != 'twisty']), None)
+
 # --- the coaching rules -----------------------------------------------------
 BASE = {
     'duration_min': 60.0,

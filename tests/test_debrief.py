@@ -35,6 +35,11 @@ check('two crossings inside the gap are one event',
       debrief._count_events([(0, 1.0), (0.5, 1.0)], 0.5), 1)
 check('two crossings outside the gap are two',
       debrief._count_events([(0, 1.0), (9, 1.0)], 0.5), 2)
+check('peak and its time', debrief._peak_at([(1, 0.2), (5, 0.7), (9, 0.3)]), (0.7, 5))
+check('no samples, no peak', debrief._peak_at([]), (None, None))
+check('a moment without a date is minutes in', debrief._moment(185, None), '3 min in')
+check('no time, no moment', debrief._moment(None, 0), None)
+check('a table time without a date is minutes', debrief._clock_s(185, None), '3 min')
 check('distance from a steady 36 km/h for 100 s',
       round(debrief._distance_km([(t, 36.0) for t in range(101)]), 3), 1.0)
 
@@ -151,6 +156,8 @@ if os.path.exists(real):
     near('real drive: distance in km', d['dist_km'], 80.3, 1.0)
     near('real drive: score out of 100', d['score']['total'], 91.0, 0.5)  # 90.2 before lifts to shut stopped counting as reversals
     near('real drive: hardest corner in g', d['grip']['peak_corner'], 0.77, 0.02)
+    check('real drive: hardest corner has a time', bool(d['grip']['peak_corner_at']), True)
+    check('real drive: hardest stop has a time', bool(d['grip']['peak_brake_at']), True)
     # The install check. Anything far off 1.000 means the numbers above are
     # measuring a gauge that moved on its bracket, not a car that moved.
     near('real drive: mount check', d['grip']['mount_g'], 1.000, 0.02)

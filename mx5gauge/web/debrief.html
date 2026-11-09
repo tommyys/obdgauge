@@ -62,6 +62,7 @@
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
   tr.twisty td { color: var(--ink); background: #17202B; }
   tr.twisty td:nth-child(2) { color: var(--green); }
+  td .tm { display: block; font-size: 11px; color: var(--faint); margin-top: 1px; }
   .note { color: var(--faint); font-size: 13px; margin-top: 6px; }
   .err { color: var(--red); }
 </style>
@@ -73,6 +74,7 @@
 </div>
 <script>
 const $ = (s) => document.querySelector(s);
+const at = (w) => w ? ' at ' + w : '';
 const num = (v, d = 0) => (v === null || v === undefined || isNaN(v)) ? '--' : v.toFixed(d);
 
 // Same ramp as the g view's rings: green at the middle, red at the edge.
@@ -98,8 +100,9 @@ function twistyCard(t) {
       ${stat(num(t.minutes) + ' min', t.stretches + (t.stretches === 1 ? ' stretch' : ' stretches') + ', ' + num(t.dist_km, 1) + ' km')}
       ${stat(t.hard_corners, 'corners past 0.5 g')}
       ${stat(num(t.past_04_pct) + '%', 'of the time past 0.4 g')}
-      ${stat(num(t.peak_corner, 2) + ' g', 'hardest corner')}
-      ${stat(t.hard_brakes, 'stops past 0.4 g — hardest ' + num(t.peak_brake, 2) + ' g')}
+      ${stat(num(t.peak_corner, 2) + ' g', 'hardest corner' + at(t.peak_corner_at))}
+      ${stat(num(t.peak_brake, 2) + ' g', 'hardest stop' + at(t.peak_brake_at))}
+      ${stat(t.hard_brakes, 'stops past 0.4 g')}
       ${stat(num(t.reversals_per_min, 1) + '/min', 'throttle reversals (' + t.reversals + ')')}
       ${stat(t.trail_brakes, 'trail brakes — braking while cornering')}
     </div>
@@ -113,13 +116,14 @@ function stretchCard(parts) {
     <td>${num(p.minutes)}</td><td>${num(p.dist_km, 1)}</td>
     <td>${num(p.mean_moving_kph)}</td>
     <td>${p.hard_corners}</td><td>${num(p.past_04_pct, 1)}%</td>
-    <td>${p.hard_brakes}</td><td>${num(p.peak_corner, 2)} / ${num(p.peak_brake, 2)}</td>
+    <td>${p.hard_brakes}</td><td>${num(p.peak_corner, 2)} / ${num(p.peak_brake, 2)}
+      <span class="tm">${p.peak_corner_clock || '--'} / ${p.peak_brake_clock || '--'}</span></td>
     <td>${num(p.reversals_per_min, 1)}</td><td>${p.trail_brakes}</td></tr>`;
   return `<div class="card">
     <h2>Stretch by stretch</h2>
     <div class="tbl"><table>
       <tr><th>When</th><th>What</th><th>min</th><th>km</th><th>avg<br>km/h</th>
-        <th>corners</th><th>past<br>0.4 g</th><th>stops</th><th>peak g<br>corner / stop</th>
+        <th>corners</th><th>past<br>0.4 g</th><th>stops</th><th>peak g<br>corner / stop<br>and when</th>
         <th>reversals<br>/min</th><th>trail<br>brakes</th></tr>
       ${parts.map(row).join('')}
     </table></div>
@@ -161,8 +165,8 @@ function render(d) {
     <div class="card">
       <h2>Grip used</h2>
       <div class="grid">
-        ${stat(num(g.peak_corner, 2) + ' g', 'hardest corner — ' + num(g.corner_pct_of_grip) + '% of the tyres')}
-        ${stat(num(g.peak_brake, 2) + ' g', 'hardest stop — ' + num(g.brake_pct_of_grip) + '% of the tyres')}
+        ${stat(num(g.peak_corner, 2) + ' g', 'hardest corner — ' + num(g.corner_pct_of_grip) + '% of the tyres' + at(g.peak_corner_at))}
+        ${stat(num(g.peak_brake, 2) + ' g', 'hardest stop — ' + num(g.brake_pct_of_grip) + '% of the tyres' + at(g.peak_brake_at))}
         ${stat(num(g.peak_accel, 2) + ' g', 'hardest acceleration')}
         ${stat(e.hard_corners, 'corners past 0.5 g')}
         ${stat(e.hard_brakes, 'stops past 0.4 g')}

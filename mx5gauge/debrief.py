@@ -76,6 +76,35 @@ KIND_TITLE = {'twisty': 'Twisty road', 'highway': 'Highway',
               'town': 'Town', 'road': 'Open road', 'stopped': 'Stopped'}
 
 
+def _clock_s(t, start_epoch):
+    """The short form of an instant, for a table cell: the clock time to
+    the second when the file carries a date, else minutes into the drive."""
+    if t is None:
+        return None
+    if start_epoch is None:
+        return '%d min' % int(t // 60)
+    return time.strftime('%H:%M:%S', time.localtime(start_epoch + t))
+
+
+def _moment(t, start_epoch):
+    """One instant in the drive, for a reader: the clock time to the second
+    when the file carries a date, and always how far into the drive it was.
+    The clock finds it in a dashcam clip; the minutes find it on the map."""
+    if t is None:
+        return None
+    into = '%d min in' % int(t // 60)
+    if start_epoch is None:
+        return into
+    return '%s (%s)' % (time.strftime('%H:%M:%S',
+                                      time.localtime(start_epoch + t)), into)
+
+
+def _peak_at(series):
+    """(value, t) of the largest value in [(t, value)], or (None, None)."""
+    best = max(series, key=lambda tv: tv[1], default=None)
+    return (best[1], best[0]) if best else (None, None)
+
+
 def _pct(values, q):
     if not values:
         return None
@@ -214,6 +243,9 @@ def stretches(duration_s, speed, g_series, reversal_times, start_epoch=None):
         mins = max((t1 - t0) / 60.0, 1e-9)
         revs = sum(1 for t in reversal_times if inside(t))
 
+        pc, pc_t = _peak_at(lat)
+        pb, pb_t = _peak_at(brk)
+
         def clock(t):
             if start_epoch is None:
                 return '%d min' % round(t / 60.0)
@@ -229,8 +261,14 @@ def stretches(duration_s, speed, g_series, reversal_times, start_epoch=None):
             'top_kph': max((v for _t, v in spd), default=None),
             'hard_corners': _count_events(lat, HARD_CORNER_G),
             'hard_brakes': _count_events(brk, HARD_BRAKE_G),
-            'peak_corner': max((l for _t, l in lat), default=None),
-            'peak_brake': max((v for _t, v in brk), default=None),
+            'peak_corner': pc,
+            'peak_corner_t': pc_t,
+            'peak_corner_at': _moment(pc_t, start_epoch),
+            'peak_corner_clock': _clock_s(pc_t, start_epoch),
+            'peak_brake': pb,
+            'peak_brake_t': pb_t,
+            'peak_brake_at': _moment(pb_t, start_epoch),
+            'peak_brake_clock': _clock_s(pb_t, start_epoch),
             'past_04_pct': (100.0 * sum(1 for x in tot if x >= 0.4) / len(tot))
                            if tot else None,
             'reversals': revs,
@@ -248,16 +286,20 @@ def twisty_total(parts):
         return None
     mins = sum(p['minutes'] for p in tw)
     revs = sum(p['reversals'] for p in tw)
+    corner = max((p for p in tw if p['peak_corner'] is not None),
+                 key=lambda p: p['peak_corner'], default=None)
+    brake = max((p for p in tw if p['peak_brake'] is not None),
+                key=lambda p: p['peak_brake'], default=None)
     return {
         'stretches': len(tw),
         'minutes': mins,
         'dist_km': sum(p['dist_km'] for p in tw),
         'hard_corners': sum(p['hard_corners'] for p in tw),
         'hard_brakes': sum(p['hard_brakes'] for p in tw),
-        'peak_corner': max((p['peak_corner'] for p in tw
-                            if p['peak_corner'] is not None), default=None),
-        'peak_brake': max((p['peak_brake'] for p in tw
-                           if p['peak_brake'] is not None), default=None),
+        'peak_corner': corner and corner['peak_corner'],
+        'peak_corner_at': corner and corner['peak_corner_at'],
+        'peak_brake': brake and brake['peak_brake'],
+        'peak_brake_at': brake and brake['peak_brake_at'],
         'past_04_pct': sum((p['past_04_pct'] or 0) * p['minutes'] for p in tw) / mins,
         'reversals': revs,
         'reversals_per_min': revs / mins,
@@ -286,6 +328,9 @@ def replay(path, profile=None):
     cold = {'cold_rev_rpm': None, 'cold_rev_c': None, 'cold_rev_t': None,
             'cold_rev_s': 0.0}
     last_rpm_t = None
+    # When the gauge's own peaks were set. Taken from GForce itself rather
+    # than re-derived, so the time always belongs to the number shown.
+    peak_corner_t = peak_brake_t = None
 
     for t, key, value in rows:
         if key in carried:
@@ -311,7 +356,12 @@ def replay(path, profile=None):
             # sample. Feeding the score on a partial one would score a corner
             # that had only half happened.
             if key == 'imu_az':
+                was_c, was_b = score.g.peak_lat, score.g.peak_lon_brake
                 score.g.update(t, imu['imu_ax'], imu['imu_ay'], imu['imu_az'])
+                if score.g.peak_lat > was_c:
+                    peak_corner_t = t
+                if score.g.peak_lon_brake > was_b:
+                    peak_brake_t = t
                 if score.g.ready:
                     lat_series.append((t, abs(score.g.lat)))
                     brake_series.append((t, score.g.lon))
@@ -327,6 +377,7 @@ def replay(path, profile=None):
     n_tot = len(totals) or 1
     reversals = [e for e in score.events if e[1] == 'reversal']
     minutes = max(duration_s / 60.0, 1e-9)
+    start_epoch = _library._time_from_name(path)
 
     out = {
         'name': os.path.basename(path),
@@ -349,7 +400,11 @@ def replay(path, profile=None):
             'full_scale': FULL_G,
             'grip_limit': GRIP_G,
             'peak_corner': score.g.peak_lat,
+            'peak_corner_t': peak_corner_t,
+            'peak_corner_at': _moment(peak_corner_t, start_epoch),
             'peak_brake': score.g.peak_lon_brake,
+            'peak_brake_t': peak_brake_t,
+            'peak_brake_at': _moment(peak_brake_t, start_epoch),
             'peak_accel': score.g.peak_lon_accel,
             'mount_g': score.g.down_g,
             'corner_pct_of_grip': 100.0 * score.g.peak_lat / GRIP_G,
@@ -380,8 +435,7 @@ def replay(path, profile=None):
         },
     }
     out['stretches'] = stretches(
-        duration_s, speed, g_series, [e[0] for e in reversals],
-        _library._time_from_name(path))
+        duration_s, speed, g_series, [e[0] for e in reversals], start_epoch)
     out['twisty'] = twisty_total(out['stretches'])
     out['lessons'] = lessons(out)
     return out

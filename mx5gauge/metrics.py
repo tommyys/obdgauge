@@ -68,6 +68,15 @@ THR_RATE_SPIRITED = 40.0
 # where it means you did not know what you wanted the car to do.
 THR_REVERSAL_PCT = 4.0
 THR_REVERSAL_COST_S = 0.5
+# A lift that ends at shut throttle is not a reversal: lifting to brake and
+# going back on is how every braked corner is driven, and a heel-and-toe blip
+# goes up from shut and back down to it. Counting those made 41% of a mountain
+# drive's reversals (2026-11-09) normal corners. "Shut" is the lowest reading
+# seen this drive -- this car reads 10-13%, others read 0 -- plus a margin for
+# idle air wandering inside that, and capped so a drive that never shuts the
+# throttle (or a test) cannot learn a half-open pedal as shut.
+THR_SHUT_MARGIN_PCT = 4.0
+THR_SHUT_MAX_PCT = 20.0
 
 # Braking. Nice scores the size of it; Spirited scores how fast it arrives and
 # leaves, because a good hard stop ramps in and bleeds off.
@@ -217,6 +226,9 @@ class DrivingScore(object):
         self._thr_t = None
         self._thr_dir = 0            # +1 opening, -1 closing, 0 unknown
         self._thr_pivot = None       # where the pedal last changed direction
+        self._thr_floor = None       # lowest throttle seen: what shut reads
+        self._thr_lift = None        # (t, %) of a lift not yet known to be
+                                     # a part lift or a full one
         self._lon = None             # last longitudinal g and when
         self._lon_t = None
         self._lat = None
@@ -255,6 +267,7 @@ class DrivingScore(object):
         self._thr, self._thr_t = throttle_pct, t
         self._thr_pivot = throttle_pct
         self._thr_dir = 0
+        self._thr_lift = None
         self._lon = self._lat = None
         self._lon_t = self._lat_t = None
 
@@ -345,8 +358,13 @@ class DrivingScore(object):
         # How fast the pedal is moving, against the band for this pole.
         band = THR_RATE_SPIRITED if spirited else THR_RATE_NICE
         self.thr_bad += _clamp(abs(move) / d / band, 0.0, 1.0) * d
-        # A reversal: the pedal turned round by more than the deadband. Big
-        # inputs are fine, changing your mind about them is not.
+        if self._thr_floor is None or throttle_pct < self._thr_floor:
+            self._thr_floor = throttle_pct
+        # A reversal: the pedal turned round by more than the deadband,
+        # somewhere above shut. Big inputs are fine, changing your mind about
+        # them is not -- but lifting all the way off is a decision, not a
+        # change of mind, so a lift is only judged once it is known where it
+        # ended.
         if abs(move) < 0.05:
             return
         direction = 1 if move > 0 else -1
@@ -356,10 +374,24 @@ class DrivingScore(object):
         if direction == self._thr_dir:
             self._thr_pivot = throttle_pct
             return
-        if abs(throttle_pct - self._thr_pivot) >= THR_REVERSAL_PCT:
-            self.thr_bad += THR_REVERSAL_COST_S
-            self.events.append((round(t, 2), 'reversal', round(throttle_pct, 1)))
+        turned = abs(throttle_pct - self._thr_pivot) >= THR_REVERSAL_PCT
+        if direction < 0:
+            # Was opening, now closing: a lift. Hold it until it bottoms out.
+            self._thr_lift = (t, throttle_pct) if turned else None
+        else:
+            # Was closing, now opening: the lift bottomed out at the pivot.
+            shut = min(self._thr_floor, THR_SHUT_MAX_PCT) + THR_SHUT_MARGIN_PCT
+            if self._thr_pivot > shut:
+                if self._thr_lift is not None:
+                    self._reversal(*self._thr_lift)
+                if turned:
+                    self._reversal(t, throttle_pct)
+            self._thr_lift = None
         self._thr_dir, self._thr_pivot = direction, throttle_pct
+
+    def _reversal(self, t, throttle_pct):
+        self.thr_bad += THR_REVERSAL_COST_S
+        self.events.append((round(t, 2), 'reversal', round(throttle_pct, 1)))
 
     def _braking(self, t, dt, spirited):
         """Nice scores the size of the stop. Spirited scores its edges."""

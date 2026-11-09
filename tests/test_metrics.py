@@ -115,7 +115,9 @@ steady_dense = drive([50] * 30, filler_per_step=10, throttle=[20.0] * 30)
 near('steady throttle, densely sampled -> still 100',
      steady_dense.throttle, 100.0)
 
-saw = [20.0 if i % 2 else 40.0 for i in range(40)]       # 20% every 0.33s
+# 20% every 0.33s, never shutting -- so every turn is a reversal. Down at
+# 20%, the bottoms read as a shut throttle and the reversals vanish.
+saw = [30.0 if i % 2 else 50.0 for i in range(40)]
 a = drive([50] * 40, throttle=saw)
 b = drive([50] * 40, filler_per_step=9, throttle=saw)
 check('jerky throttle scores the same at both sample rates',
@@ -160,6 +162,34 @@ check('fluttering the pedal is caught as reversals',
       len([e for e in flutter.events if e[1] == 'reversal']) > 5, True)
 check('a reversal costs throttle score',
       flutter.throttle < one_way.throttle, True)
+
+
+def reversals_for(trace, idle=12.5):
+    """Feed a throttle trace, one value every 0.3 s (the car's real rate),
+    after a short idle so the score has seen what shut throttle reads."""
+    sc = metrics.DrivingScore()
+    vals = [idle, idle] + list(trace)
+    for i, v in enumerate(vals):
+        sc.update(i * 0.3, 60.0, 4000, v, 6.0)
+    return len([e for e in sc.events if e[1] == 'reversal'])
+
+
+# Every braked corner lifts all the way off and goes back on. That is a
+# decision, not a change of mind, and it was 41% of a mountain drive's count.
+check('a full lift to brake and back on is not a reversal',
+      reversals_for([30, 40, 50, 40, 25, 12.5, 12.5, 12.5, 25, 40, 50]), 0)
+# A heel-and-toe blip goes up from shut and back to shut.
+check('a blip from shut throttle is not a reversal',
+      reversals_for([12.5, 25, 35, 25, 12.5, 12.5]), 0)
+# This car reads 10-13% shut, and idle air wanders inside that.
+check('a lift that ends a little above the idle reading is still a full lift',
+      reversals_for([10.2, 30, 40, 50, 40, 25, 13.3, 25, 40]), 0)
+# The real fault: lift a bit, then back on, with no brake in between. Both
+# turns count -- the lift and the going back on.
+check('a part lift and back on is two reversals',
+      reversals_for([30, 40, 50, 45, 40, 35, 40, 45, 50]), 2)
+check('a deep lift that stops short of shut is still a part lift',
+      reversals_for([30, 40, 50, 45, 40, 35, 30, 35, 40]), 2)
 
 # --- braking: Nice scores the size, Spirited scores the edges -------------
 soft = g_drive([(0.0, 0.10)], 40, 'NICE')

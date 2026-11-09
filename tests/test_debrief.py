@@ -113,7 +113,7 @@ if os.path.exists(real):
     d = debrief.replay(real)
     near('real drive: length in minutes', d['duration_min'], 67.7, 0.2)
     near('real drive: distance in km', d['dist_km'], 80.3, 1.0)
-    near('real drive: score out of 100', d['score']['total'], 90.2, 0.5)
+    near('real drive: score out of 100', d['score']['total'], 91.0, 0.5)  # 90.2 before lifts to shut stopped counting as reversals
     near('real drive: hardest corner in g', d['grip']['peak_corner'], 0.77, 0.02)
     # The install check. Anything far off 1.000 means the numbers above are
     # measuring a gauge that moved on its bracket, not a car that moved.

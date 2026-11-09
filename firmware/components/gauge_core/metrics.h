@@ -61,6 +61,13 @@ inline constexpr double kThrRateSpirited = 40.0;
 // again. Big inputs are fine; changing your mind about them is not.
 inline constexpr double kThrReversalPct   = 4.0;
 inline constexpr double kThrReversalCostS = 0.5;
+// A lift that ends at shut throttle is not a reversal: lifting to brake and
+// going back on is how every braked corner is driven, and a heel-and-toe blip
+// goes up from shut and back down to it. "Shut" is the lowest reading seen
+// this drive (this car reads 10-13%) plus a margin, capped so a drive that
+// never shuts the throttle cannot learn a half-open pedal as shut.
+inline constexpr double kThrShutMarginPct = 4.0;
+inline constexpr double kThrShutMaxPct    = 20.0;
 // Braking. Nice scores the size of the stop; Spirited scores its edges,
 // because a good hard stop ramps in and bleeds off.
 inline constexpr double kBrakeGNice        = 0.25;
@@ -172,6 +179,9 @@ class DrivingScore {
     Opt last_t_, thr_, thr_t_, lon_, lon_t_, lat_, lat_t_;
     int thr_dir_ = 0;                 // +1 opening, -1 closing, 0 unknown
     Opt thr_pivot_;                   // where the pedal last changed direction
+    Opt thr_floor_;                   // lowest throttle seen: what shut reads
+    Opt thr_lift_t_, thr_lift_pct_;   // a lift not yet known to be part or full
+    void reversal(double t, double throttle_pct);
     Pole cand_ = Pole::Nice;
     Opt  cand_since_;
 };

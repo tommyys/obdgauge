@@ -71,6 +71,7 @@ void DrivingScore::rebase(double t, Opt throttle_pct) {
     thr_t_     = t;
     thr_pivot_ = throttle_pct;
     thr_dir_   = 0;
+    thr_lift_t_.reset(); thr_lift_pct_.reset();
     lon_.reset(); lat_.reset(); lon_t_.reset(); lat_t_.reset();
 }
 
@@ -141,17 +142,36 @@ void DrivingScore::step_throttle(double t, Opt throttle_pct, bool spirited) {
     // How fast the pedal is moving, against the band for this pole.
     double band = spirited ? kThrRateSpirited : kThrRateNice;
     thr_bad += std::max(0.0, std::min(1.0, std::fabs(move) / d / band)) * d;
-    // A reversal: the pedal turned round by more than the deadband.
+    if (!thr_floor_ || *throttle_pct < *thr_floor_) thr_floor_ = throttle_pct;
+    // A reversal: the pedal turned round by more than the deadband, somewhere
+    // above shut. Lifting all the way off is a decision, not a change of
+    // mind, so a lift is only judged once it is known where it ended.
     if (std::fabs(move) < 0.05) return;
     int dir = move > 0 ? 1 : -1;
     if (thr_dir_ == 0) { thr_dir_ = dir; thr_pivot_ = throttle_pct; return; }
     if (dir == thr_dir_) { thr_pivot_ = throttle_pct; return; }
-    if (thr_pivot_ && std::fabs(*throttle_pct - *thr_pivot_) >= kThrReversalPct) {
-        thr_bad += kThrReversalCostS;
-        events.push_back({round2(t), "reversal", "",
-                          std::round(*throttle_pct * 10.0) / 10.0});
+    bool turned = thr_pivot_ &&
+                  std::fabs(*throttle_pct - *thr_pivot_) >= kThrReversalPct;
+    if (dir < 0) {
+        // Was opening, now closing: a lift. Hold it until it bottoms out.
+        if (turned) { thr_lift_t_ = t; thr_lift_pct_ = throttle_pct; }
+        else        { thr_lift_t_.reset(); thr_lift_pct_.reset(); }
+    } else {
+        // Was closing, now opening: the lift bottomed out at the pivot.
+        double shut = std::min(*thr_floor_, kThrShutMaxPct) + kThrShutMarginPct;
+        if (thr_pivot_ && *thr_pivot_ > shut) {
+            if (thr_lift_t_) reversal(*thr_lift_t_, *thr_lift_pct_);
+            if (turned) reversal(t, *throttle_pct);
+        }
+        thr_lift_t_.reset(); thr_lift_pct_.reset();
     }
     thr_dir_ = dir; thr_pivot_ = throttle_pct;
+}
+
+void DrivingScore::reversal(double t, double throttle_pct) {
+    thr_bad += kThrReversalCostS;
+    events.push_back({round2(t), "reversal", "",
+                      std::round(throttle_pct * 10.0) / 10.0});
 }
 
 // Nice scores the size of the stop. Spirited scores its edges.

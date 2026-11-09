@@ -82,7 +82,9 @@ int main() {
          steady_dense.throttle(), 100.0);
 
     std::vector<double> flat40(40, 50.0), saw;
-    for (int i = 0; i < 40; ++i) saw.push_back(i % 2 ? 20.0 : 40.0);
+    // Never shutting, so every turn is a reversal. Down at 20% the bottoms
+    // read as a shut throttle and the reversals vanish.
+    for (int i = 0; i < 40; ++i) saw.push_back(i % 2 ? 30.0 : 50.0);
     auto a = drive(flat40, 0, &saw);
     auto b = drive(flat40, 9, &saw);
     check("jerky throttle scores the same at both sample rates",
@@ -123,6 +125,27 @@ int main() {
     check("fluttering the pedal is caught as reversals", rev_flutter > 5, true);
     check("a reversal costs throttle score",
           *flutter.throttle() < *one_way.throttle(), true);
+
+    // Mirrors tests/test_metrics.py: one value every 0.3 s after an idle.
+    auto reversals_for = [](std::vector<double> trace) {
+        gauge::DrivingScore sc;
+        trace.insert(trace.begin(), {12.5, 12.5});
+        for (size_t i = 0; i < trace.size(); ++i)
+            sc.update(i * 0.3, 60.0, 4000.0, trace[i], 6.0);
+        int n = 0;
+        for (const auto& e : sc.events) if (e.kind == "reversal") ++n;
+        return n;
+    };
+    check("a full lift to brake and back on is not a reversal",
+          reversals_for({30, 40, 50, 40, 25, 12.5, 12.5, 12.5, 25, 40, 50}), 0);
+    check("a blip from shut throttle is not a reversal",
+          reversals_for({12.5, 25, 35, 25, 12.5, 12.5}), 0);
+    check("a lift that ends a little above the idle reading is still a full lift",
+          reversals_for({10.2, 30, 40, 50, 40, 25, 13.3, 25, 40}), 0);
+    check("a part lift and back on is two reversals",
+          reversals_for({30, 40, 50, 45, 40, 35, 40, 45, 50}), 2);
+    check("a deep lift that stops short of shut is still a part lift",
+          reversals_for({30, 40, 50, 45, 40, 35, 30, 35, 40}), 2);
 
     // --- braking: Nice scores the size, Spirited scores the edges ---------
     auto soft = g_drive({{0.0, 0.10}}, 40, gauge::Pole::Nice);
